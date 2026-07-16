@@ -1,0 +1,102 @@
+# ChatAlpaca1
+
+A compact personal portfolio dashboard with public benchmark views, password-protected owner controls, automatic database persistence, and Alpaca order allocation. The first release is paper-first and keeps five internal portfolios separate even though Alpaca holds their combined positions in one brokerage account.
+
+## Included
+
+- Five editable portfolios with up to 25 stocks or ETFs each
+- Exact shares, acquisition dates, cost basis, cash, and market value
+- Seeded `KCs Traditional IRA` and `KCs Roth IRA` examples
+- Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
+- Growth-of-$100 chart plus return, volatility, and drawdown statistics
+- Password-protected portfolio editor and assigned Alpaca order ticket
+- Market and limit orders, cancellation, fill synchronization, and an internal cash/trade ledger
+- Automatic persistence through SQLite locally or hosted PostgreSQL in production
+- Architecture hooks for strategies, short positions, options, and separately gated live trading
+- Dark black/blue/purple/white theme with no green or red status colors
+
+## Safety model
+
+The public link exposes the exact internally tracked portfolios but never exposes credentials or owner controls. `ADMIN_PASSWORD` unlocks owner features for a browser session.
+
+Paper mode is the default. Live mode requires all three of the following:
+
+1. Separate live Alpaca credentials.
+2. `TRADING_MODE=live`.
+3. `ALLOW_LIVE_TRADING=true`.
+
+Do not enable live mode until authentication, risk limits, audit review, and deployment access controls have been strengthened. Never commit an API key, secret key, database password, or owner password.
+
+## Local setup
+
+Python 3.10 or newer is required.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env
+streamlit run streamlit_app.py
+```
+
+Set newly rotated paper credentials in `.env`:
+
+```dotenv
+DATABASE_URL=sqlite:///data/chat_alpaca.db
+ADMIN_PASSWORD=choose-a-long-password
+ALPACA_API_KEY=your-rotated-paper-key
+ALPACA_SECRET_KEY=your-rotated-paper-secret
+ALPACA_DATA_FEED=iex
+TRADING_MODE=paper
+ALLOW_LIVE_TRADING=false
+```
+
+The ignored `data/chat_alpaca.db` file is created automatically. The seed data is inserted only when the portfolio table is empty.
+
+## How order allocation works
+
+1. The owner assigns every order to one of the five internal portfolios.
+2. The app submits the order to the single Alpaca account with a unique client order ID.
+3. The assignment is saved before the UI reports success.
+4. **Sync fills** retrieves Alpaca's current filled quantity and average price.
+5. Only newly filled shares are applied to the assigned internal portfolio, making repeated synchronization idempotent.
+6. Buys reduce that portfolio's cash; sells increase it. Sells beyond internal long shares create a negative internal position.
+
+Alpaca remains the authority for brokerage orders and combined positions. This application's database is the authority for the internal portfolio split.
+
+## Production deployment
+
+GitHub Pages cannot run this Python application. Deploy the private GitHub repository through Streamlit Community Cloud and make the Streamlit app public for view-only access.
+
+Before deployment:
+
+1. Create a hosted PostgreSQL database with a provider such as Supabase or Neon.
+2. Copy its connection URL into the Streamlit app's secret settings as `DATABASE_URL`.
+3. Add `ADMIN_PASSWORD`, rotated Alpaca paper credentials, and the remaining values from `.env.example` to Streamlit secrets.
+4. Keep the GitHub repository private and deploy `streamlit_app.py` as the entry point.
+5. Confirm the public view does not show Manage or Trade tabs before sharing the link.
+
+The production database must use TLS according to the database provider's connection instructions. SQLite is intended for local development only because a hosted Streamlit filesystem is not durable.
+
+## Verification
+
+```bash
+ruff format --check .
+ruff check .
+pytest -q
+```
+
+Tests cover the seeded portfolio values, cash ledger, holding limits, short positions, analytics, idempotent order-fill allocation, and a credential-free Streamlit render.
+
+## Deliberately deferred
+
+The initial architecture models automated strategies, short positions, options, and live mode, but the following production features remain later work:
+
+- Background strategy scheduling and automatic order submission
+- Strategy-level risk budgets and emergency shutdown
+- Option contract discovery and multi-leg order tickets
+- Borrow checks and portfolio exposure limits for short sales
+- Strong identity-provider login, roles, rate limiting, and a full audit console
+- Live-trading operational review and activation
+
+Paper trading is a simulation and does not reproduce every live-market condition. Review every order before submission.

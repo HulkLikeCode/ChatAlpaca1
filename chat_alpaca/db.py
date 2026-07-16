@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from functools import lru_cache
+from pathlib import Path
+
+from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from chat_alpaca.config import get_settings
+from chat_alpaca.models import Base
+
+
+@lru_cache(maxsize=1)
+def get_engine() -> Engine:
+    url = get_settings().database_url
+    connect_args: dict[str, object] = {}
+    if url.startswith("sqlite:///"):
+        db_path = Path(url.removeprefix("sqlite:///"))
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        connect_args["check_same_thread"] = False
+    return create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+
+
+@lru_cache(maxsize=1)
+def get_session_factory() -> sessionmaker[Session]:
+    return sessionmaker(bind=get_engine(), expire_on_commit=False)
+
+
+@contextmanager
+def session_scope() -> Iterator[Session]:
+    session = get_session_factory()()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def init_database() -> None:
+    Base.metadata.create_all(get_engine())

@@ -1,0 +1,9 @@
+alpaca-py>=0.42,<1
+numpy>=1.26,<2
+pandas>=2.2,<3
+plotly>=5.24,<7
+psycopg[binary]>=3.2,<4
+pyarrow==14.0.2; platform_system == "Darwin" and platform_machine == "x86_64"
+python-dotenv>=1.0,<2
+SQLAlchemy>=2.0,<3
+streamlit>=1.42,<2
