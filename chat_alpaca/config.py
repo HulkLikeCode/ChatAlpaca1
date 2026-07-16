@@ -26,10 +26,16 @@ def _as_bool(value: str) -> bool:
 
 
 def _database_url(value: str) -> str:
-    if value.startswith("postgres://"):
-        return value.replace("postgres://", "postgresql+psycopg://", 1)
-    if value.startswith("postgresql://"):
-        return value.replace("postgresql://", "postgresql+psycopg://", 1)
+    """Use the PostgreSQL driver installed by this application.
+
+    Hosted database providers commonly supply URLs for ``psycopg2`` or without
+    a driver name.  This project installs psycopg 3 (``psycopg[binary]``), so
+    normalize every PostgreSQL URL spelling before SQLAlchemy loads a dialect.
+    """
+    value = value.strip()
+    scheme, separator, remainder = value.partition("://")
+    if separator and (scheme == "postgres" or scheme.startswith("postgresql")):
+        return f"postgresql+psycopg://{remainder}"
     return value
 
 
