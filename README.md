@@ -1,16 +1,17 @@
 # ChatAlpaca1
 
-A compact personal portfolio dashboard with public benchmark views, password-protected owner controls, automatic database persistence, and Alpaca order allocation. The first release is paper-first and keeps five internal portfolios separate even though Alpaca holds their combined positions in one brokerage account.
+A compact personal portfolio dashboard with public benchmark views, password-protected owner controls, automatic database persistence, and Alpaca order allocation. The first release is paper-first and keeps up to 20 internal portfolios separate even though Alpaca holds their combined positions in one brokerage account.
 
 ## Included
 
-- Five editable portfolios with up to 25 stocks or ETFs each
-- Exact shares, acquisition dates, cost basis, cash, and market value
-- Seeded `KCs Traditional IRA` and `KCs Roth IRA` examples
+- Up to 20 portfolios with an uncapped number of tracked symbols
+- Transaction-backed cash, FIFO lots, cost basis, and market value
+- Seeded `KCs Traditional IRA`, `KCs Roth IRA`, and `KC and Papa` portfolios
 - Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
 - Password-protected portfolio editor and assigned Alpaca order ticket
-- Market and limit orders, cancellation, fill synchronization, and an internal cash/trade ledger
+- Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
+- Market and limit orders, cancellation, fill synchronization, and an immutable internal transaction ledger
 - Automatic persistence through SQLite locally or hosted PostgreSQL in production
 - Architecture hooks for strategies, short positions, options, and separately gated live trading
 - Dark black/blue/purple/white theme with no green or red status colors
@@ -53,9 +54,15 @@ ALLOW_LIVE_TRADING=false
 
 The ignored `data/chat_alpaca.db` file is created automatically. The seed data is inserted only when the portfolio table is empty.
 
+## Portfolio transactions
+
+Owner controls support manual entries for buys, sells, dividends, interest, transfers, awards, fees, taxes, and cash adjustments. Trades update open lots with FIFO sale handling; all other entries affect cash only. Posted entries are immutable in the app, so corrections should be entered as a new correcting transaction.
+
+Brokerage CSV imports preview every row before posting. The included `KC and Papa.csv` format supports its current buy, sell, dividend, interest, transfer, award, fee, and foreign-tax rows. Re-importing a statement skips transactions already recorded, while the **Rebuild portfolio from statement** action deliberately replaces that portfolio's lots, cash, transaction history, legacy ledger rows, and saved Alpaca allocations after the owner types `REBUILD`.
+
 ## How order allocation works
 
-1. The owner assigns every order to one of the five internal portfolios.
+1. The owner assigns every order to one of the internal portfolios.
 2. The app submits the order to the single Alpaca account with a unique client order ID.
 3. The assignment is saved before the UI reports success.
 4. **Sync fills** retrieves Alpaca's current filled quantity and average price.
@@ -86,7 +93,7 @@ ruff check .
 pytest -q
 ```
 
-Tests cover the seeded portfolio values, cash ledger, holding limits, short positions, analytics, idempotent order-fill allocation, and a credential-free Streamlit render.
+Tests cover seeded statement rebuilding, duplicate-safe imports, FIFO sales, cash ledger entries, uncapped holdings, analytics, idempotent order-fill allocation, and a credential-free Streamlit render.
 
 ## Deliberately deferred
 

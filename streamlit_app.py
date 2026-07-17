@@ -109,9 +109,9 @@ def render_header() -> None:
     settings = get_settings()
     mode = "PAPER MODE" if settings.paper else "LIVE MODE"
     st.markdown(f'<span class="mode-chip">{mode}</span>', unsafe_allow_html=True)
-    st.title("Portfolio command center")
+    st.title("KC's Retirement Dough, Let's GO!!!")
     st.caption(
-        "Five internally tracked portfolios · exact holdings · buy-and-hold benchmarks · Alpaca order allocation"
+        "Five portfolios · benchmarks · Alpaca paper orders"
     )
 
 

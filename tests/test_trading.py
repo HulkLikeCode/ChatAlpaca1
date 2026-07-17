@@ -35,7 +35,7 @@ class FakeTradingClient:
 def test_order_fill_updates_only_assigned_portfolio(session: Session, monkeypatch: object) -> None:
     seed_database(session)
     portfolios = list_portfolios(session)
-    target = portfolios[2]
+    target = portfolios[3]
     fake = FakeTradingClient()
     monkeypatch.setattr("chat_alpaca.trading.get_trading_client", lambda: fake)
 
@@ -50,7 +50,7 @@ def test_order_fill_updates_only_assigned_portfolio(session: Session, monkeypatc
 
     refreshed = list_portfolios(session)
     updated = next(item for item in refreshed if item.id == target.id)
-    untouched = next(item for item in refreshed if item.id == portfolios[3].id)
+    untouched = next(item for item in refreshed if item.id == portfolios[4].id)
     assert updated.cash == Decimal("-50.0000")
     assert [(lot.symbol, lot.shares) for lot in updated.holdings] == [
         ("MSFT", Decimal("2.00000000"))
