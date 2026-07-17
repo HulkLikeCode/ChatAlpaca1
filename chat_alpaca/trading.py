@@ -12,8 +12,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from chat_alpaca.config import get_settings
-from chat_alpaca.models import HoldingLot, LedgerEntry, OrderAllocation, Portfolio
-from chat_alpaca.portfolio_service import get_portfolio, money, normalize_symbol, shares
+from chat_alpaca.models import OrderAllocation
+from chat_alpaca.portfolio_service import (
+    TransactionDraft,
+    get_portfolio,
+    money,
+    normalize_symbol,
+    record_transaction,
+    shares,
+)
 
 
 class TradingUnavailable(RuntimeError):
@@ -126,81 +133,26 @@ def _apply_fill(
     incremental_qty: Decimal,
     incremental_notional: Decimal,
 ) -> None:
-    portfolio = session.get(Portfolio, allocation.portfolio_id)
-    if portfolio is None:
-        raise ValueError("Allocated portfolio no longer exists.")
+    get_portfolio(session, allocation.portfolio_id)
     effective_price = incremental_notional / incremental_qty
-    if allocation.side == "buy":
-        portfolio.cash = Decimal(portfolio.cash) - incremental_notional
-        portfolio.holdings.append(
-            HoldingLot(
-                symbol=allocation.symbol,
-                shares=incremental_qty,
-                acquired_on=date.today(),
-                cost_basis=effective_price,
-            )
-        )
-        cash_delta = -incremental_notional
-        ledger_kind = "buy"
-    else:
-        portfolio.cash = Decimal(portfolio.cash) + incremental_notional
-        _reduce_fifo_or_short(
-            session, portfolio.id, allocation.symbol, incremental_qty, effective_price
-        )
-        cash_delta = incremental_notional
-        ledger_kind = "sell"
-    session.add(
-        LedgerEntry(
-            portfolio_id=portfolio.id,
-            kind=ledger_kind,
+    kind = allocation.side
+    cash_delta = -incremental_notional if kind == "buy" else incremental_notional
+    record_transaction(
+        session,
+        allocation.portfolio_id,
+        TransactionDraft(
+            transaction_date=date.today(),
+            action=kind.title(),
+            kind=kind,
             symbol=allocation.symbol,
+            description=f"Alpaca order {allocation.alpaca_order_id}",
             quantity=incremental_qty,
             price=effective_price,
+            fees=None,
             cash_delta=cash_delta,
-            note=f"Alpaca order {allocation.alpaca_order_id}",
-        )
+        ),
+        source="alpaca",
     )
-
-
-def _reduce_fifo_or_short(
-    session: Session,
-    portfolio_id: int,
-    symbol: str,
-    quantity: Decimal,
-    sale_price: Decimal,
-) -> None:
-    lots = list(
-        session.scalars(
-            select(HoldingLot)
-            .where(
-                HoldingLot.portfolio_id == portfolio_id,
-                HoldingLot.symbol == symbol,
-                HoldingLot.shares > 0,
-            )
-            .order_by(HoldingLot.acquired_on, HoldingLot.id)
-        )
-    )
-    remaining = quantity
-    for lot in lots:
-        if remaining <= 0:
-            break
-        consumed = min(Decimal(lot.shares), remaining)
-        lot.shares = Decimal(lot.shares) - consumed
-        remaining -= consumed
-        if lot.shares == 0:
-            session.delete(lot)
-    if remaining > 0:
-        portfolio = session.get(Portfolio, portfolio_id)
-        if portfolio is None:
-            raise ValueError("Allocated portfolio no longer exists.")
-        portfolio.holdings.append(
-            HoldingLot(
-                symbol=symbol,
-                shares=-remaining,
-                acquired_on=date.today(),
-                cost_basis=sale_price,
-            )
-        )
 
 
 def cancel_order(alpaca_order_id: str) -> None:
