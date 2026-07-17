@@ -21,13 +21,23 @@ from chat_alpaca.db import init_database, session_scope
 from chat_alpaca.market_data import get_daily_closes
 from chat_alpaca.models import OrderAllocation, Portfolio
 from chat_alpaca.portfolio_service import (
-    list_ledger,
+    MANUAL_KINDS,
+    MAX_PORTFOLIOS,
+    TransactionDraft,
+    create_portfolio,
+    delete_portfolio,
+    import_statement,
     list_portfolios,
+    list_transactions,
+    money,
+    normalize_symbol,
+    parse_statement_csv,
     portfolio_cost,
+    rebuild_portfolio_from_csv,
+    record_transaction,
     rename_portfolio,
-    replace_holdings,
     seed_database,
-    set_cash,
+    shares,
 )
 from chat_alpaca.theme import PLOT_COLORS, THEME_CSS
 from chat_alpaca.trading import (
@@ -110,34 +120,32 @@ def render_header() -> None:
     mode = "PAPER MODE" if settings.paper else "LIVE MODE"
     st.markdown(f'<span class="mode-chip">{mode}</span>', unsafe_allow_html=True)
     st.title("KC's Retirement Dough, Let's GO!!!")
-    st.caption(
-        "Five portfolios · benchmarks · Alpaca paper orders"
-    )
+    st.caption(f"portfolios · benchmarks · Alpaca paper orders")
 
 
 def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
-    columns = st.columns(5)
-    for column, portfolio in zip(columns, portfolios, strict=False):
-        if closes.empty:
-            market_value = portfolio_cost(portfolio) - Decimal(portfolio.cash)
-            total = portfolio_cost(portfolio)
-            value_label = "cost basis + cash"
-        else:
-            market_value, total = latest_values(portfolio, closes)
-            value_label = "latest market value"
-        unique_symbols = len({lot.symbol for lot in portfolio.holdings})
-        with column:
-            st.markdown(
-                f"""
-                <div class="portfolio-card">
-                  <div class="eyebrow">{portfolio.name}</div>
-                  <div class="value">{dollars(total)}</div>
-                  <div class="detail">{unique_symbols} symbols · {dollars(portfolio.cash)} cash</div>
-                  <div class="detail">{value_label}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    for start in range(0, len(portfolios), 5):
+        columns = st.columns(5)
+        for column, portfolio in zip(columns, portfolios[start : start + 5], strict=False):
+            if closes.empty:
+                total = portfolio_cost(portfolio)
+                value_label = "cost basis + cash"
+            else:
+                _, total = latest_values(portfolio, closes)
+                value_label = "latest market value"
+            unique_symbols = len({lot.symbol for lot in portfolio.holdings})
+            with column:
+                st.markdown(
+                    f"""
+                    <div class="portfolio-card">
+                      <div class="eyebrow">{portfolio.name}</div>
+                      <div class="value">{dollars(total)}</div>
+                      <div class="detail">{unique_symbols} symbols · {dollars(portfolio.cash)} cash</div>
+                      <div class="detail">{value_label}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 def holdings_frame(portfolios: list[Portfolio], closes: pd.DataFrame) -> pd.DataFrame:
@@ -165,6 +173,9 @@ def holdings_frame(portfolios: list[Portfolio], closes: pd.DataFrame) -> pd.Data
 def render_overview(
     portfolios: list[Portfolio], closes: pd.DataFrame, data_note: str | None
 ) -> None:
+    if not portfolios:
+        st.caption("No portfolios with holdings yet.")
+        return
     render_portfolio_cards(portfolios, closes)
     if data_note:
         st.info(f"Live market values are unavailable, so cost basis is shown. {data_note}")
@@ -178,11 +189,12 @@ def render_overview(
             hide_index=True,
             use_container_width=True,
             column_config={
-                "Shares": st.column_config.NumberColumn(format="%.8f"),
-                "Cost / share": st.column_config.NumberColumn(format="$%.5f"),
-                "Cost basis": st.column_config.NumberColumn(format="$%.2f"),
-                "Latest price": st.column_config.NumberColumn(format="$%.2f"),
-                "Market value": st.column_config.NumberColumn(format="$%.2f"),
+                "Shares": st.column_config.NumberColumn(format="%.1f"),
+                "Acquired": st.column_config.DateColumn(format="M/D/YY"),
+                "Cost / share": st.column_config.NumberColumn(format="$%,.2f"),
+                "Cost basis": st.column_config.NumberColumn(format="$%,.2f"),
+                "Latest price": st.column_config.NumberColumn(format="$%,.2f"),
+                "Market value": st.column_config.NumberColumn(format="$%,.2f"),
             },
         )
     st.markdown("### Cash positions")
@@ -195,11 +207,14 @@ def render_overview(
         ),
         hide_index=True,
         use_container_width=True,
-        column_config={"Cash": st.column_config.NumberColumn(format="$%.2f")},
+        column_config={"Cash": st.column_config.NumberColumn(format="$%,.2f")},
     )
 
 
 def render_compare(portfolios: list[Portfolio]) -> None:
+    if not portfolios:
+        st.caption("No portfolios with holdings are available to compare.")
+        return
     fallback_start = date.today() - timedelta(days=365)
     earliest = earliest_acquisition(portfolios, fallback_start)
     controls = st.columns([1.1, 1.4, 2.2])
@@ -291,88 +306,226 @@ def render_compare(portfolios: list[Portfolio]) -> None:
     st.caption("All series are rebased to $100. Metrics use adjusted daily closes from Alpaca.")
 
 
-def editor_rows(portfolio: Portfolio) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "Symbol": lot.symbol,
-                "Shares": float(lot.shares),
-                "Acquired": lot.acquired_on,
-                "Cost / share": float(lot.cost_basis),
-            }
-            for lot in sorted(portfolio.holdings, key=lambda item: (item.symbol, item.acquired_on))
-        ],
-        columns=["Symbol", "Shares", "Acquired", "Cost / share"],
-    )
-
-
 def render_portfolio_admin(portfolios: list[Portfolio]) -> None:
-    st.markdown("### Portfolio editor")
-    selected_name = st.selectbox("Portfolio", [item.name for item in portfolios])
-    portfolio = next(item for item in portfolios if item.name == selected_name)
-    with st.form(f"edit_portfolio_{portfolio.id}"):
+    st.markdown("### Portfolios")
+    with st.form("create_portfolio"):
+        name = st.text_input("New portfolio name", value="Another One!", max_chars=80)
+        created = st.form_submit_button("Add portfolio")
+    if created:
+        try:
+            with session_scope() as session:
+                portfolio = create_portfolio(session, name)
+            st.session_state.manage_portfolio_id = portfolio.id
+            st.session_state.flash = (
+                f"Portfolio '{portfolio.name}' added. Record or import holdings to display it."
+            )
+            st.rerun()
+        except Exception as exc:
+            st.info(f"Portfolio was not added: {exc}")
+
+    selected_id = st.session_state.get("manage_portfolio_id")
+    selectable = [item for item in portfolios if item.holdings or item.id == selected_id]
+    if not selectable:
+        st.caption("No portfolios with holdings yet. Add a portfolio, then record or import its first holding.")
+        return
+
+    st.markdown("### Portfolio transactions")
+    selected_name = st.selectbox("Portfolio", [item.name for item in selectable])
+    portfolio = next(item for item in selectable if item.name == selected_name)
+    with st.form(f"rename_portfolio_{portfolio.id}"):
         name = st.text_input("Portfolio name", value=portfolio.name, max_chars=80)
-        cash = st.number_input(
-            "Cash position", value=float(portfolio.cash), step=100.0, format="%.2f"
-        )
-        edited = st.data_editor(
-            editor_rows(portfolio),
-            num_rows="dynamic",
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Symbol": st.column_config.TextColumn(required=True, max_chars=16),
-                "Shares": st.column_config.NumberColumn(
-                    required=True, min_value=-1_000_000.0, format="%.8f"
-                ),
-                "Acquired": st.column_config.DateColumn(required=True, max_value=date.today()),
-                "Cost / share": st.column_config.NumberColumn(
-                    required=True, min_value=0.0, format="$%.5f"
-                ),
-            },
-        )
-        saved = st.form_submit_button("Save portfolio", use_container_width=True)
-    if saved:
+        renamed = st.form_submit_button("Rename portfolio")
+    if renamed:
         try:
             with session_scope() as session:
                 rename_portfolio(session, portfolio.id, name)
-                set_cash(session, portfolio.id, cash)
-                replace_holdings(session, portfolio.id, edited.to_dict("records"))
-            cached_closes.clear()
-            st.session_state.flash = "Portfolio saved automatically."
+            st.session_state.flash = "Portfolio renamed."
             st.rerun()
         except Exception as exc:
-            st.info(f"Portfolio was not saved: {exc}")
-    st.caption(
-        "Up to 25 unique symbols are allowed. Negative shares represent an internally tracked short position."
+            st.info(f"Portfolio was not renamed: {exc}")
+
+    deletion_phrase = st.text_input(
+        "Type DELETE to permanently remove this portfolio and its holdings",
+        key=f"delete_phrase_{portfolio.id}",
     )
+    if st.button("Delete portfolio", key=f"delete_{portfolio.id}", type="secondary"):
+        if deletion_phrase != "DELETE":
+            st.info("Type DELETE before permanently removing this portfolio.")
+        else:
+            try:
+                with session_scope() as session:
+                    delete_portfolio(session, portfolio.id)
+                if st.session_state.get("manage_portfolio_id") == portfolio.id:
+                    del st.session_state.manage_portfolio_id
+                cached_closes.clear()
+                st.session_state.flash = "Portfolio and its holdings were permanently deleted."
+                st.rerun()
+            except Exception as exc:
+                st.info(f"Portfolio was not deleted: {exc}")
+
+    st.markdown("### Enter transaction")
+    with st.form(f"manual_transaction_{portfolio.id}"):
+        first_row = st.columns(3)
+        transaction_date = first_row[0].date_input("Transaction date", value=date.today())
+        kind = first_row[1].selectbox(
+            "Transaction type",
+            MANUAL_KINDS,
+            format_func=lambda item: item.replace("_", " ").title(),
+        )
+        symbol = first_row[2].text_input("Symbol", max_chars=16)
+        description = st.text_input("Description", max_chars=500)
+        trade_row = st.columns(3)
+        manual_quantity = trade_row[0].number_input(
+            "Shares", min_value=0.0, value=0.0, format="%.8f"
+        )
+        manual_price = trade_row[1].number_input(
+            "Price per share", min_value=0.0, value=0.0, format="%.6f"
+        )
+        manual_fees = trade_row[2].number_input(
+            "Fees / commission", min_value=0.0, value=0.0, format="%.4f"
+        )
+        cash_delta = st.number_input(
+            "Cash change",
+            value=0.0,
+            step=1.0,
+            format="%.4f",
+            disabled=kind in {"buy", "sell"},
+        )
+        recorded = st.form_submit_button("Record transaction")
+    if recorded:
+        try:
+            parsed_quantity = shares(manual_quantity) if kind in {"buy", "sell"} else None
+            parsed_price = money(manual_price) if kind in {"buy", "sell"} else None
+            parsed_fees = money(manual_fees) if manual_fees else None
+            if kind == "buy":
+                assert parsed_quantity is not None and parsed_price is not None
+                parsed_cash_delta = -(parsed_quantity * parsed_price + (parsed_fees or 0))
+            elif kind == "sell":
+                assert parsed_quantity is not None and parsed_price is not None
+                parsed_cash_delta = parsed_quantity * parsed_price - (parsed_fees or 0)
+            else:
+                parsed_cash_delta = money(cash_delta)
+            draft = TransactionDraft(
+                transaction_date=transaction_date,
+                action=kind.replace("_", " ").title(),
+                kind=kind,
+                symbol=normalize_symbol(symbol) if symbol.strip() else None,
+                description=description.strip(),
+                quantity=parsed_quantity,
+                price=parsed_price,
+                fees=parsed_fees,
+                cash_delta=parsed_cash_delta,
+            )
+            with session_scope() as session:
+                record_transaction(session, portfolio.id, draft)
+            cached_closes.clear()
+            st.session_state.flash = "Transaction recorded."
+            st.rerun()
+        except Exception as exc:
+            st.info(f"Transaction was not recorded: {exc}")
+
+    st.markdown("### Import statement")
+    uploaded_statement = st.file_uploader(
+        "Brokerage CSV", type=["csv"], key=f"statement_{portfolio.id}"
+    )
+    if uploaded_statement is not None:
+        statement_content = uploaded_statement.getvalue()
+        parsed_statement = parse_statement_csv(statement_content)
+        if parsed_statement.errors:
+            st.dataframe(pd.DataFrame({"Import issues": parsed_statement.errors}), hide_index=True)
+        else:
+            preview = pd.DataFrame(
+                [
+                    {
+                        "Date": item.transaction_date,
+                        "Action": item.action,
+                        "Category": item.kind.replace("_", " ").title(),
+                        "Symbol": item.symbol,
+                        "Quantity": float(item.quantity) if item.quantity is not None else None,
+                        "Price": float(item.price) if item.price is not None else None,
+                        "Fees": float(item.fees) if item.fees is not None else None,
+                        "Cash change": float(item.cash_delta),
+                        "Description": item.description,
+                    }
+                    for item in parsed_statement.transactions
+                ]
+            )
+            st.dataframe(
+                preview,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Date": st.column_config.DateColumn(format="M/D/YY"),
+                    "Quantity": st.column_config.NumberColumn(format="%.8f"),
+                    "Price": st.column_config.NumberColumn(format="$%,.4f"),
+                    "Fees": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Cash change": st.column_config.NumberColumn(format="$%,.2f"),
+                },
+            )
+            import_columns = st.columns([1, 1])
+            if import_columns[0].button("Import new transactions", key=f"import_{portfolio.id}"):
+                try:
+                    with session_scope() as session:
+                        added, duplicates = import_statement(
+                            session, portfolio.id, parsed_statement
+                        )
+                    cached_closes.clear()
+                    st.session_state.flash = (
+                        f"Imported {added} transaction(s); skipped {duplicates} duplicate(s)."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.info(f"Statement was not imported: {exc}")
+            rebuild_phrase = import_columns[1].text_input(
+                "Type REBUILD to replace this portfolio", key=f"rebuild_phrase_{portfolio.id}"
+            )
+            if import_columns[1].button(
+                "Rebuild portfolio from statement", key=f"rebuild_{portfolio.id}"
+            ):
+                if rebuild_phrase != "REBUILD":
+                    st.info("Type REBUILD before replacing this portfolio.")
+                else:
+                    try:
+                        with session_scope() as session:
+                            rebuilt = rebuild_portfolio_from_csv(
+                                session, portfolio.id, statement_content
+                            )
+                        cached_closes.clear()
+                        st.session_state.flash = f"Portfolio rebuilt from {rebuilt} transaction(s)."
+                        st.rerun()
+                    except Exception as exc:
+                        st.info(f"Portfolio was not rebuilt: {exc}")
+
     with session_scope() as session:
-        entries = list_ledger(session)
-    if entries:
-        names = {item.id: item.name for item in portfolios}
-        st.markdown("### Internal cash and trade ledger")
+        transactions = list_transactions(session, portfolio.id)
+    if transactions:
+        st.markdown("### Posted transactions")
         st.dataframe(
             pd.DataFrame(
                 [
                     {
-                        "Portfolio": names.get(entry.portfolio_id, str(entry.portfolio_id)),
-                        "Type": entry.kind,
+                        "Date": entry.transaction_date,
+                        "Action": entry.action,
+                        "Type": entry.kind.replace("_", " ").title(),
                         "Symbol": entry.symbol,
                         "Quantity": float(entry.quantity) if entry.quantity is not None else None,
                         "Price": float(entry.price) if entry.price is not None else None,
+                        "Fees": float(entry.fees) if entry.fees is not None else None,
                         "Cash change": float(entry.cash_delta),
-                        "Note": entry.note,
-                        "Recorded": entry.created_at,
+                        "Description": entry.description,
+                        "Source": entry.source,
                     }
-                    for entry in entries
+                    for entry in transactions
                 ]
             ),
             hide_index=True,
             use_container_width=True,
             column_config={
+                "Date": st.column_config.DateColumn(format="M/D/YY"),
                 "Quantity": st.column_config.NumberColumn(format="%.8f"),
-                "Price": st.column_config.NumberColumn(format="$%.4f"),
-                "Cash change": st.column_config.NumberColumn(format="$%.2f"),
+                "Price": st.column_config.NumberColumn(format="$%,.4f"),
+                "Fees": st.column_config.NumberColumn(format="$%,.2f"),
+                "Cash change": st.column_config.NumberColumn(format="$%,.2f"),
             },
         )
 
@@ -494,9 +647,9 @@ def render_trade_admin(portfolios: list[Portfolio]) -> None:
             hide_index=True,
             use_container_width=True,
             column_config={
-                "Requested": st.column_config.NumberColumn(format="%.8f"),
-                "Filled": st.column_config.NumberColumn(format="%.8f"),
-                "Avg fill": st.column_config.NumberColumn(format="$%.4f"),
+                "Requested": st.column_config.NumberColumn(format="%.1f"),
+                "Filled": st.column_config.NumberColumn(format="%.1f"),
+                "Avg fill": st.column_config.NumberColumn(format="$%,.2f"),
             },
         )
     else:
@@ -542,7 +695,8 @@ def main() -> None:
     init_database()
     with session_scope() as session:
         seed_database(session)
-    portfolios = load_portfolios()
+    all_portfolios = load_portfolios()
+    portfolios = [portfolio for portfolio in all_portfolios if portfolio.holdings]
     owner = authenticate_owner()
     render_header()
     if flash := st.session_state.pop("flash", None):
@@ -559,7 +713,7 @@ def main() -> None:
         render_compare(portfolios)
     if owner:
         with tabs[2]:
-            render_portfolio_admin(portfolios)
+            render_portfolio_admin(all_portfolios)
         with tabs[3]:
             render_trade_admin(portfolios)
         with tabs[4]:
