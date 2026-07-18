@@ -326,7 +326,9 @@ def render_portfolio_admin(portfolios: list[Portfolio]) -> None:
     selected_id = st.session_state.get("manage_portfolio_id")
     selectable = [item for item in portfolios if item.holdings or item.id == selected_id]
     if not selectable:
-        st.caption("No portfolios with holdings yet. Add a portfolio, then record or import its first holding.")
+        st.caption(
+            "No portfolios with holdings yet. Add a portfolio, then record or import its first holding."
+        )
         return
 
     st.markdown("### Portfolio transactions")
