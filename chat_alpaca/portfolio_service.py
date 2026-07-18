@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
 from pathlib import Path
@@ -13,15 +14,26 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from chat_alpaca.models import (
+    DataMigration,
     HoldingLot,
     LedgerEntry,
     OrderAllocation,
     Portfolio,
     PortfolioTransaction,
+    TransactionOverride,
 )
 
 MAX_PORTFOLIOS = 20
 DEFAULT_STATEMENT_PATH = Path(__file__).resolve().parent.parent / "KC and Papa.csv"
+PHASE_1_EFFECTIVE_DATE = date(2026, 5, 15)
+PHASE_1_MIGRATION_KEY = "2026-07-17-phase-1-opening-positions-and-cash"
+PHASE_1_DATE_CORRECTION_KEY = "2026-07-18-phase-1-effective-date-correction"
+
+CASH_BALANCE_TARGETS = {
+    "KCs Traditional IRA": Decimal("59780.15"),
+    "KCs Roth IRA": Decimal("10331.93"),
+    "KC and Papa": Decimal("77.77"),
+}
 
 SEED_PORTFOLIOS = (
     (
@@ -65,6 +77,7 @@ MANUAL_KINDS = (
     "tax",
     "cash_adjustment",
 )
+POSITION_KINDS = {*TRADE_KINDS, "opening_position"}
 
 
 @dataclass(frozen=True)
@@ -85,6 +98,26 @@ class TransactionDraft:
 class StatementParseResult:
     transactions: list[TransactionDraft]
     errors: list[str]
+
+
+@dataclass(frozen=True)
+class DividendTotals:
+    year_to_date: Decimal
+    trailing_365_days: Decimal
+    custom_range: Decimal
+
+
+def format_short_date(value: date) -> str:
+    """Format a date with the compact transaction convention used by the UI."""
+    return f"{value.month}/{value.day}/{value.strftime('%y')}"
+
+
+def parse_short_date(value: str) -> date:
+    """Parse an M/D/YY transaction date and return a useful validation error."""
+    try:
+        return datetime.strptime(value.strip(), "%m/%d/%y").date()
+    except ValueError as exc:
+        raise ValueError("Enter the date as M/D/YY, for example 7/17/26.") from exc
 
 
 def money(value: object) -> Decimal:
@@ -236,48 +269,147 @@ def parse_statement_csv(content: bytes | str) -> StatementParseResult:
 
 
 def _validate_transaction(draft: TransactionDraft) -> None:
-    if draft.kind not in {*MANUAL_KINDS, "cash_adjustment"}:
+    if draft.kind not in {*MANUAL_KINDS, "opening_position"}:
         raise ValueError(f"Unsupported transaction category: {draft.kind}")
-    if draft.kind in TRADE_KINDS:
+    if draft.kind in POSITION_KINDS:
         if draft.symbol is None:
-            raise ValueError("Trades require a symbol.")
+            raise ValueError("Position transactions require a symbol.")
         if draft.quantity is None or draft.quantity <= 0:
-            raise ValueError("Trades require a positive quantity.")
+            raise ValueError("Position transactions require a positive quantity.")
         if draft.price is None or draft.price <= 0:
-            raise ValueError("Trades require a positive price.")
+            raise ValueError("Position transactions require a positive price.")
         if draft.kind == "buy" and draft.cash_delta >= 0:
             raise ValueError("Buy transactions must reduce cash.")
         if draft.kind == "sell" and draft.cash_delta <= 0:
             raise ValueError("Sell transactions must increase cash.")
+        if draft.kind == "opening_position" and draft.cash_delta != 0:
+            raise ValueError("Opening positions must be cash-neutral.")
 
 
 def seed_database(session: Session) -> None:
     count = session.scalar(select(func.count()).select_from(Portfolio)) or 0
-    if count:
-        return
-    for name, initial_holdings in SEED_PORTFOLIOS:
-        portfolio = Portfolio(name=name, cash=Decimal("0"))
-        session.add(portfolio)
+    if not count:
+        for name, _initial_holdings in SEED_PORTFOLIOS:
+            session.add(Portfolio(name=name, cash=Decimal("0")))
         session.flush()
-        for symbol, quantity, acquired_on, cost_basis in initial_holdings:
-            session.add(
-                HoldingLot(
-                    portfolio_id=portfolio.id,
-                    symbol=symbol,
-                    shares=Decimal(quantity),
-                    acquired_on=acquired_on,
-                    cost_basis=Decimal(cost_basis),
+        statement_portfolio = session.scalar(
+            select(Portfolio).where(Portfolio.name == "KC and Papa")
+        )
+        if statement_portfolio is not None and DEFAULT_STATEMENT_PATH.exists():
+            rebuild_portfolio_from_csv(
+                session,
+                statement_portfolio.id,
+                DEFAULT_STATEMENT_PATH.read_bytes(),
+                source="seed_csv",
+            )
+    _apply_phase_1_data_migration(session)
+    _apply_phase_1_date_correction(session)
+
+
+def _migration_fingerprint(label: str) -> str:
+    return hashlib.sha256(f"{PHASE_1_MIGRATION_KEY}:{label}".encode()).hexdigest()
+
+
+def _apply_phase_1_data_migration(session: Session) -> None:
+    """Convert legacy seed state once, including already-populated databases."""
+    if session.get(DataMigration, PHASE_1_MIGRATION_KEY) is not None:
+        return
+
+    portfolios = {
+        portfolio.name: portfolio
+        for portfolio in session.scalars(
+            select(Portfolio).where(Portfolio.name.in_(CASH_BALANCE_TARGETS))
+        )
+    }
+    seed_positions = {name: positions for name, positions in SEED_PORTFOLIOS}
+    for portfolio_name in ("KCs Traditional IRA", "KCs Roth IRA"):
+        portfolio = portfolios.get(portfolio_name)
+        if portfolio is None:
+            continue
+        for symbol, quantity, acquired_on, cost_basis in seed_positions[portfolio_name]:
+            transaction = PortfolioTransaction(
+                portfolio_id=portfolio.id,
+                transaction_date=acquired_on,
+                kind="opening_position",
+                action="Opening Position",
+                symbol=symbol,
+                description="Phase 1 conversion of legacy seeded holding",
+                quantity=Decimal(quantity),
+                price=Decimal(cost_basis),
+                fees=None,
+                cash_delta=Decimal("0"),
+                source="phase_1_migration",
+                fingerprint=_migration_fingerprint(
+                    f"opening:{portfolio_name}:{symbol}:{quantity}:{acquired_on.isoformat()}"
+                ),
+            )
+            session.add(transaction)
+
+    session.flush()
+    for portfolio_name, target in CASH_BALANCE_TARGETS.items():
+        portfolio = portfolios.get(portfolio_name)
+        if portfolio is None:
+            continue
+        transaction_cash = session.scalar(
+            select(func.coalesce(func.sum(PortfolioTransaction.cash_delta), 0)).where(
+                PortfolioTransaction.portfolio_id == portfolio.id
+            )
+        )
+        delta = money(target - Decimal(transaction_cash or 0))
+        session.add(
+            PortfolioTransaction(
+                portfolio_id=portfolio.id,
+                transaction_date=PHASE_1_EFFECTIVE_DATE,
+                kind="cash_adjustment",
+                action="Cash Adjustment",
+                symbol=None,
+                description=f"Phase 1 cash balance set to ${target:,.2f}",
+                quantity=None,
+                price=None,
+                fees=None,
+                cash_delta=delta,
+                source="phase_1_migration",
+                fingerprint=_migration_fingerprint(f"cash:{portfolio_name}"),
+            )
+        )
+
+    session.add(DataMigration(key=PHASE_1_MIGRATION_KEY))
+    session.flush()
+    for portfolio in portfolios.values():
+        replay_portfolio(session, portfolio.id)
+
+
+def _apply_phase_1_date_correction(session: Session) -> None:
+    """Move already-applied Phase 1 cash adjustments to their confirmed effective date."""
+    if session.get(DataMigration, PHASE_1_DATE_CORRECTION_KEY) is not None:
+        return
+
+    portfolio_ids = list(
+        session.scalars(select(Portfolio.id).where(Portfolio.name.in_(CASH_BALANCE_TARGETS)))
+    )
+    if portfolio_ids:
+        adjustments = list(
+            session.scalars(
+                select(PortfolioTransaction).where(
+                    PortfolioTransaction.portfolio_id.in_(portfolio_ids),
+                    PortfolioTransaction.kind == "cash_adjustment",
+                    PortfolioTransaction.source == "phase_1_migration",
                 )
             )
-    statement_portfolio = session.scalar(select(Portfolio).where(Portfolio.name == "KC and Papa"))
-    if statement_portfolio is not None and DEFAULT_STATEMENT_PATH.exists():
-        rebuild_portfolio_from_csv(
-            session, statement_portfolio.id, DEFAULT_STATEMENT_PATH.read_bytes(), source="seed_csv"
         )
+        for adjustment in adjustments:
+            adjustment.transaction_date = PHASE_1_EFFECTIVE_DATE
+
+    session.add(DataMigration(key=PHASE_1_DATE_CORRECTION_KEY))
+    session.flush()
 
 
 def list_portfolios(session: Session) -> list[Portfolio]:
-    statement = select(Portfolio).options(selectinload(Portfolio.holdings)).order_by(Portfolio.id)
+    statement = (
+        select(Portfolio)
+        .options(selectinload(Portfolio.holdings), selectinload(Portfolio.transactions))
+        .order_by(Portfolio.id)
+    )
     return list(session.scalars(statement).unique())
 
 
@@ -305,15 +437,64 @@ def list_ledger(
 
 
 def list_transactions(
-    session: Session, portfolio_id: int, limit: int = 300
+    session: Session, portfolio_id: int, limit: int | None = None
 ) -> list[PortfolioTransaction]:
     statement = (
         select(PortfolioTransaction)
         .where(PortfolioTransaction.portfolio_id == portfolio_id)
         .order_by(PortfolioTransaction.transaction_date.desc(), PortfolioTransaction.id.desc())
-        .limit(limit)
+    )
+    if limit is not None:
+        statement = statement.limit(limit)
+    return list(session.scalars(statement))
+
+
+def list_transactions_for_portfolios(
+    session: Session, portfolio_ids: Iterable[int]
+) -> list[PortfolioTransaction]:
+    selected_ids = list(dict.fromkeys(portfolio_ids))
+    if not selected_ids:
+        return []
+    statement = (
+        select(PortfolioTransaction)
+        .where(PortfolioTransaction.portfolio_id.in_(selected_ids))
+        .order_by(PortfolioTransaction.transaction_date.desc(), PortfolioTransaction.id.desc())
     )
     return list(session.scalars(statement))
+
+
+def dividend_totals(
+    session: Session,
+    portfolio_ids: Iterable[int],
+    custom_start: date,
+    custom_end: date,
+    as_of: date | None = None,
+) -> DividendTotals:
+    """Return inclusive dividend cash totals for the standard presentation periods."""
+    selected_ids = list(dict.fromkeys(portfolio_ids))
+    if custom_start > custom_end:
+        raise ValueError("The custom dividend start date must be on or before the end date.")
+    if not selected_ids:
+        zero = Decimal("0.0000")
+        return DividendTotals(zero, zero, zero)
+
+    effective_date = as_of or date.today()
+
+    def total(start: date, end: date) -> Decimal:
+        value = session.scalar(
+            select(func.coalesce(func.sum(PortfolioTransaction.cash_delta), 0)).where(
+                PortfolioTransaction.portfolio_id.in_(selected_ids),
+                PortfolioTransaction.kind == "dividend",
+                PortfolioTransaction.transaction_date.between(start, end),
+            )
+        )
+        return money(value or 0)
+
+    return DividendTotals(
+        year_to_date=total(date(effective_date.year, 1, 1), effective_date),
+        trailing_365_days=total(effective_date - timedelta(days=364), effective_date),
+        custom_range=total(custom_start, custom_end),
+    )
 
 
 def get_portfolio(session: Session, portfolio_id: int) -> Portfolio:
@@ -339,30 +520,19 @@ def rename_portfolio(session: Session, portfolio_id: int, name: str) -> None:
 def delete_portfolio(session: Session, portfolio_id: int) -> None:
     """Permanently remove a portfolio and every record assigned to it."""
     portfolio = get_portfolio(session, portfolio_id)
-    for model in (LedgerEntry, OrderAllocation):
+    for model in (LedgerEntry, OrderAllocation, TransactionOverride):
         session.execute(delete(model).where(model.portfolio_id == portfolio.id))
     session.delete(portfolio)
 
 
 def _reduce_fifo_or_short(
-    session: Session,
-    portfolio_id: int,
+    portfolio: Portfolio,
     symbol: str,
     quantity: Decimal,
     sale_price: Decimal,
     transaction_date: date,
 ) -> None:
-    lots = list(
-        session.scalars(
-            select(HoldingLot)
-            .where(
-                HoldingLot.portfolio_id == portfolio_id,
-                HoldingLot.symbol == symbol,
-                HoldingLot.shares > 0,
-            )
-            .order_by(HoldingLot.acquired_on, HoldingLot.id)
-        )
-    )
+    lots = [lot for lot in portfolio.holdings if lot.symbol == symbol and Decimal(lot.shares) > 0]
     remaining = quantity
     for lot in lots:
         if remaining <= 0:
@@ -371,9 +541,8 @@ def _reduce_fifo_or_short(
         lot.shares = Decimal(lot.shares) - consumed
         remaining -= consumed
         if lot.shares == 0:
-            lot.portfolio.holdings.remove(lot)
+            portfolio.holdings.remove(lot)
     if remaining > 0:
-        portfolio = get_portfolio(session, portfolio_id)
         portfolio.holdings.append(
             HoldingLot(
                 symbol=symbol,
@@ -384,13 +553,101 @@ def _reduce_fifo_or_short(
         )
 
 
+def _draft_from_transaction(transaction: PortfolioTransaction) -> TransactionDraft:
+    return TransactionDraft(
+        transaction_date=transaction.transaction_date,
+        action=transaction.action,
+        kind=transaction.kind,
+        symbol=transaction.symbol,
+        description=transaction.description,
+        quantity=(Decimal(transaction.quantity) if transaction.quantity is not None else None),
+        price=Decimal(transaction.price) if transaction.price is not None else None,
+        fees=Decimal(transaction.fees) if transaction.fees is not None else None,
+        cash_delta=Decimal(transaction.cash_delta),
+        fingerprint=transaction.fingerprint,
+    )
+
+
+def replay_portfolio(session: Session, portfolio_id: int) -> None:
+    """Rebuild cash, FIFO lots, and ledger entries from canonical transactions."""
+    portfolio = get_portfolio(session, portfolio_id)
+    portfolio.holdings.clear()
+    session.execute(delete(LedgerEntry).where(LedgerEntry.portfolio_id == portfolio.id))
+    portfolio.cash = Decimal("0")
+    session.flush()
+
+    transactions = list(
+        session.scalars(
+            select(PortfolioTransaction)
+            .where(PortfolioTransaction.portfolio_id == portfolio.id)
+            .order_by(PortfolioTransaction.transaction_date, PortfolioTransaction.id)
+        )
+    )
+    for transaction in transactions:
+        draft = _draft_from_transaction(transaction)
+        _validate_transaction(draft)
+        portfolio.cash = Decimal(portfolio.cash) + draft.cash_delta
+        if draft.kind in {"buy", "opening_position"}:
+            assert draft.symbol is not None and draft.quantity is not None
+            assert draft.price is not None
+            cost_basis = (
+                draft.price
+                if draft.kind == "opening_position"
+                else abs(draft.cash_delta / draft.quantity)
+            )
+            portfolio.holdings.append(
+                HoldingLot(
+                    symbol=draft.symbol,
+                    shares=draft.quantity,
+                    acquired_on=draft.transaction_date,
+                    cost_basis=cost_basis,
+                )
+            )
+        elif draft.kind == "sell":
+            assert draft.symbol is not None and draft.quantity is not None
+            assert draft.price is not None
+            _reduce_fifo_or_short(
+                portfolio,
+                draft.symbol,
+                draft.quantity,
+                draft.price,
+                draft.transaction_date,
+            )
+        session.add(
+            LedgerEntry(
+                portfolio_id=portfolio.id,
+                kind=draft.kind,
+                symbol=draft.symbol,
+                quantity=draft.quantity,
+                price=draft.price,
+                cash_delta=draft.cash_delta,
+                note=draft.description[:240] or draft.action[:240],
+                created_at=transaction.created_at,
+            )
+        )
+    session.flush()
+
+
 def record_transaction(
     session: Session,
     portfolio_id: int,
     draft: TransactionDraft,
     source: str = "manual",
 ) -> bool:
-    """Persist and apply an immutable transaction. Returns False for an import duplicate."""
+    """Persist a transaction and replay its portfolio; return False for a duplicate."""
+    added = _insert_transaction(session, portfolio_id, draft, source)
+    if added:
+        replay_portfolio(session, portfolio_id)
+    return added
+
+
+def _insert_transaction(
+    session: Session,
+    portfolio_id: int,
+    draft: TransactionDraft,
+    source: str,
+) -> bool:
+    """Persist a canonical event without rebuilding its derived state."""
     _validate_transaction(draft)
     portfolio = get_portfolio(session, portfolio_id)
     if draft.fingerprint:
@@ -418,39 +675,114 @@ def record_transaction(
         fingerprint=draft.fingerprint,
     )
     session.add(transaction)
-    portfolio.cash = Decimal(portfolio.cash) + draft.cash_delta
-    if draft.kind == "buy":
-        assert draft.symbol is not None and draft.quantity is not None
-        portfolio.holdings.append(
-            HoldingLot(
-                symbol=draft.symbol,
-                shares=draft.quantity,
-                acquired_on=draft.transaction_date,
-                cost_basis=abs(draft.cash_delta / draft.quantity),
-            )
-        )
-    elif draft.kind == "sell":
-        assert draft.symbol is not None and draft.quantity is not None and draft.price is not None
-        _reduce_fifo_or_short(
-            session,
-            portfolio.id,
-            draft.symbol,
-            draft.quantity,
-            draft.price,
-            draft.transaction_date,
-        )
-    session.add(
-        LedgerEntry(
-            portfolio_id=portfolio.id,
-            kind=draft.kind,
-            symbol=draft.symbol,
-            quantity=draft.quantity,
-            price=draft.price,
-            cash_delta=draft.cash_delta,
-            note=draft.description[:240] or draft.action[:240],
+    session.flush()
+    return True
+
+
+def _confirmed_transaction(
+    session: Session,
+    portfolio_id: int,
+    transaction_id: int,
+    operation: str,
+    confirmation: str | None,
+) -> PortfolioTransaction:
+    expected = f"{operation} {transaction_id}"
+    if confirmation != expected:
+        raise ValueError(f'Type "{expected}" to confirm this transaction {operation.lower()}.')
+    transaction = session.scalar(
+        select(PortfolioTransaction).where(
+            PortfolioTransaction.id == transaction_id,
+            PortfolioTransaction.portfolio_id == portfolio_id,
         )
     )
-    return True
+    if transaction is None:
+        raise ValueError("Transaction not found in this portfolio.")
+    return transaction
+
+
+def _transaction_snapshot(transaction: PortfolioTransaction) -> str:
+    """Serialize the financial fields needed to audit a manual override."""
+    values = {
+        "id": transaction.id,
+        "portfolio_id": transaction.portfolio_id,
+        "transaction_date": transaction.transaction_date.isoformat(),
+        "kind": transaction.kind,
+        "action": transaction.action,
+        "symbol": transaction.symbol,
+        "description": transaction.description,
+        "quantity": str(transaction.quantity) if transaction.quantity is not None else None,
+        "price": str(transaction.price) if transaction.price is not None else None,
+        "fees": str(transaction.fees) if transaction.fees is not None else None,
+        "cash_delta": str(transaction.cash_delta),
+        "source": transaction.source,
+        "fingerprint": transaction.fingerprint,
+        "created_at": transaction.created_at.isoformat(),
+    }
+    return json.dumps(values, sort_keys=True)
+
+
+def update_transaction(
+    session: Session,
+    portfolio_id: int,
+    transaction_id: int,
+    draft: TransactionDraft,
+    confirmation: str | None = None,
+) -> PortfolioTransaction:
+    """Update one canonical event after an explicit, transaction-specific confirmation."""
+    _validate_transaction(draft)
+    transaction = _confirmed_transaction(
+        session, portfolio_id, transaction_id, "UPDATE", confirmation
+    )
+    original_source = transaction.source
+    before_state = _transaction_snapshot(transaction)
+    transaction.transaction_date = draft.transaction_date
+    transaction.kind = draft.kind
+    transaction.action = draft.action[:80]
+    transaction.symbol = draft.symbol
+    transaction.description = draft.description
+    transaction.quantity = draft.quantity
+    transaction.price = draft.price
+    transaction.fees = draft.fees
+    transaction.cash_delta = draft.cash_delta
+    transaction.source = "manual_override"
+    session.add(
+        TransactionOverride(
+            portfolio_id=portfolio_id,
+            transaction_id=transaction_id,
+            operation="update",
+            original_source=original_source,
+            before_state=before_state,
+            after_state=_transaction_snapshot(transaction),
+        )
+    )
+    session.flush()
+    replay_portfolio(session, portfolio_id)
+    return transaction
+
+
+def delete_transaction(
+    session: Session,
+    portfolio_id: int,
+    transaction_id: int,
+    confirmation: str | None = None,
+) -> None:
+    """Delete one canonical event after an explicit, transaction-specific confirmation."""
+    transaction = _confirmed_transaction(
+        session, portfolio_id, transaction_id, "DELETE", confirmation
+    )
+    session.add(
+        TransactionOverride(
+            portfolio_id=portfolio_id,
+            transaction_id=transaction_id,
+            operation="delete",
+            original_source=transaction.source,
+            before_state=_transaction_snapshot(transaction),
+            after_state=None,
+        )
+    )
+    session.delete(transaction)
+    session.flush()
+    replay_portfolio(session, portfolio_id)
 
 
 def import_statement(
@@ -461,10 +793,12 @@ def import_statement(
     added = 0
     duplicates = 0
     for draft in sorted(parsed.transactions, key=lambda item: item.transaction_date):
-        if record_transaction(session, portfolio_id, draft, source=source):
+        if _insert_transaction(session, portfolio_id, draft, source=source):
             added += 1
         else:
             duplicates += 1
+    if added:
+        replay_portfolio(session, portfolio_id)
     return added, duplicates
 
 
@@ -484,7 +818,8 @@ def rebuild_portfolio_from_csv(
     portfolio.holdings.clear()
     portfolio.cash = Decimal("0")
     for draft in sorted(parsed.transactions, key=lambda item: item.transaction_date):
-        record_transaction(session, portfolio.id, draft, source=source)
+        _insert_transaction(session, portfolio.id, draft, source=source)
+    replay_portfolio(session, portfolio.id)
     return len(parsed.transactions)
 
 

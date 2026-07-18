@@ -11,7 +11,12 @@ A compact personal portfolio dashboard with public benchmark views, password-pro
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
 - Password-protected portfolio editor and assigned Alpaca order ticket
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
-- Market and limit orders, cancellation, fill synchronization, and an immutable internal transaction ledger
+- Combined sortable transaction management with portfolio/type/date filters, totals, and guarded edits/deletes
+- Portfolio-scoped YTD, trailing-365-day, and custom-range dividend totals
+- Transaction-aware all-time, daily, and custom-range portfolio gain/loss excluding contributions
+- Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, and lot drilldown
+- Selected-portfolio total value in both Overview and Compare
+- Market and limit orders, cancellation, fill synchronization, and an auditable internal transaction ledger
 - Automatic persistence through SQLite locally or hosted PostgreSQL in production
 - Architecture hooks for strategies, short positions, options, and separately gated live trading
 - Dark black/blue/purple/white theme with no green or red status colors
@@ -52,11 +57,42 @@ TRADING_MODE=paper
 ALLOW_LIVE_TRADING=false
 ```
 
-The ignored `data/chat_alpaca.db` file is created automatically. The seed data is inserted only when the portfolio table is empty.
+The ignored `data/chat_alpaca.db` file is created automatically. Seed data is inserted when the
+portfolio table is empty, while versioned data migrations also run against existing databases
+exactly once.
 
 ## Portfolio transactions
 
-Owner controls support manual entries for buys, sells, dividends, interest, transfers, awards, fees, taxes, and cash adjustments. Trades update open lots with FIFO sale handling; all other entries affect cash only. Posted entries are immutable in the app, so corrections should be entered as a new correcting transaction.
+Owner controls support manual entries for buys, sells, dividends, interest, transfers, awards, fees,
+taxes, and cash adjustments. Transactions are the source of truth: cash, FIFO lots, and ledger rows
+can be rebuilt deterministically after a guarded service-level update or deletion. The seeded
+Traditional and Roth holdings are recorded as cash-neutral opening-position transactions, and the
+three initial cash balances are recorded as Phase 1 cash adjustments effective `5/15/26`.
+
+Manage can show multiple portfolios in one sortable transaction table. Its portfolio, transaction
+type, and date-range filters also drive the displayed type totals and grand total. Select a row to
+edit or delete that transaction in its own portfolio; the separate **Target portfolio** selector is
+used only for new entries and CSV imports. Cash changes are totaled by transaction type, while share
+quantities are totaled separately by symbol and type. Transaction entry and posted dates use
+`M/D/YY`.
+
+Every transaction edit or deletion requires a transaction-specific typed confirmation. Imported,
+seeded, and Alpaca-generated transactions show an additional divergence warning. Updates are marked
+with the `manual_override` source, and immutable before/after audit snapshots retain the original
+source and values; deletion audits retain the complete removed transaction snapshot.
+
+## Portfolio valuation
+
+Historical portfolio values are reconstructed from dated transactions and adjusted daily market
+closes rather than projecting today's cash and holdings backward. Portfolio gain/loss excludes
+external transfers, cash adjustments, and the cost basis of contributed opening positions; market
+movement, dividends, interest, and awards remain part of performance. Daily gain/loss compares the
+two latest market closes, while custom gain/loss uses the close before the selected start date
+through the selected end date.
+
+Exact Holdings combines the same symbol across every selected portfolio. It shows total shares,
+weighted-average cost, total basis, market value, and all-time/daily/custom gain or loss. The
+expandable portfolio/lot table preserves each acquisition date and original cost basis.
 
 Brokerage CSV imports preview every row before posting. The included `KC and Papa.csv` format supports its current buy, sell, dividend, interest, transfer, award, fee, and foreign-tax rows. Re-importing a statement skips transactions already recorded, while the **Rebuild portfolio from statement** action deliberately replaces that portfolio's lots, cash, transaction history, legacy ledger rows, and saved Alpaca allocations after the owner types `REBUILD`.
 

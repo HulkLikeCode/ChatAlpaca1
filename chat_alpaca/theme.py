@@ -16,9 +16,16 @@ THEME_CSS = """
     #05060a;
   color: var(--ink);
 }
-.block-container {max-width: 1380px; padding-top: 1.5rem; padding-bottom: 3rem;}
+.block-container {max-width: 1380px; padding-top: .65rem; padding-bottom: 3rem;}
 h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
-h1 {font-size: clamp(2rem, 5vw, 3.75rem) !important; margin-bottom: .15rem !important;}
+h1 {
+  font-size: clamp(1.55rem, 3vw, 2.2rem) !important;
+  line-height: 1.05 !important;
+  margin-top: -.4rem !important;
+  margin-bottom: -.3rem !important;
+}
+[data-testid="stMarkdownContainer"]:has(.mode-chip) {height: 1.45rem;}
+[data-testid="stCaptionContainer"] {margin-top: -.2rem; margin-bottom: -.35rem;}
 [data-testid="stCaptionContainer"], .stCaption {color: var(--muted) !important;}
 [data-testid="stMetric"] {
   background: linear-gradient(145deg, rgba(15,22,42,.96), rgba(8,11,22,.96));
@@ -39,7 +46,7 @@ h1 {font-size: clamp(2rem, 5vw, 3.75rem) !important; margin-bottom: .15rem !impo
 .portfolio-card .eyebrow {color: var(--violet); font-size: .72rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;}
 .portfolio-card .value {font-size: 1.6rem; font-weight: 760; margin-top: .35rem;}
 .portfolio-card .detail {color: var(--muted); font-size: .82rem; margin-top: .25rem;}
-.mode-chip {display:inline-block; padding:.28rem .6rem; border:1px solid rgba(103,215,255,.4); border-radius:999px; color:var(--cyan); font-size:.72rem; font-weight:800; letter-spacing:.1em;}
+.mode-chip {display:inline-block; padding:.18rem .48rem; border:1px solid rgba(103,215,255,.4); border-radius:999px; color:var(--cyan); font-size:.64rem; font-weight:800; letter-spacing:.1em;}
 .stButton > button, .stDownloadButton > button {
   border-radius: 10px;
   border: 1px solid rgba(105,126,255,.45);

@@ -9,26 +9,33 @@ import streamlit as st
 
 from chat_alpaca.analytics import (
     combined_series,
+    consolidated_holdings,
     earliest_acquisition,
     latest_values,
     normalized_growth,
+    portfolio_gain_loss,
     portfolio_series,
     summary_metrics,
+    total_portfolio_value,
 )
 from chat_alpaca.config import get_settings
 from chat_alpaca.db import init_database, session_scope
 from chat_alpaca.market_data import get_daily_closes
-from chat_alpaca.models import OrderAllocation, Portfolio
+from chat_alpaca.models import OrderAllocation, Portfolio, PortfolioTransaction
 from chat_alpaca.portfolio_service import (
     MANUAL_KINDS,
     TransactionDraft,
     create_portfolio,
     delete_portfolio,
+    delete_transaction,
+    dividend_totals,
+    format_short_date,
     import_statement,
     list_portfolios,
-    list_transactions,
+    list_transactions_for_portfolios,
     money,
     normalize_symbol,
+    parse_short_date,
     parse_statement_csv,
     portfolio_cost,
     rebuild_portfolio_from_csv,
@@ -36,6 +43,7 @@ from chat_alpaca.portfolio_service import (
     rename_portfolio,
     seed_database,
     shares,
+    update_transaction,
 )
 from chat_alpaca.theme import PLOT_COLORS, THEME_CSS
 from chat_alpaca.trading import (
@@ -47,6 +55,12 @@ from chat_alpaca.trading import (
 )
 
 BENCHMARKS = ("SPY", "QQQ", "DIA", "IWM")
+EDITABLE_KINDS = (*MANUAL_KINDS, "opening_position")
+CSV_TEMPLATE = """Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount
+7/15/2026,Buy,AAPL,Apple Inc,10,$210.00,$0.00,"($2,100.00)"
+7/16/2026,Cash Dividend,AAPL,Apple dividend,,,,15.50
+7/17/2026,MoneyLink Transfer,,Cash contribution,,,,1000.00
+"""
 
 st.set_page_config(
     page_title="ChatAlpaca · Portfolio Command Center",
@@ -71,6 +85,48 @@ def quantity(value: object) -> str:
     return f"{numeric:,.8f}".rstrip("0").rstrip(".")
 
 
+def kind_label(value: str) -> str:
+    return value.replace("_", " ").title()
+
+
+def transaction_draft(
+    transaction_date_text: str,
+    kind: str,
+    symbol: str,
+    description: str,
+    raw_quantity: float,
+    raw_price: float,
+    raw_fees: float,
+    raw_cash_delta: float,
+    action: str | None = None,
+) -> TransactionDraft:
+    position_kind = kind in {"buy", "sell", "opening_position"}
+    parsed_quantity = shares(raw_quantity) if position_kind else None
+    parsed_price = money(raw_price) if position_kind else None
+    parsed_fees = money(raw_fees) if raw_fees else None
+    if kind == "buy":
+        assert parsed_quantity is not None and parsed_price is not None
+        parsed_cash_delta = -(parsed_quantity * parsed_price + (parsed_fees or 0))
+    elif kind == "sell":
+        assert parsed_quantity is not None and parsed_price is not None
+        parsed_cash_delta = parsed_quantity * parsed_price - (parsed_fees or 0)
+    elif kind == "opening_position":
+        parsed_cash_delta = money(0)
+    else:
+        parsed_cash_delta = money(raw_cash_delta)
+    return TransactionDraft(
+        transaction_date=parse_short_date(transaction_date_text),
+        action=(action or kind_label(kind)).strip(),
+        kind=kind,
+        symbol=normalize_symbol(symbol) if symbol.strip() else None,
+        description=description.strip(),
+        quantity=parsed_quantity,
+        price=parsed_price,
+        fees=parsed_fees,
+        cash_delta=parsed_cash_delta,
+    )
+
+
 def load_portfolios() -> list[Portfolio]:
     with session_scope() as session:
         return list_portfolios(session)
@@ -79,7 +135,16 @@ def load_portfolios() -> list[Portfolio]:
 def get_prices(
     portfolios: list[Portfolio], start: date, extra: tuple[str, ...] = ()
 ) -> tuple[pd.DataFrame, str | None]:
-    symbols = {lot.symbol for portfolio in portfolios for lot in portfolio.holdings} | set(extra)
+    symbols = (
+        {lot.symbol for portfolio in portfolios for lot in portfolio.holdings}
+        | {
+            transaction.symbol
+            for portfolio in portfolios
+            for transaction in portfolio.transactions
+            if transaction.symbol
+        }
+        | set(extra)
+    )
     if not symbols:
         return pd.DataFrame(), None
     try:
@@ -118,7 +183,7 @@ def render_header() -> None:
     mode = "PAPER MODE" if settings.paper else "LIVE MODE"
     st.markdown(f'<span class="mode-chip">{mode}</span>', unsafe_allow_html=True)
     st.title("KC's Retirement Dough, Let's GO!!!")
-    st.caption("portfolios · benchmarks · Alpaca paper orders")
+    st.caption("portfolios · benchmarks · Alpaca orders")
 
 
 def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
@@ -146,61 +211,220 @@ def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) ->
                 )
 
 
-def holdings_frame(portfolios: list[Portfolio], closes: pd.DataFrame) -> pd.DataFrame:
-    rows: list[dict[str, object]] = []
-    for portfolio in portfolios:
-        for lot in sorted(portfolio.holdings, key=lambda item: (item.symbol, item.acquired_on)):
-            latest = None
-            if lot.symbol in closes and not closes[lot.symbol].dropna().empty:
-                latest = float(closes[lot.symbol].dropna().iloc[-1])
-            rows.append(
-                {
-                    "Portfolio": portfolio.name,
-                    "Symbol": lot.symbol,
-                    "Shares": float(lot.shares),
-                    "Acquired": lot.acquired_on,
-                    "Cost / share": float(lot.cost_basis),
-                    "Cost basis": float(lot.shares * lot.cost_basis),
-                    "Latest price": latest,
-                    "Market value": latest * float(lot.shares) if latest is not None else None,
-                }
-            )
-    return pd.DataFrame(rows)
+def _summed_metric(values: list[float | None]) -> float | None:
+    available = [value for value in values if value is not None]
+    return sum(available) if available else None
+
+
+def _metric_dollars(value: float | None) -> str:
+    return dollars(value) if value is not None else "—"
+
+
+def render_performance_summary(
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    custom_start: date,
+    custom_end: date,
+    key_prefix: str,
+) -> None:
+    st.markdown("### Portfolio value and gain/loss")
+    if closes.empty:
+        total_value = sum((portfolio_cost(portfolio) for portfolio in portfolios), start=money(0))
+        rows = []
+    else:
+        total_value = total_portfolio_value(portfolios, closes)
+        rows = [
+            {
+                "Portfolio": portfolio.name,
+                **portfolio_gain_loss(portfolio, closes, custom_start, custom_end).__dict__,
+            }
+            for portfolio in portfolios
+        ]
+
+    metrics = st.columns(4)
+    metrics[0].metric("Total selected value", dollars(total_value))
+    metrics[1].metric(
+        "All-time gain/loss",
+        _metric_dollars(_summed_metric([row["all_time"] for row in rows])),
+    )
+    metrics[2].metric(
+        "Daily gain/loss",
+        _metric_dollars(_summed_metric([row["daily"] for row in rows])),
+    )
+    metrics[3].metric(
+        "Custom gain/loss",
+        _metric_dollars(_summed_metric([row["custom"] for row in rows])),
+    )
+    if closes.empty:
+        st.caption("Cost basis plus cash is shown; gain/loss requires market data.")
+        return
+
+    performance = pd.DataFrame(
+        [
+            {
+                "Portfolio": row["Portfolio"],
+                "All-time gain/loss": row["all_time"],
+                "Daily gain/loss": row["daily"],
+                "Custom gain/loss": row["custom"],
+            }
+            for row in rows
+        ]
+    )
+    with st.expander("Per-portfolio gain/loss", expanded=False):
+        st.dataframe(
+            performance,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                column: st.column_config.NumberColumn(format="$%,.2f")
+                for column in (
+                    "All-time gain/loss",
+                    "Daily gain/loss",
+                    "Custom gain/loss",
+                )
+            },
+            key=f"{key_prefix}_portfolio_gain_loss",
+        )
+    st.caption(
+        "Gain/loss excludes transfers, cash adjustments, and contributed opening positions. "
+        "Daily uses the two latest market closes."
+    )
+
+
+def render_consolidated_holdings(
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    custom_start: date,
+    custom_end: date,
+) -> None:
+    st.markdown("### Exact holdings")
+    summary, detail = consolidated_holdings(portfolios, closes, custom_start, custom_end)
+    if summary.empty:
+        st.caption("No holdings yet.")
+        return
+    money_columns = (
+        "Average cost / share",
+        "Total cost basis",
+        "Latest price",
+        "Market value",
+        "All-time gain/loss",
+        "Daily gain/loss",
+        "Custom gain/loss",
+    )
+    st.dataframe(
+        summary,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Shares": st.column_config.NumberColumn(format="%.8f"),
+            **{column: st.column_config.NumberColumn(format="$%,.2f") for column in money_columns},
+        },
+    )
+    with st.expander("Per-portfolio / lot breakdown", expanded=False):
+        st.dataframe(
+            detail,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Shares": st.column_config.NumberColumn(format="%.8f"),
+                "Acquired": st.column_config.DateColumn(format="M/D/YY"),
+                **{
+                    column: st.column_config.NumberColumn(format="$%,.2f")
+                    for column in (
+                        "Cost / share",
+                        "Cost basis",
+                        "Latest price",
+                        "Market value",
+                        "All-time gain/loss",
+                        "Daily gain/loss",
+                        "Custom gain/loss",
+                    )
+                },
+            },
+        )
+
+
+def render_dividend_totals(portfolios: list[Portfolio], key_prefix: str) -> None:
+    today = date.today()
+    st.markdown("### Dividend totals")
+    date_columns = st.columns(2)
+    custom_start = date_columns[0].date_input(
+        "Custom dividend start",
+        value=date(today.year, 1, 1),
+        max_value=today,
+        format="MM/DD/YYYY",
+        key=f"{key_prefix}_dividend_start",
+    )
+    custom_end = date_columns[1].date_input(
+        "Custom dividend end",
+        value=today,
+        min_value=custom_start,
+        max_value=today,
+        format="MM/DD/YYYY",
+        key=f"{key_prefix}_dividend_end",
+    )
+    with session_scope() as session:
+        totals = dividend_totals(
+            session,
+            [portfolio.id for portfolio in portfolios],
+            custom_start,
+            custom_end,
+            as_of=today,
+        )
+    metric_columns = st.columns(3)
+    metric_columns[0].metric("Year to date", dollars(totals.year_to_date))
+    metric_columns[1].metric("Trailing 365 days", dollars(totals.trailing_365_days))
+    metric_columns[2].metric("Custom range", dollars(totals.custom_range))
 
 
 def render_overview(
     portfolios: list[Portfolio], closes: pd.DataFrame, data_note: str | None
 ) -> None:
     if not portfolios:
-        st.caption("No portfolios with holdings yet.")
+        st.caption("No portfolios yet.")
         return
-    render_portfolio_cards(portfolios, closes)
+    default_names = [portfolio.name for portfolio in portfolios]
+    selected_names = st.multiselect(
+        "Overview portfolios",
+        [portfolio.name for portfolio in portfolios],
+        default=default_names or [portfolio.name for portfolio in portfolios],
+        key="overview_portfolios",
+    )
+    selected = [portfolio for portfolio in portfolios if portfolio.name in selected_names]
+    if not selected:
+        st.caption("Select one or more portfolios to show overview data.")
+        return
+    today = date.today()
+    earliest = earliest_acquisition(selected, today - timedelta(days=365))
+    range_columns = st.columns(2)
+    custom_start = range_columns[0].date_input(
+        "Custom gain/loss start",
+        value=max(date(today.year, 1, 1), earliest),
+        min_value=earliest,
+        max_value=today,
+        format="MM/DD/YYYY",
+        key="overview_gain_loss_start",
+    )
+    custom_end = range_columns[1].date_input(
+        "Custom gain/loss end",
+        value=today,
+        min_value=custom_start,
+        max_value=today,
+        format="MM/DD/YYYY",
+        key="overview_gain_loss_end",
+    )
+    render_performance_summary(selected, closes, custom_start, custom_end, "overview")
+    render_portfolio_cards(selected, closes)
     if data_note:
         st.info(f"Live market values are unavailable, so cost basis is shown. {data_note}")
-    st.markdown("### Exact holdings")
-    frame = holdings_frame(portfolios, closes)
-    if frame.empty:
-        st.caption("No holdings yet.")
-    else:
-        st.dataframe(
-            frame,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Shares": st.column_config.NumberColumn(format="%.1f"),
-                "Acquired": st.column_config.DateColumn(format="M/D/YY"),
-                "Cost / share": st.column_config.NumberColumn(format="$%,.2f"),
-                "Cost basis": st.column_config.NumberColumn(format="$%,.2f"),
-                "Latest price": st.column_config.NumberColumn(format="$%,.2f"),
-                "Market value": st.column_config.NumberColumn(format="$%,.2f"),
-            },
-        )
+    render_dividend_totals(selected, "overview")
+    render_consolidated_holdings(selected, closes, custom_start, custom_end)
     st.markdown("### Cash positions")
     st.dataframe(
         pd.DataFrame(
             {
-                "Portfolio": [item.name for item in portfolios],
-                "Cash": [float(item.cash) for item in portfolios],
+                "Portfolio": [item.name for item in selected],
+                "Cash": [float(item.cash) for item in selected],
             }
         ),
         hide_index=True,
@@ -211,7 +435,7 @@ def render_overview(
 
 def render_compare(portfolios: list[Portfolio]) -> None:
     if not portfolios:
-        st.caption("No portfolios with holdings are available to compare.")
+        st.caption("No portfolios are available to compare.")
         return
     fallback_start = date.today() - timedelta(days=365)
     earliest = earliest_acquisition(portfolios, fallback_start)
@@ -229,21 +453,41 @@ def render_compare(portfolios: list[Portfolio]) -> None:
     chosen_portfolios = st.multiselect(
         "Portfolio series", portfolio_options, default=portfolio_options
     )
+    selected_for_totals = (
+        portfolios
+        if "All portfolios" in chosen_portfolios
+        else [portfolio for portfolio in portfolios if portfolio.name in chosen_portfolios]
+    )
     all_symbols = tuple(
         sorted(
             {lot.symbol for portfolio in portfolios for lot in portfolio.holdings}
+            | {
+                transaction.symbol
+                for portfolio in portfolios
+                for transaction in portfolio.transactions
+                if transaction.symbol
+            }
             | set(selected_benchmarks)
             | set(extras)
         )
     )
+    fetch_start = min(start, earliest) - timedelta(days=7)
     try:
-        closes = cached_closes(all_symbols, start, date.today())
+        closes = cached_closes(all_symbols, fetch_start, date.today())
     except Exception as exc:
+        if selected_for_totals:
+            render_performance_summary(
+                selected_for_totals, pd.DataFrame(), start, date.today(), "compare"
+            )
         st.info(f"Comparison data is unavailable. Configure rotated Alpaca credentials. {exc}")
         return
     if closes.empty:
+        if selected_for_totals:
+            render_performance_summary(selected_for_totals, closes, start, date.today(), "compare")
         st.info("No market data was returned for this comparison.")
         return
+    if selected_for_totals:
+        render_performance_summary(selected_for_totals, closes, start, date.today(), "compare")
     per_portfolio = {
         portfolio.name: portfolio_series(portfolio, closes) for portfolio in portfolios
     }
@@ -255,9 +499,10 @@ def render_compare(portfolios: list[Portfolio]) -> None:
         for name in chosen_portfolios
         if name != "All portfolios" and name in per_portfolio
     )
+    series = [item[item.index.date >= start] for item in series]
     for symbol in [*selected_benchmarks, *extras]:
         if symbol in closes:
-            stock_series = closes[symbol].copy()
+            stock_series = closes.loc[closes.index.date >= start, symbol].copy()
             stock_series.name = symbol
             series.append(stock_series)
     normalized = [normalized_growth(item) for item in series]
@@ -304,74 +549,260 @@ def render_compare(portfolios: list[Portfolio]) -> None:
     st.caption("All series are rebased to $100. Metrics use adjusted daily closes from Alpaca.")
 
 
-def render_portfolio_admin(portfolios: list[Portfolio]) -> None:
-    st.markdown("### Portfolios")
-    with st.form("create_portfolio"):
-        name = st.text_input("New portfolio name", value="Another One!", max_chars=80)
-        created = st.form_submit_button("Add portfolio")
-    if created:
+def transaction_frame(
+    transactions: list[PortfolioTransaction], names_by_id: dict[int, str]
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "_transaction_id": entry.id,
+                "_portfolio_id": entry.portfolio_id,
+                "Portfolio": names_by_id.get(entry.portfolio_id, str(entry.portfolio_id)),
+                "Date": entry.transaction_date,
+                "Action": entry.action,
+                "Type": kind_label(entry.kind),
+                "Symbol": entry.symbol,
+                "Quantity": float(entry.quantity) if entry.quantity is not None else None,
+                "Price": float(entry.price) if entry.price is not None else None,
+                "Fees": float(entry.fees) if entry.fees is not None else None,
+                "Cash change": float(entry.cash_delta),
+                "Description": entry.description,
+                "Source": entry.source,
+            }
+            for entry in transactions
+        ]
+    )
+
+
+def render_transaction_editor(transaction: PortfolioTransaction, portfolio_name: str) -> None:
+    st.markdown("### Edit or delete selected transaction")
+    st.caption(
+        f"Transaction #{transaction.id} belongs to **{portfolio_name}**. "
+        "Any edit is applied to that portfolio."
+    )
+    if transaction.source != "manual":
+        st.warning(
+            f"This transaction originated from `{transaction.source}`. Editing or deleting it "
+            "manually overrides that source and may make the internal portfolio differ from the "
+            "brokerage statement or Alpaca account. The original transaction will be retained in "
+            "the override audit history."
+        )
+    else:
+        st.warning(
+            "Editing or deleting this transaction recalculates the portfolio's cash and holdings. "
+            "The original transaction will be retained in the override audit history."
+        )
+    with st.form(f"edit_transaction_{transaction.id}"):
+        first_row = st.columns(3)
+        edit_date = first_row[0].text_input(
+            "Transaction date (M/D/YY)", value=format_short_date(transaction.transaction_date)
+        )
+        edit_kind = first_row[1].selectbox(
+            "Transaction type",
+            EDITABLE_KINDS,
+            index=EDITABLE_KINDS.index(transaction.kind),
+            format_func=kind_label,
+        )
+        edit_symbol = first_row[2].text_input("Symbol", value=transaction.symbol or "")
+        edit_action = st.text_input("Action", value=transaction.action, max_chars=80)
+        edit_description = st.text_input(
+            "Description", value=transaction.description, max_chars=500
+        )
+        trade_row = st.columns(3)
+        edit_quantity = trade_row[0].number_input(
+            "Shares",
+            min_value=0.0,
+            value=float(transaction.quantity or 0),
+            format="%.8f",
+        )
+        edit_price = trade_row[1].number_input(
+            "Price per share",
+            min_value=0.0,
+            value=float(transaction.price or 0),
+            format="%.6f",
+        )
+        edit_fees = trade_row[2].number_input(
+            "Fees / commission",
+            min_value=0.0,
+            value=float(transaction.fees or 0),
+            format="%.4f",
+        )
+        edit_cash = st.number_input(
+            "Cash change",
+            value=float(transaction.cash_delta),
+            step=1.0,
+            format="%.4f",
+            help="Buy and sell cash changes are recalculated from shares, price, and fees.",
+        )
+        update_phrase = st.text_input(f'Type "UPDATE {transaction.id}" to confirm')
+        updated = st.form_submit_button("Save transaction changes")
+    if updated:
+        try:
+            draft = transaction_draft(
+                edit_date,
+                edit_kind,
+                edit_symbol,
+                edit_description,
+                edit_quantity,
+                edit_price,
+                edit_fees,
+                edit_cash,
+                action=edit_action,
+            )
+            with session_scope() as session:
+                update_transaction(
+                    session,
+                    transaction.portfolio_id,
+                    transaction.id,
+                    draft,
+                    confirmation=update_phrase,
+                )
+            cached_closes.clear()
+            st.session_state.flash = f"Transaction #{transaction.id} updated."
+            st.rerun()
+        except Exception as exc:
+            st.info(f"Transaction was not updated: {exc}")
+
+    with st.form(f"delete_transaction_{transaction.id}"):
+        delete_phrase = st.text_input(f'Type "DELETE {transaction.id}" to confirm')
+        deleted = st.form_submit_button("Delete transaction", type="secondary")
+    if deleted:
         try:
             with session_scope() as session:
-                portfolio = create_portfolio(session, name)
-            st.session_state.manage_portfolio_id = portfolio.id
+                delete_transaction(
+                    session,
+                    transaction.portfolio_id,
+                    transaction.id,
+                    confirmation=delete_phrase,
+                )
+            cached_closes.clear()
+            st.session_state.flash = f"Transaction #{transaction.id} deleted."
+            st.rerun()
+        except Exception as exc:
+            st.info(f"Transaction was not deleted: {exc}")
+
+
+def render_csv_import(portfolio: Portfolio) -> None:
+    st.markdown("### Brokerage CSV import")
+    st.markdown(
+        """
+**Required column names:** `Date`, `Action`, `Symbol`, `Description`, `Quantity`, `Price`,
+`Fees & Comm`, and `Amount`.
+
+**Accepted actions:** Buy, Sell, Cash Dividend, Qualified Dividend, Non-Qualified Div,
+Pr Yr Cash Div, Credit Interest, MoneyLink Transfer, Promotional Award, ADR Mgmt Fee,
+and Foreign Tax Paid. Other action text is retained and posted as a cash adjustment.
+
+**Date and currency conventions:** Dates may be `M/D/YYYY` or `YYYY-MM-DD`. Currency may
+include `$`, commas, or parentheses for negatives. `Amount` is required; buys must be negative,
+sells positive, and blank quantity/price/fees cells are allowed for cash-only activity.
+
+**Example rows:**
+"""
+    )
+    st.code(CSV_TEMPLATE, language="csv")
+    st.download_button(
+        "Download Brokerage CSV template",
+        data=CSV_TEMPLATE,
+        file_name="brokerage_transactions_template.csv",
+        mime="text/csv",
+    )
+    st.caption(f"Import target: {portfolio.name}")
+    uploaded_statement = st.file_uploader(
+        "Brokerage CSV", type=["csv"], key=f"statement_{portfolio.id}"
+    )
+    if uploaded_statement is None:
+        return
+    statement_content = uploaded_statement.getvalue()
+    parsed_statement = parse_statement_csv(statement_content)
+    if parsed_statement.errors:
+        st.dataframe(pd.DataFrame({"Import issues": parsed_statement.errors}), hide_index=True)
+        return
+    preview = pd.DataFrame(
+        [
+            {
+                "Date": item.transaction_date,
+                "Action": item.action,
+                "Category": kind_label(item.kind),
+                "Symbol": item.symbol,
+                "Quantity": float(item.quantity) if item.quantity is not None else None,
+                "Price": float(item.price) if item.price is not None else None,
+                "Fees": float(item.fees) if item.fees is not None else None,
+                "Cash change": float(item.cash_delta),
+                "Description": item.description,
+            }
+            for item in parsed_statement.transactions
+        ]
+    )
+    st.dataframe(
+        preview,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Date": st.column_config.DateColumn(format="M/D/YY"),
+            "Quantity": st.column_config.NumberColumn(format="%.8f"),
+            "Price": st.column_config.NumberColumn(format="$%,.4f"),
+            "Fees": st.column_config.NumberColumn(format="$%,.2f"),
+            "Cash change": st.column_config.NumberColumn(format="$%,.2f"),
+        },
+    )
+    import_columns = st.columns([1, 1])
+    if import_columns[0].button("Import new transactions", key=f"import_{portfolio.id}"):
+        try:
+            with session_scope() as session:
+                added, duplicates = import_statement(session, portfolio.id, parsed_statement)
+            cached_closes.clear()
             st.session_state.flash = (
-                f"Portfolio '{portfolio.name}' added. Record or import holdings to display it."
+                f"Imported {added} transaction(s); skipped {duplicates} duplicate(s)."
             )
             st.rerun()
         except Exception as exc:
-            st.info(f"Portfolio was not added: {exc}")
-
-    selected_id = st.session_state.get("manage_portfolio_id")
-    selectable = [item for item in portfolios if item.holdings or item.id == selected_id]
-    if not selectable:
-        st.caption(
-            "No portfolios with holdings yet. Add a portfolio, then record or import its first holding."
-        )
-        return
-
-    st.markdown("### Portfolio transactions")
-    selected_name = st.selectbox("Portfolio", [item.name for item in selectable])
-    portfolio = next(item for item in selectable if item.name == selected_name)
-    with st.form(f"rename_portfolio_{portfolio.id}"):
-        name = st.text_input("Portfolio name", value=portfolio.name, max_chars=80)
-        renamed = st.form_submit_button("Rename portfolio")
-    if renamed:
-        try:
-            with session_scope() as session:
-                rename_portfolio(session, portfolio.id, name)
-            st.session_state.flash = "Portfolio renamed."
-            st.rerun()
-        except Exception as exc:
-            st.info(f"Portfolio was not renamed: {exc}")
-
-    deletion_phrase = st.text_input(
-        "Type DELETE to permanently remove this portfolio and its holdings",
-        key=f"delete_phrase_{portfolio.id}",
+            st.info(f"Statement was not imported: {exc}")
+    rebuild_phrase = import_columns[1].text_input(
+        "Type REBUILD to replace this portfolio", key=f"rebuild_phrase_{portfolio.id}"
     )
-    if st.button("Delete portfolio", key=f"delete_{portfolio.id}", type="secondary"):
-        if deletion_phrase != "DELETE":
-            st.info("Type DELETE before permanently removing this portfolio.")
+    if import_columns[1].button("Rebuild portfolio from statement", key=f"rebuild_{portfolio.id}"):
+        if rebuild_phrase != "REBUILD":
+            st.info("Type REBUILD before replacing this portfolio.")
         else:
             try:
                 with session_scope() as session:
-                    delete_portfolio(session, portfolio.id)
-                if st.session_state.get("manage_portfolio_id") == portfolio.id:
-                    del st.session_state.manage_portfolio_id
+                    rebuilt = rebuild_portfolio_from_csv(session, portfolio.id, statement_content)
                 cached_closes.clear()
-                st.session_state.flash = "Portfolio and its holdings were permanently deleted."
+                st.session_state.flash = f"Portfolio rebuilt from {rebuilt} transaction(s)."
                 st.rerun()
             except Exception as exc:
-                st.info(f"Portfolio was not deleted: {exc}")
+                st.info(f"Portfolio was not rebuilt: {exc}")
 
-    st.markdown("### Enter transaction")
-    with st.form(f"manual_transaction_{portfolio.id}"):
+
+def render_portfolio_admin(portfolios: list[Portfolio]) -> None:
+    if not portfolios:
+        st.caption("Create a portfolio below to begin.")
+    names_by_id = {portfolio.id: portfolio.name for portfolio in portfolios}
+    managed_names = st.multiselect(
+        "Manage portfolios",
+        [portfolio.name for portfolio in portfolios],
+        default=[portfolio.name for portfolio in portfolios],
+        key="manage_portfolios",
+        help="This selection controls dividend totals and the combined transaction table.",
+    )
+    managed = [portfolio for portfolio in portfolios if portfolio.name in managed_names]
+    managed_scope = "_".join(str(portfolio.id) for portfolio in managed) or "none"
+    render_dividend_totals(managed, "manage")
+
+    st.markdown("### Add transaction")
+    target_name = st.selectbox(
+        "Target portfolio",
+        [portfolio.name for portfolio in portfolios],
+        key="transaction_target",
+    )
+    target = next(portfolio for portfolio in portfolios if portfolio.name == target_name)
+    with st.form(f"manual_transaction_{target.id}"):
         first_row = st.columns(3)
-        transaction_date = first_row[0].date_input("Transaction date", value=date.today())
-        kind = first_row[1].selectbox(
-            "Transaction type",
-            MANUAL_KINDS,
-            format_func=lambda item: item.replace("_", " ").title(),
+        transaction_date_text = first_row[0].text_input(
+            "Transaction date (M/D/YY)", value=format_short_date(date.today())
         )
+        kind = first_row[1].selectbox("Transaction type", MANUAL_KINDS, format_func=kind_label)
         symbol = first_row[2].text_input("Symbol", max_chars=16)
         description = st.text_input("Description", max_chars=500)
         trade_row = st.columns(3)
@@ -389,71 +820,128 @@ def render_portfolio_admin(portfolios: list[Portfolio]) -> None:
             value=0.0,
             step=1.0,
             format="%.4f",
-            disabled=kind in {"buy", "sell"},
+            help="Buy and sell cash changes are calculated automatically.",
         )
         recorded = st.form_submit_button("Record transaction")
     if recorded:
         try:
-            parsed_quantity = shares(manual_quantity) if kind in {"buy", "sell"} else None
-            parsed_price = money(manual_price) if kind in {"buy", "sell"} else None
-            parsed_fees = money(manual_fees) if manual_fees else None
-            if kind == "buy":
-                assert parsed_quantity is not None and parsed_price is not None
-                parsed_cash_delta = -(parsed_quantity * parsed_price + (parsed_fees or 0))
-            elif kind == "sell":
-                assert parsed_quantity is not None and parsed_price is not None
-                parsed_cash_delta = parsed_quantity * parsed_price - (parsed_fees or 0)
-            else:
-                parsed_cash_delta = money(cash_delta)
-            draft = TransactionDraft(
-                transaction_date=transaction_date,
-                action=kind.replace("_", " ").title(),
-                kind=kind,
-                symbol=normalize_symbol(symbol) if symbol.strip() else None,
-                description=description.strip(),
-                quantity=parsed_quantity,
-                price=parsed_price,
-                fees=parsed_fees,
-                cash_delta=parsed_cash_delta,
+            draft = transaction_draft(
+                transaction_date_text,
+                kind,
+                symbol,
+                description,
+                manual_quantity,
+                manual_price,
+                manual_fees,
+                cash_delta,
             )
             with session_scope() as session:
-                record_transaction(session, portfolio.id, draft)
+                record_transaction(session, target.id, draft)
             cached_closes.clear()
-            st.session_state.flash = "Transaction recorded."
+            st.session_state.flash = f"Transaction recorded in {target.name}."
             st.rerun()
         except Exception as exc:
             st.info(f"Transaction was not recorded: {exc}")
 
-    st.markdown("### Import statement")
-    uploaded_statement = st.file_uploader(
-        "Brokerage CSV", type=["csv"], key=f"statement_{portfolio.id}"
-    )
-    if uploaded_statement is not None:
-        statement_content = uploaded_statement.getvalue()
-        parsed_statement = parse_statement_csv(statement_content)
-        if parsed_statement.errors:
-            st.dataframe(pd.DataFrame({"Import issues": parsed_statement.errors}), hide_index=True)
+    render_csv_import(target)
+
+    st.markdown("### Transactions")
+    with session_scope() as session:
+        transactions = list_transactions_for_portfolios(
+            session, [portfolio.id for portfolio in managed]
+        )
+    if not transactions:
+        st.caption("No transactions match the selected portfolios.")
+    else:
+        filter_columns = st.columns([1, 1.35])
+        type_options = sorted({transaction.kind for transaction in transactions})
+        selected_types = filter_columns[0].multiselect(
+            "Transaction type filter",
+            type_options,
+            default=type_options,
+            format_func=kind_label,
+            key=f"manage_transaction_types_{managed_scope}",
+        )
+        first_date = min(transaction.transaction_date for transaction in transactions)
+        last_date = max(transaction.transaction_date for transaction in transactions)
+        selected_range = filter_columns[1].date_input(
+            "Transaction date range",
+            value=(first_date, last_date),
+            min_value=first_date,
+            max_value=last_date,
+            format="MM/DD/YYYY",
+            key=f"manage_transaction_dates_{managed_scope}",
+        )
+        if isinstance(selected_range, tuple) and len(selected_range) == 2:
+            range_start, range_end = selected_range
         else:
-            preview = pd.DataFrame(
-                [
-                    {
-                        "Date": item.transaction_date,
-                        "Action": item.action,
-                        "Category": item.kind.replace("_", " ").title(),
-                        "Symbol": item.symbol,
-                        "Quantity": float(item.quantity) if item.quantity is not None else None,
-                        "Price": float(item.price) if item.price is not None else None,
-                        "Fees": float(item.fees) if item.fees is not None else None,
-                        "Cash change": float(item.cash_delta),
-                        "Description": item.description,
-                    }
-                    for item in parsed_statement.transactions
-                ]
+            range_start = range_end = selected_range
+        filtered = [
+            transaction
+            for transaction in transactions
+            if transaction.kind in selected_types
+            and range_start <= transaction.transaction_date <= range_end
+        ]
+        frame = transaction_frame(filtered, names_by_id)
+        if frame.empty:
+            st.caption("No transactions match the type and date filters.")
+        else:
+            totals = (
+                frame.groupby("Type", as_index=False)
+                .agg(Transactions=("Cash change", "size"), Total=("Cash change", "sum"))
+                .sort_values("Type")
             )
-            st.dataframe(
-                preview,
+            totals_columns = st.columns([2, 1])
+            totals_columns[0].dataframe(
+                totals,
                 hide_index=True,
                 use_container_width=True,
+                column_config={"Total": st.column_config.NumberColumn(format="$%,.2f")},
+            )
+            totals_columns[1].metric("Grand total", dollars(frame["Cash change"].sum()))
+            quantity_rows = frame.dropna(subset=["Symbol", "Quantity"])
+            if not quantity_rows.empty:
+                quantity_totals = (
+                    quantity_rows.groupby(["Symbol", "Type"], as_index=False)
+                    .agg(
+                        Transactions=("Quantity", "size"),
+                        **{"Total quantity": ("Quantity", "sum")},
+                    )
+                    .sort_values(["Symbol", "Type"])
+                )
+                st.markdown("#### Quantity totals by symbol")
+                st.dataframe(
+                    quantity_totals,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={"Total quantity": st.column_config.NumberColumn(format="%.8f")},
+                )
+            st.caption("Select any row to edit or delete it. Click a column header to sort.")
+            table_scope = "_".join(
+                [
+                    managed_scope,
+                    *selected_types,
+                    range_start.isoformat(),
+                    range_end.isoformat(),
+                ]
+            )
+            table_event = st.dataframe(
+                frame,
+                hide_index=True,
+                use_container_width=True,
+                column_order=[
+                    "Portfolio",
+                    "Date",
+                    "Action",
+                    "Type",
+                    "Symbol",
+                    "Quantity",
+                    "Price",
+                    "Fees",
+                    "Cash change",
+                    "Description",
+                    "Source",
+                ],
                 column_config={
                     "Date": st.column_config.DateColumn(format="M/D/YY"),
                     "Quantity": st.column_config.NumberColumn(format="%.8f"),
@@ -461,73 +949,79 @@ def render_portfolio_admin(portfolios: list[Portfolio]) -> None:
                     "Fees": st.column_config.NumberColumn(format="$%,.2f"),
                     "Cash change": st.column_config.NumberColumn(format="$%,.2f"),
                 },
+                key=f"manage_transaction_table_{table_scope}",
+                on_select="rerun",
+                selection_mode="single-row",
             )
-            import_columns = st.columns([1, 1])
-            if import_columns[0].button("Import new transactions", key=f"import_{portfolio.id}"):
-                try:
-                    with session_scope() as session:
-                        added, duplicates = import_statement(
-                            session, portfolio.id, parsed_statement
-                        )
-                    cached_closes.clear()
-                    st.session_state.flash = (
-                        f"Imported {added} transaction(s); skipped {duplicates} duplicate(s)."
-                    )
-                    st.rerun()
-                except Exception as exc:
-                    st.info(f"Statement was not imported: {exc}")
-            rebuild_phrase = import_columns[1].text_input(
-                "Type REBUILD to replace this portfolio", key=f"rebuild_phrase_{portfolio.id}"
-            )
-            if import_columns[1].button(
-                "Rebuild portfolio from statement", key=f"rebuild_{portfolio.id}"
-            ):
-                if rebuild_phrase != "REBUILD":
-                    st.info("Type REBUILD before replacing this portfolio.")
-                else:
-                    try:
-                        with session_scope() as session:
-                            rebuilt = rebuild_portfolio_from_csv(
-                                session, portfolio.id, statement_content
-                            )
-                        cached_closes.clear()
-                        st.session_state.flash = f"Portfolio rebuilt from {rebuilt} transaction(s)."
-                        st.rerun()
-                    except Exception as exc:
-                        st.info(f"Portfolio was not rebuilt: {exc}")
+            selected_rows = table_event.selection.rows
+            if selected_rows:
+                selected_transaction = filtered[selected_rows[0]]
+                render_transaction_editor(
+                    selected_transaction, names_by_id[selected_transaction.portfolio_id]
+                )
 
-    with session_scope() as session:
-        transactions = list_transactions(session, portfolio.id)
-    if transactions:
-        st.markdown("### Posted transactions")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Date": entry.transaction_date,
-                        "Action": entry.action,
-                        "Type": entry.kind.replace("_", " ").title(),
-                        "Symbol": entry.symbol,
-                        "Quantity": float(entry.quantity) if entry.quantity is not None else None,
-                        "Price": float(entry.price) if entry.price is not None else None,
-                        "Fees": float(entry.fees) if entry.fees is not None else None,
-                        "Cash change": float(entry.cash_delta),
-                        "Description": entry.description,
-                        "Source": entry.source,
-                    }
-                    for entry in transactions
-                ]
-            ),
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Date": st.column_config.DateColumn(format="M/D/YY"),
-                "Quantity": st.column_config.NumberColumn(format="%.8f"),
-                "Price": st.column_config.NumberColumn(format="$%,.4f"),
-                "Fees": st.column_config.NumberColumn(format="$%,.2f"),
-                "Cash change": st.column_config.NumberColumn(format="$%,.2f"),
-            },
-        )
+    st.divider()
+    st.markdown("### Rename portfolio")
+    rename_target_name = st.selectbox(
+        "Portfolio to rename",
+        [portfolio.name for portfolio in portfolios],
+        key="rename_target",
+    )
+    rename_target = next(
+        portfolio for portfolio in portfolios if portfolio.name == rename_target_name
+    )
+    with st.form(f"rename_portfolio_{rename_target.id}"):
+        renamed_name = st.text_input("Portfolio name", value=rename_target.name, max_chars=80)
+        renamed = st.form_submit_button("Rename portfolio")
+    if renamed:
+        try:
+            with session_scope() as session:
+                rename_portfolio(session, rename_target.id, renamed_name)
+            st.session_state.flash = "Portfolio renamed."
+            st.rerun()
+        except Exception as exc:
+            st.info(f"Portfolio was not renamed: {exc}")
+
+    st.markdown("### New portfolio")
+    with st.form("create_portfolio"):
+        new_name = st.text_input("New portfolio name", value="Another One!", max_chars=80)
+        created = st.form_submit_button("Add portfolio")
+    if created:
+        try:
+            with session_scope() as session:
+                portfolio = create_portfolio(session, new_name)
+            st.session_state.flash = (
+                f"Portfolio '{portfolio.name}' added. Record or import its first transaction."
+            )
+            st.rerun()
+        except Exception as exc:
+            st.info(f"Portfolio was not added: {exc}")
+
+    st.markdown("### Delete portfolio")
+    delete_target_name = st.selectbox(
+        "Portfolio to delete",
+        [portfolio.name for portfolio in portfolios],
+        key="delete_target",
+    )
+    delete_target = next(
+        portfolio for portfolio in portfolios if portfolio.name == delete_target_name
+    )
+    deletion_phrase = st.text_input(
+        "Type DELETE to permanently remove this portfolio and all of its data",
+        key=f"delete_phrase_{delete_target.id}",
+    )
+    if st.button("Delete portfolio", key=f"delete_{delete_target.id}", type="secondary"):
+        if deletion_phrase != "DELETE":
+            st.info("Type DELETE before permanently removing this portfolio.")
+        else:
+            try:
+                with session_scope() as session:
+                    delete_portfolio(session, delete_target.id)
+                cached_closes.clear()
+                st.session_state.flash = "Portfolio and all of its data were permanently deleted."
+                st.rerun()
+            except Exception as exc:
+                st.info(f"Portfolio was not deleted: {exc}")
 
 
 def allocation_frame(
@@ -701,16 +1195,18 @@ def main() -> None:
     render_header()
     if flash := st.session_state.pop("flash", None):
         st.info(flash)
-    overview_start = earliest_acquisition(portfolios, date.today() - timedelta(days=365))
-    closes, data_note = get_prices(portfolios, overview_start)
+    overview_start = earliest_acquisition(
+        all_portfolios, date.today() - timedelta(days=365)
+    ) - timedelta(days=7)
+    closes, data_note = get_prices(all_portfolios, overview_start)
     labels = ["Overview", "Compare"]
     if owner:
         labels.extend(["Manage", "Trade", "Architecture"])
     tabs = st.tabs(labels)
     with tabs[0]:
-        render_overview(portfolios, closes, data_note)
+        render_overview(all_portfolios, closes, data_note)
     with tabs[1]:
-        render_compare(portfolios)
+        render_compare(all_portfolios)
     if owner:
         with tabs[2]:
             render_portfolio_admin(all_portfolios)

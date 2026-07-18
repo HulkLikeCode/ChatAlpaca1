@@ -64,8 +64,19 @@ class LedgerEntry(Base):
     )
 
 
+class DataMigration(Base):
+    """A durable marker for a one-time, data-level migration."""
+
+    __tablename__ = "data_migrations"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class PortfolioTransaction(Base):
-    """An immutable portfolio event used to derive cash and open lots."""
+    """An auditable portfolio event used to derive cash and open lots."""
 
     __tablename__ = "portfolio_transactions"
     __table_args__ = (
@@ -93,6 +104,25 @@ class PortfolioTransaction(Base):
         DateTime(timezone=True), nullable=False, default=utc_now
     )
     portfolio: Mapped[Portfolio] = relationship(back_populates="transactions")
+
+
+class TransactionOverride(Base):
+    """An immutable snapshot of a manually updated or deleted transaction."""
+
+    __tablename__ = "transaction_overrides"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    transaction_id: Mapped[int] = mapped_column(nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(12), nullable=False)
+    original_source: Mapped[str] = mapped_column(String(24), nullable=False)
+    before_state: Mapped[str] = mapped_column(Text, nullable=False)
+    after_state: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
 
 
 class OrderAllocation(Base):
