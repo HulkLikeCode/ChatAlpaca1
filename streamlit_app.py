@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hmac
 from datetime import date, timedelta
-from decimal import Decimal
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -22,7 +21,6 @@ from chat_alpaca.market_data import get_daily_closes
 from chat_alpaca.models import OrderAllocation, Portfolio
 from chat_alpaca.portfolio_service import (
     MANUAL_KINDS,
-    MAX_PORTFOLIOS,
     TransactionDraft,
     create_portfolio,
     delete_portfolio,
@@ -120,7 +118,7 @@ def render_header() -> None:
     mode = "PAPER MODE" if settings.paper else "LIVE MODE"
     st.markdown(f'<span class="mode-chip">{mode}</span>', unsafe_allow_html=True)
     st.title("KC's Retirement Dough, Let's GO!!!")
-    st.caption(f"portfolios · benchmarks · Alpaca paper orders")
+    st.caption("portfolios · benchmarks · Alpaca paper orders")
 
 
 def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
