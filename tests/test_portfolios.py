@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -424,6 +424,43 @@ def test_short_transaction_date_format_round_trip() -> None:
         parse_short_date("2026-07-03")
 
 
+def test_future_transaction_date_is_rejected(session: Session) -> None:
+    portfolio = create_portfolio(session, "No future transactions")
+    future = date.today() + timedelta(days=1)
+
+    with pytest.raises(ValueError, match="cannot be in the future"):
+        record_transaction(
+            session,
+            portfolio.id,
+            TransactionDraft(
+                future,
+                "Cash Adjustment",
+                "cash_adjustment",
+                None,
+                "Future entry",
+                None,
+                None,
+                None,
+                Decimal("10"),
+            ),
+        )
+
+    assert list_transactions(session, portfolio.id) == []
+
+
+def test_statement_parser_rejects_future_transaction_date() -> None:
+    future = date.today() + timedelta(days=1)
+    content = (
+        "Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount\n"
+        f"{future:%m/%d/%Y},MoneyLink Transfer,,Future transfer,,,,100.00\n"
+    )
+
+    parsed = parse_statement_csv(content)
+
+    assert parsed.transactions == []
+    assert parsed.errors == ["Row 2: Transaction date cannot be in the future."]
+
+
 def test_portfolios_can_be_added_up_to_the_limit_and_deleted(session: Session) -> None:
     seed_database(session)
     created = create_portfolio(session, "Another One!")
@@ -512,6 +549,47 @@ def test_replay_integrity_diagnostic_identifies_mismatch_categories(session: Ses
 
     assert not result.is_consistent
     assert set(result.mismatches) == {"cash"}
+
+
+def test_replay_integrity_uses_persisted_precision_and_ignores_ledger_row_order(
+    session: Session,
+) -> None:
+    portfolio = create_portfolio(session, "Precision diagnostic")
+    first = TransactionDraft(
+        date(2026, 1, 2),
+        "Buy",
+        "buy",
+        "ABC",
+        "Fractional basis",
+        Decimal("3"),
+        Decimal("10"),
+        None,
+        Decimal("-10"),
+    )
+    second = TransactionDraft(
+        date(2026, 1, 3),
+        "Cash Adjustment",
+        "cash_adjustment",
+        None,
+        "Unordered ledger",
+        None,
+        None,
+        None,
+        Decimal("10"),
+    )
+    record_transaction(session, portfolio.id, first)
+    record_transaction(session, portfolio.id, second)
+    transaction = next(
+        item for item in list_transactions(session, portfolio.id) if item.kind == "cash_adjustment"
+    )
+    transaction.transaction_date = date(2026, 1, 1)
+    session.flush()
+    session.expire_all()
+
+    result = replay_integrity_diagnostic(session, portfolio.id)
+
+    assert result.is_consistent
+    assert not result.mismatches
 
 
 def test_sqlite_rejects_invalid_foreign_key_write(session: Session) -> None:

@@ -4,12 +4,15 @@ from datetime import date
 
 from streamlit.testing.v1 import AppTest
 
+SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
+
 
 def test_public_app_renders_without_credentials() -> None:
     app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
 
     assert not app.exception
     assert app.title[0].value == "KC's Retirement Dough, Let's GO!!!"
+    assert not any("portfolios · benchmarks · Alpaca orders" in item.value for item in app.markdown)
     assert [tab.label for tab in app.tabs] == ["Overview", "Compare", "Forecast"]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
     assert [item.label for item in app.metric].count("Selected cost basis + cash") == 2
@@ -62,6 +65,10 @@ def test_phase_2_owner_manage_controls_render() -> None:
     assert "Target portfolio" in [item.label for item in app.selectbox]
     assert "Import target portfolio" in [item.label for item in app.selectbox]
     assert "Portfolio action" in [item.label for item in app.selectbox]
+    target_selector = next(item for item in app.selectbox if item.label == "Target portfolio")
+    csv_selector = next(item for item in app.selectbox if item.label == "Import target portfolio")
+    assert target_selector.value == SELECT_PORTFOLIO_OPTION
+    assert csv_selector.value == SELECT_PORTFOLIO_OPTION
     assert "Transaction date (M/D/YY)" in [item.label for item in app.text_input]
     assert [item.label for item in app.metric].count("Selected-range income") == 1
     assert [item.label for item in app.metric].count("YTD through end date") == 1
@@ -82,10 +89,82 @@ def test_phase_2_owner_manage_controls_render() -> None:
         "Assigned order ticket",
         "Extension architecture",
     ]
+    assert not app.get("download_button")
+    assert any("Quantity totals by symbol" in item.value for item in app.markdown)
+
+
+def test_manage_targets_follow_single_master_portfolio_and_blank_for_multiple() -> None:
+    app = AppTest.from_file("streamlit_app.py", default_timeout=30)
+    app.session_state["owner_authenticated"] = True
+    app.run()
+
+    master_selector = next(item for item in app.multiselect if item.label == "Portfolios")
+    apply_button = next(item for item in app.button if item.label == "Apply")
+    master_selector.set_value([1])
+    apply_button.click().run()
+
+    target_selector = next(item for item in app.selectbox if item.label == "Target portfolio")
+    csv_selector = next(item for item in app.selectbox if item.label == "Import target portfolio")
+    assert target_selector.value == 1
+    assert csv_selector.value == 1
+    assert "Transaction date (M/D/YY)" in [item.label for item in app.text_input]
     assert [item.label for item in app.get("download_button")] == [
         "Download Brokerage CSV template"
     ]
-    assert any("Quantity totals by symbol" in item.value for item in app.markdown)
+
+    master_selector = next(item for item in app.multiselect if item.label == "Portfolios")
+    apply_button = next(item for item in app.button if item.label == "Apply")
+    master_selector.set_value([1, 2])
+    apply_button.click().run()
+
+    target_selector = next(item for item in app.selectbox if item.label == "Target portfolio")
+    csv_selector = next(item for item in app.selectbox if item.label == "Import target portfolio")
+    assert target_selector.value == SELECT_PORTFOLIO_OPTION
+    assert csv_selector.value == SELECT_PORTFOLIO_OPTION
+
+
+def test_add_transaction_customizes_fields_and_validates_trade_symbols() -> None:
+    app = AppTest.from_file("streamlit_app.py", default_timeout=30)
+    app.session_state["owner_authenticated"] = True
+    app.run()
+
+    master_selector = next(item for item in app.multiselect if item.label == "Portfolios")
+    apply_button = next(item for item in app.button if item.label == "Apply")
+    master_selector.set_value([1])
+    apply_button.click().run()
+
+    symbol = next(item for item in app.text_input if item.key == "add_transaction_symbol")
+    symbol.set_value("BAD SYMBOL").run()
+    record = next(item for item in app.button if item.key == "record_manual_transaction")
+    assert record.disabled
+    assert any("Invalid stock or ETF symbol" in item.value for item in app.error)
+
+    symbol = next(item for item in app.text_input if item.key == "add_transaction_symbol")
+    symbol.set_value("aapl").run()
+    assert (
+        next(item for item in app.text_input if item.key == "add_transaction_symbol").value
+        == "AAPL"
+    )
+
+    next(item for item in app.number_input if item.key == "add_transaction_quantity").set_value(2.0)
+    next(item for item in app.number_input if item.key == "add_transaction_price").set_value(10.0)
+    next(item for item in app.number_input if item.key == "add_transaction_fees").set_value(
+        1.0
+    ).run()
+    calculated_cash = next(
+        item for item in app.number_input if item.key == "add_transaction_calculated_cash"
+    )
+    assert calculated_cash.value == -21.0
+    assert calculated_cash.disabled
+
+    kind = next(item for item in app.selectbox if item.key == "add_transaction_kind")
+    kind.set_value("cash_adjustment").run()
+    assert not any(item.key == "add_transaction_symbol" for item in app.text_input)
+    assert not any(item.key == "add_transaction_quantity" for item in app.number_input)
+    assert not any(item.key == "add_transaction_price" for item in app.number_input)
+    assert not any(item.key == "add_transaction_fees" for item in app.number_input)
+    cash_change = next(item for item in app.number_input if item.key == "add_transaction_cash")
+    assert not cash_change.disabled
 
 
 def test_master_filters_apply_portfolios_and_dates_together() -> None:

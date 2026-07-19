@@ -16,15 +16,15 @@ THEME_CSS = """
     #05060a;
   color: var(--ink);
 }
-.block-container {max-width: 1380px; padding-top: .65rem; padding-bottom: 3rem;}
+.block-container {max-width: 1380px; padding-top: .35rem; padding-bottom: 3rem;}
 h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
 h1 {
-  font-size: clamp(1.55rem, 3vw, 2.2rem) !important;
-  line-height: 1.05 !important;
-  margin-top: -.4rem !important;
-  margin-bottom: -.3rem !important;
+  font-size: clamp(1.25rem, 2.2vw, 1.65rem) !important;
+  line-height: 1 !important;
+  margin-top: -.2rem !important;
+  margin-bottom: .1rem !important;
 }
-[data-testid="stMarkdownContainer"]:has(.mode-chip) {height: 1.45rem;}
+[data-testid="stMarkdownContainer"]:has(.mode-chip) {height: 1.05rem;}
 [data-testid="stCaptionContainer"] {margin-top: -.2rem; margin-bottom: -.35rem;}
 [data-testid="stCaptionContainer"], .stCaption {color: var(--muted) !important;}
 [data-testid="stMetric"] {
@@ -64,7 +64,7 @@ h1 {
 .portfolio-card .eyebrow {color: var(--violet); font-size: .72rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;}
 .portfolio-card .value {font-size: clamp(1.3rem, 2.2vw, 1.75rem); font-weight: 760; margin-top: .35rem; white-space: nowrap;}
 .portfolio-card .detail {color: var(--muted); font-size: .82rem; margin-top: .25rem;}
-.mode-chip {display:inline-block; padding:.18rem .48rem; border:1px solid rgba(103,215,255,.4); border-radius:999px; color:var(--cyan); font-size:.64rem; font-weight:800; letter-spacing:.1em;}
+.mode-chip {display:inline-block; padding:.1rem .38rem; border:1px solid rgba(103,215,255,.4); border-radius:999px; color:var(--cyan); font-size:.56rem; font-weight:800; letter-spacing:.08em;}
 .stButton > button, .stDownloadButton > button {
   border-radius: 10px;
   border: 1px solid rgba(105,126,255,.45);

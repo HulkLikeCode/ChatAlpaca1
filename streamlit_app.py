@@ -57,7 +57,10 @@ from chat_alpaca.trading import (
 
 BENCHMARKS = ("SPY", "QQQ", "DIA", "IWM")
 ALL_PORTFOLIOS_OPTION = "__all_portfolios__"
+SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
 EDITABLE_KINDS = (*MANUAL_KINDS, "opening_position")
+TRADE_KINDS = {"buy", "sell"}
+SYMBOL_CASH_KINDS = {"dividend", "fee", "tax"}
 MASTER_DEFAULT_START = date(2026, 5, 15)
 CSV_TEMPLATE = """Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount
 7/15/2026,Buy,AAPL,Apple Inc,10,$210.00,$0.00,"($2,100.00)"
@@ -299,7 +302,6 @@ def render_header() -> None:
     mode = "PAPER MODE" if settings.paper else "LIVE MODE"
     st.markdown(f'<span class="mode-chip">{mode}</span>', unsafe_allow_html=True)
     st.title("KC's Retirement Dough, Let's GO!!!")
-    st.caption("portfolios · benchmarks · Alpaca orders")
 
 
 def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
@@ -1308,43 +1310,154 @@ def render_transactions(
             )
 
 
-def render_add_transaction(portfolios: list[Portfolio]) -> None:
+def _target_portfolio_selector(
+    label: str,
+    key: str,
+    portfolios: list[Portfolio],
+    selected_portfolios: list[Portfolio],
+) -> Portfolio | None:
+    """Default an action target only when the master scope has one portfolio."""
+    available_ids = {portfolio.id for portfolio in portfolios}
+    master_scope = tuple(portfolio.id for portfolio in selected_portfolios)
+    scope_key = f"_{key}_master_scope"
+    default_id = selected_portfolios[0].id if len(selected_portfolios) == 1 else None
+    if st.session_state.get(scope_key) != master_scope or st.session_state.get(key) not in {
+        SELECT_PORTFOLIO_OPTION,
+        *available_ids,
+    }:
+        st.session_state[key] = default_id or SELECT_PORTFOLIO_OPTION
+        st.session_state[scope_key] = master_scope
+
+    portfolio_by_id = {portfolio.id: portfolio for portfolio in portfolios}
+    target_id = st.selectbox(
+        label,
+        [SELECT_PORTFOLIO_OPTION, *portfolio_by_id],
+        key=key,
+        format_func=lambda portfolio_id: (
+            "Select portfolio"
+            if portfolio_id == SELECT_PORTFOLIO_OPTION
+            else portfolio_by_id[portfolio_id].name
+        ),
+    )
+    return None if target_id == SELECT_PORTFOLIO_OPTION else portfolio_by_id[target_id]
+
+
+def _validate_manual_trade_symbol() -> None:
+    """Validate and normalize a buy/sell symbol as soon as it changes."""
+    key = "add_transaction_symbol"
+    error_key = "add_transaction_symbol_error"
+    value = st.session_state.get(key, "")
+    try:
+        st.session_state[key] = normalize_symbol(value)
+        st.session_state.pop(error_key, None)
+    except ValueError as exc:
+        st.session_state[error_key] = str(exc)
+
+
+def _calculated_trade_cash(
+    kind: str, quantity_value: float, price_value: float, fees_value: float
+) -> float:
+    quantity_value = max(quantity_value, 0.0)
+    price_value = max(price_value, 0.0)
+    fees_value = max(fees_value, 0.0)
+    notional = quantity_value * price_value
+    return -(notional + fees_value) if kind == "buy" else notional - fees_value
+
+
+def render_add_transaction(
+    portfolios: list[Portfolio], selected_portfolios: list[Portfolio]
+) -> None:
     with st.expander("Add transaction", expanded=False):
         if not portfolios:
             st.caption("Create a portfolio before recording a transaction.")
             return
-        target_name = st.selectbox(
-            "Target portfolio",
-            [portfolio.name for portfolio in portfolios],
-            key="transaction_target",
+        first_row = st.columns(2)
+        transaction_date_text = first_row[0].text_input(
+            "Transaction date (M/D/YY)",
+            value=format_short_date(date.today()),
+            key="add_transaction_date",
         )
-        target = next(portfolio for portfolio in portfolios if portfolio.name == target_name)
-        with st.form(f"manual_transaction_{target.id}"):
-            first_row = st.columns(3)
-            transaction_date_text = first_row[0].text_input(
-                "Transaction date (M/D/YY)", value=format_short_date(date.today())
+        kind = first_row[1].selectbox(
+            "Transaction type",
+            MANUAL_KINDS,
+            format_func=kind_label,
+            key="add_transaction_kind",
+        )
+        target = _target_portfolio_selector(
+            "Target portfolio",
+            "transaction_target",
+            portfolios,
+            selected_portfolios,
+        )
+        if target is None:
+            st.caption("Select a portfolio before recording a transaction.")
+            return
+        symbol = ""
+        manual_quantity = 0.0
+        manual_price = 0.0
+        manual_fees = 0.0
+        symbol_error = ""
+        if kind in TRADE_KINDS:
+            symbol = st.text_input(
+                "Symbol",
+                max_chars=16,
+                key="add_transaction_symbol",
+                on_change=_validate_manual_trade_symbol,
             )
-            kind = first_row[1].selectbox("Transaction type", MANUAL_KINDS, format_func=kind_label)
-            symbol = first_row[2].text_input("Symbol", max_chars=16)
-            description = st.text_input("Description", max_chars=500)
+            symbol_error = st.session_state.get("add_transaction_symbol_error", "")
+            if symbol_error:
+                st.error(symbol_error)
             trade_row = st.columns(3)
             manual_quantity = trade_row[0].number_input(
-                "Shares", min_value=0.0, value=0.0, format="%.2f"
+                "Shares",
+                min_value=0.0,
+                value=0.0,
+                format="%.2f",
+                key="add_transaction_quantity",
             )
             manual_price = trade_row[1].number_input(
-                "Price per share", min_value=0.0, value=0.0, format="%.6f"
+                "Price per share",
+                min_value=0.0,
+                value=0.0,
+                format="%.6f",
+                key="add_transaction_price",
             )
             manual_fees = trade_row[2].number_input(
-                "Fees / commission", min_value=0.0, value=0.0, format="%.4f"
+                "Fees / commission",
+                min_value=0.0,
+                value=0.0,
+                format="%.4f",
+                key="add_transaction_fees",
             )
+            calculated_cash = _calculated_trade_cash(
+                kind, manual_quantity, manual_price, manual_fees
+            )
+            st.session_state.add_transaction_calculated_cash = calculated_cash
+            cash_delta = st.number_input(
+                "Cash change",
+                key="add_transaction_calculated_cash",
+                format="%.4f",
+                disabled=True,
+                help="Buy and sell cash changes are calculated from shares, price, and fees.",
+            )
+        else:
+            if kind in SYMBOL_CASH_KINDS:
+                symbol = st.text_input(
+                    "Symbol (optional)", max_chars=16, key="add_transaction_symbol"
+                )
             cash_delta = st.number_input(
                 "Cash change",
                 value=0.0,
                 step=1.0,
                 format="%.4f",
-                help="Buy and sell cash changes are calculated automatically.",
+                key="add_transaction_cash",
             )
-            recorded = st.form_submit_button("Record transaction")
+        description = st.text_input("Description", max_chars=500, key="add_transaction_description")
+        recorded = st.button(
+            "Record transaction",
+            key="record_manual_transaction",
+            disabled=bool(symbol_error),
+        )
         if recorded:
             try:
                 draft = transaction_draft(
@@ -1366,17 +1479,20 @@ def render_add_transaction(portfolios: list[Portfolio]) -> None:
                 st.info(f"Transaction was not recorded: {exc}")
 
 
-def render_csv_section(portfolios: list[Portfolio]) -> None:
+def render_csv_section(portfolios: list[Portfolio], selected_portfolios: list[Portfolio]) -> None:
     with st.expander("Brokerage CSV", expanded=False):
         if not portfolios:
             st.caption("Create a portfolio before importing a brokerage CSV.")
             return
-        target_name = st.selectbox(
+        target = _target_portfolio_selector(
             "Import target portfolio",
-            [portfolio.name for portfolio in portfolios],
-            key="csv_target",
+            "csv_target",
+            portfolios,
+            selected_portfolios,
         )
-        target = next(portfolio for portfolio in portfolios if portfolio.name == target_name)
+        if target is None:
+            st.caption("Select a portfolio before importing a brokerage CSV.")
+            return
         render_csv_import(target)
 
 
@@ -1461,8 +1577,8 @@ def render_portfolio_admin(
 ) -> None:
     names_by_id = {portfolio.id: portfolio.name for portfolio in action_portfolios}
     render_transactions(reporting_portfolios, names_by_id, custom_start, custom_end)
-    render_add_transaction(action_portfolios)
-    render_csv_section(action_portfolios)
+    render_add_transaction(action_portfolios, reporting_portfolios)
+    render_csv_section(action_portfolios, reporting_portfolios)
     render_portfolio_actions(action_portfolios)
 
 

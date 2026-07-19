@@ -283,6 +283,8 @@ def parse_statement_csv(content: bytes | str) -> StatementParseResult:
 
 
 def _validate_transaction(draft: TransactionDraft) -> None:
+    if draft.transaction_date > date.today():
+        raise ValueError("Transaction date cannot be in the future.")
     if draft.kind not in {*MANUAL_KINDS, "opening_position"}:
         raise ValueError(f"Unsupported transaction category: {draft.kind}")
     if draft.kind in POSITION_KINDS:
@@ -751,31 +753,39 @@ def replay_integrity_diagnostic(session: Session, portfolio_id: int) -> ReplayIn
     def lot_state(lots: Iterable[HoldingLot]) -> tuple[tuple[object, ...], ...]:
         return tuple(
             sorted(
-                (lot.symbol, Decimal(lot.shares), lot.acquired_on, Decimal(lot.cost_basis))
+                (
+                    lot.symbol,
+                    Decimal(lot.shares).quantize(Decimal("0.00000001")),
+                    lot.acquired_on,
+                    Decimal(lot.cost_basis).quantize(Decimal("0.000001")),
+                )
                 for lot in lots
             )
         )
 
-    persisted_ledger = tuple(
-        (
-            entry.kind,
-            entry.symbol,
-            Decimal(entry.quantity) if entry.quantity is not None else None,
-            Decimal(entry.price) if entry.price is not None else None,
-            Decimal(entry.cash_delta),
-            entry.note,
-            entry.created_at,
-        )
-        for entry in session.scalars(
-            select(LedgerEntry)
-            .where(LedgerEntry.portfolio_id == portfolio.id)
-            .order_by(LedgerEntry.id)
+    def ledger_state(entries: Iterable[tuple[object, ...]]) -> tuple[tuple[object, ...], ...]:
+        return tuple(sorted(entries, key=repr))
+
+    persisted_ledger = ledger_state(
+        tuple(
+            (
+                entry.kind,
+                entry.symbol,
+                Decimal(entry.quantity) if entry.quantity is not None else None,
+                Decimal(entry.price) if entry.price is not None else None,
+                Decimal(entry.cash_delta),
+                entry.note,
+                entry.created_at,
+            )
+            for entry in session.scalars(
+                select(LedgerEntry).where(LedgerEntry.portfolio_id == portfolio.id)
+            )
         )
     )
     comparisons = {
         "cash": (Decimal(expected.cash), Decimal(portfolio.cash)),
         "lots": (lot_state(expected.holdings), lot_state(portfolio.holdings)),
-        "ledger": (tuple(expected_ledger), persisted_ledger),
+        "ledger": (ledger_state(expected_ledger), persisted_ledger),
     }
     mismatches = {
         category: values for category, values in comparisons.items() if values[0] != values[1]
