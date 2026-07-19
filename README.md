@@ -48,14 +48,21 @@ Do not enable live mode until authentication, risk limits, audit review, and dep
 
 ## Local setup
 
-Python 3.10 or newer is required.
+Python 3.10 through 3.12 are supported; Python 3.12 is the recommended local version. Python 3.13
+is intentionally excluded until the pinned binary dependencies provide compatible wheels on Intel
+macOS. The checked-in `.python-version` selects Python 3.12.10 for pyenv-compatible tools.
+
+Do not reuse a `.venv` made with another Python version. If your existing virtual environment uses
+Python 3.13, recreate it with Python 3.12 before installing dependencies.
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt
+python scripts/verify_environment.py --python-only
+python -m pip install -r requirements-dev.txt
+python scripts/verify_environment.py
 cp .env.example .env
-streamlit run streamlit_app.py
+python -m streamlit run streamlit_app.py
 ```
 
 Set newly rotated paper credentials in `.env`:
@@ -70,9 +77,34 @@ TRADING_MODE=paper
 ALLOW_LIVE_TRADING=false
 ```
 
-The ignored `data/chat_alpaca.db` file is created automatically. Seed data is inserted when the
-portfolio table is empty, while versioned data migrations also run against existing databases
-exactly once.
+The ignored `data/chat_alpaca.db` file is created automatically. Alembic schema upgrades run before
+seed data or one-time data migrations. Seed data is inserted when the portfolio table is empty,
+while the existing `data_migrations` markers continue to make data-level changes run exactly once.
+
+## Database migrations
+
+Application startup performs a guarded upgrade automatically. A fresh database is migrated to the
+current schema. An existing pre-Alembic DashApp database is inspected without reading transaction
+values; if its tables, columns, keys, constraints, and indexes match the baseline, it is stamped at
+the baseline revision without recreating records. An incompatible schema is rejected with the
+differences listed so it can be backed up and reconciled first.
+
+Run the same guarded upgrade manually from the repository root:
+
+```bash
+python -m chat_alpaca.migrations upgrade
+```
+
+Developers may use Alembic directly for an already-versioned database:
+
+```bash
+alembic upgrade head
+alembic downgrade -1
+```
+
+The current baseline is the first revision, so rolling it back drops all application tables and
+their data. Back up the database before running `alembic downgrade -1`. Set `DATABASE_URL` to select
+the SQLite or PostgreSQL target; PostgreSQL URLs are normalized to the installed psycopg 3 driver.
 
 ## Portfolio transactions
 
@@ -140,9 +172,10 @@ The production database must use TLS according to the database provider's connec
 ## Verification
 
 ```bash
-ruff format --check .
-ruff check .
-pytest -q
+.venv/bin/python scripts/verify_environment.py
+.venv/bin/python -m ruff format --check .
+.venv/bin/python -m ruff check .
+.venv/bin/python -m pytest -q
 ```
 
 Tests cover seeded statement rebuilding, duplicate-safe imports, FIFO sales, cash ledger entries, uncapped holdings, analytics, idempotent order-fill allocation, and a credential-free Streamlit render.

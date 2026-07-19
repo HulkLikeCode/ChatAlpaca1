@@ -9,7 +9,6 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from chat_alpaca.config import get_settings
-from chat_alpaca.models import Base
 
 
 @event.listens_for(Engine, "connect")
@@ -48,7 +47,3 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
-
-
-def init_database() -> None:
-    Base.metadata.create_all(get_engine())

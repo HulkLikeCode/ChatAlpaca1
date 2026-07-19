@@ -17,8 +17,9 @@ from chat_alpaca.analytics import (
     rebase_comparison_series,
     summary_metrics,
 )
+from chat_alpaca.bootstrap import bootstrap_database
 from chat_alpaca.config import get_settings
-from chat_alpaca.db import init_database, session_scope
+from chat_alpaca.db import session_scope
 from chat_alpaca.forecasting import ProjectionResult, simulate_portfolio_projection
 from chat_alpaca.market_data import get_benchmark_daily_closes, get_daily_closes
 from chat_alpaca.models import OrderAllocation, Portfolio, PortfolioTransaction
@@ -42,7 +43,6 @@ from chat_alpaca.portfolio_service import (
     rebuild_portfolio_from_csv,
     record_transaction,
     rename_portfolio,
-    seed_database,
     shares,
     update_transaction,
 )
@@ -1758,9 +1758,7 @@ def render_architecture() -> None:
 
 
 def main() -> None:
-    init_database()
-    with session_scope() as session:
-        seed_database(session)
+    bootstrap_database()
     all_portfolios = load_portfolios()
     reporting_portfolios = [
         portfolio for portfolio in all_portfolios if portfolio_has_data(portfolio)
