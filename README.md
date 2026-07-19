@@ -1,6 +1,6 @@
-# ChatAlpaca1
+# ChatAlpaca1 aka DashApp
 
-A compact personal portfolio dashboard with public benchmark views, password-protected owner controls, automatic database persistence, and Alpaca order allocation. The first release is paper-first and keeps up to 20 internal portfolios separate even though Alpaca holds their combined positions in one brokerage account.
+A private, multi-portfolio personal portfolio manager that brings together portfolio-specific and broader-market analysis, current valuations, historical performance, and planning/forecasting tools in one dashboard. It supports internal portfolio tracking, transaction-ledger accounting, benchmarking, historical analysis, projections, automatic database persistence, and Alpaca order allocation. The first release is paper-first and keeps up to 20 internal portfolios separate even though Alpaca holds their combined positions in one brokerage account.
 
 ## Included
 
@@ -24,9 +24,19 @@ A compact personal portfolio dashboard with public benchmark views, password-pro
 - Architecture hooks for strategies, short positions, options, and separately gated live trading
 - Dark black/blue/purple/white theme with no green or red status colors
 
+## Data scope and roadmap
+
+The dashboard uses an individual Alpaca Trading API account on the free Basic subscription. For US stocks and ETFs, the plan provides IEX real-time market data, historical data since 2016 with the most recent 15 minutes unavailable through the historical API, and 200 historical API calls per minute. See Alpaca's [Trading API subscription documentation](https://docs.alpaca.markets/us/docs/about-market-data-api#trading-api-subscriptions) for current plan details.
+
+Development will continually expand historical analysis and forecasting capabilities, using as much Alpaca API data as is reasonable within the account's data entitlement, coverage, and rate-limit constraints. For critical historical-market-data gaps, manually maintained Stooq uploads may be used as an occasional contingency source.
+
+A future state may add an Alpaca paper account that mirrors portfolios currently held at Schwab and Fidelity, streamlining real-time updates. Until then, Schwab and Fidelity CSV transaction imports are available as occasional reconciliation patches rather than the preferred operating model.
+
+The ultimate goal is a private, comprehensive manager for multiple personal portfolios, combining portfolio-specific and general-market historical, real-time, and forecasting capabilities.
+
 ## Safety model
 
-The public link exposes the exact internally tracked portfolios but never exposes credentials or owner controls. `ADMIN_PASSWORD` unlocks owner features for a browser session.
+The dashboard is intended for private access. `ADMIN_PASSWORD` unlocks owner features for a browser session; deployment access controls must prevent unauthorized users from reaching the application. Credentials and owner controls are never exposed.
 
 Paper mode is the default. Live mode requires all three of the following:
 
@@ -115,7 +125,7 @@ Alpaca remains the authority for brokerage orders and combined positions. This a
 
 ## Production deployment
 
-GitHub Pages cannot run this Python application. Deploy the private GitHub repository through Streamlit Community Cloud and make the Streamlit app public for view-only access.
+GitHub Pages cannot run this Python application. Deploy the private GitHub repository through Streamlit Community Cloud or another private-capable host, and restrict application access to authorized users.
 
 Before deployment:
 
@@ -123,7 +133,7 @@ Before deployment:
 2. Copy its connection URL into the Streamlit app's secret settings as `DATABASE_URL`.
 3. Add `ADMIN_PASSWORD`, rotated Alpaca paper credentials, and the remaining values from `.env.example` to Streamlit secrets.
 4. Keep the GitHub repository private and deploy `streamlit_app.py` as the entry point.
-5. Confirm the public view does not show Manage or Trade tabs before sharing the link.
+5. Configure the host's access controls and confirm that only authorized users can reach the application before sharing it.
 
 The production database must use TLS according to the database provider's connection instructions. SQLite is intended for local development only because a hosted Streamlit filesystem is not durable.
 
