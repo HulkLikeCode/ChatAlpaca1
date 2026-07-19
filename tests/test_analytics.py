@@ -112,17 +112,31 @@ def test_performance_growth_excludes_external_flows_and_opening_positions() -> N
     portfolio = Portfolio(id=1, name="Performance portfolio", cash=Decimal("220"))
     portfolio.transactions = [
         PortfolioTransaction(
-            id=1, transaction_date=date(2026, 1, 1), kind="transfer", action="Transfer",
-            cash_delta=Decimal("100"), source="test",
+            id=1,
+            transaction_date=date(2026, 1, 1),
+            kind="transfer",
+            action="Transfer",
+            cash_delta=Decimal("100"),
+            source="test",
         ),
         PortfolioTransaction(
-            id=2, transaction_date=date(2026, 1, 2), kind="cash_adjustment",
-            action="Cash Adjustment", cash_delta=Decimal("100"), source="test",
+            id=2,
+            transaction_date=date(2026, 1, 2),
+            kind="cash_adjustment",
+            action="Cash Adjustment",
+            cash_delta=Decimal("100"),
+            source="test",
         ),
         PortfolioTransaction(
-            id=3, transaction_date=date(2026, 1, 3), kind="opening_position",
-            action="Opening Position", symbol="ABC", quantity=Decimal("2"), price=Decimal("10"),
-            cash_delta=Decimal("0"), source="test",
+            id=3,
+            transaction_date=date(2026, 1, 3),
+            kind="opening_position",
+            action="Opening Position",
+            symbol="ABC",
+            quantity=Decimal("2"),
+            price=Decimal("10"),
+            cash_delta=Decimal("0"),
+            source="test",
         ),
     ]
     closes = pd.DataFrame(

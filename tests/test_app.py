@@ -10,16 +10,18 @@ def test_public_app_renders_without_credentials() -> None:
 
     assert not app.exception
     assert app.title[0].value == "KC's Retirement Dough, Let's GO!!!"
-    assert [tab.label for tab in app.tabs] == ["Overview", "Compare"]
+    assert [tab.label for tab in app.tabs] == ["Overview", "Compare", "Forecast"]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
     assert [item.label for item in app.metric].count("Total selected value") == 2
-    assert not app.checkbox
+    assert [item.label for item in app.checkbox] == ["Set a target value"]
     assert "Portfolios" in [item.label for item in app.multiselect]
     portfolio_selector = next(item for item in app.multiselect if item.label == "Portfolios")
     assert portfolio_selector.value == ["__all_portfolios__"]
     assert [item.label for item in app.date_input] == ["Custom Start", "Custom End"]
     assert app.date_input[0].value == date(2026, 5, 15)
     assert "Exact holdings" in [item.label for item in app.expander]
+    assert "Projection scope" in [item.label for item in app.selectbox]
+    assert "Forecast horizon (years)" in [item.label for item in app.select_slider]
     assert "By portfolio / lot" in app.radio[0].options
     cash_table = next(
         item.value for item in app.dataframe if list(item.value.columns) == ["Portfolio", "Cash"]
@@ -50,6 +52,7 @@ def test_phase_2_owner_manage_controls_render() -> None:
     assert [tab.label for tab in app.tabs] == [
         "Overview",
         "Compare",
+        "Forecast",
         "Manage",
         "Trade",
         "Architecture",

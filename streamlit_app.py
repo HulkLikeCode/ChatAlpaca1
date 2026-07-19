@@ -20,6 +20,7 @@ from chat_alpaca.analytics import (
 )
 from chat_alpaca.config import get_settings
 from chat_alpaca.db import init_database, session_scope
+from chat_alpaca.forecasting import ProjectionResult, simulate_portfolio_projection
 from chat_alpaca.market_data import get_daily_closes
 from chat_alpaca.models import OrderAllocation, Portfolio, PortfolioTransaction
 from chat_alpaca.portfolio_service import (
@@ -77,6 +78,25 @@ st.markdown(THEME_CSS, unsafe_allow_html=True)
 @st.cache_data(ttl=900, show_spinner=False)
 def cached_closes(symbols: tuple[str, ...], start: date, end: date) -> pd.DataFrame:
     return get_daily_closes(list(symbols), start, end)
+
+
+@st.cache_data(show_spinner=False)
+def cached_projection(
+    current_value: float,
+    annual_return: float,
+    annual_volatility: float,
+    monthly_contribution: float,
+    horizon_years: int,
+    target_value: float | None,
+) -> ProjectionResult:
+    return simulate_portfolio_projection(
+        current_value=current_value,
+        annual_return=annual_return,
+        annual_volatility=annual_volatility,
+        monthly_contribution=monthly_contribution,
+        horizon_years=horizon_years,
+        target_value=target_value,
+    )
 
 
 def dollars(value: object) -> str:
@@ -730,6 +750,193 @@ def render_compare(
             "All series are rebased to $100. Portfolio performance excludes transfers, cash "
             "adjustments, and contributed opening positions; metrics use adjusted daily closes from Alpaca."
         )
+
+
+FORECAST_PRESETS = {
+    "Conservative": (0.05, 0.08),
+    "Baseline": (0.07, 0.12),
+    "Growth": (0.09, 0.16),
+}
+
+
+def _apply_forecast_preset() -> None:
+    annual_return, annual_volatility = FORECAST_PRESETS[st.session_state.forecast_preset]
+    st.session_state.forecast_annual_return = annual_return * 100
+    st.session_state.forecast_annual_volatility = annual_volatility * 100
+
+
+def render_forecast(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
+    """Render public, assumption-driven long-term portfolio planning scenarios."""
+    if not portfolios:
+        st.caption("No portfolios are available for a projection.")
+        return
+
+    scope_options = ["Selected portfolios", *(portfolio.name for portfolio in portfolios)]
+    scope = st.selectbox("Projection scope", scope_options, key="forecast_scope")
+    scoped_portfolios = (
+        portfolios
+        if scope == "Selected portfolios"
+        else [next(portfolio for portfolio in portfolios if portfolio.name == scope)]
+    )
+    current_value = float(
+        total_portfolio_value(scoped_portfolios, closes)
+        if not closes.empty
+        else sum((portfolio_cost(portfolio) for portfolio in scoped_portfolios), start=money(0))
+    )
+    if current_value <= 0:
+        st.info("A projection requires a selected portfolio with a positive current value.")
+        return
+
+    st.caption(
+        f"Starting value for {scope}: {dollars(current_value)}"
+        + (" (cost basis because live market data is unavailable)." if closes.empty else ".")
+    )
+    st.session_state.setdefault("forecast_preset", "Baseline")
+    st.session_state.setdefault("forecast_annual_return", 7.0)
+    st.session_state.setdefault("forecast_annual_volatility", 12.0)
+    st.session_state.setdefault("forecast_monthly_contribution", 0.0)
+    st.session_state.setdefault("forecast_horizon", 10)
+
+    first_row = st.columns(4)
+    first_row[0].selectbox(
+        "Scenario preset",
+        list(FORECAST_PRESETS),
+        key="forecast_preset",
+        on_change=_apply_forecast_preset,
+    )
+    horizon_years = first_row[1].select_slider(
+        "Forecast horizon (years)", options=list(range(1, 11)), key="forecast_horizon"
+    )
+    annual_return = first_row[2].number_input(
+        "Expected annual return (%)",
+        min_value=-99.0,
+        max_value=50.0,
+        step=0.25,
+        key="forecast_annual_return",
+    )
+    annual_volatility = first_row[3].number_input(
+        "Annual volatility (%)",
+        min_value=0.0,
+        max_value=100.0,
+        step=0.25,
+        key="forecast_annual_volatility",
+    )
+    second_row = st.columns([1.2, 1.0, 2.0])
+    monthly_contribution = second_row[0].number_input(
+        "Monthly contribution ($)", min_value=0.0, step=100.0, key="forecast_monthly_contribution"
+    )
+    include_target = second_row[1].checkbox("Set a target value", key="forecast_include_target")
+    target_value = (
+        second_row[2].number_input(
+            "Target portfolio value ($)", min_value=1.0, step=1_000.0, key="forecast_target_value"
+        )
+        if include_target
+        else None
+    )
+
+    result = cached_projection(
+        current_value=current_value,
+        annual_return=annual_return / 100,
+        annual_volatility=annual_volatility / 100,
+        monthly_contribution=monthly_contribution,
+        horizon_years=horizon_years,
+        target_value=target_value,
+    )
+    dates = pd.date_range(
+        pd.Timestamp.today().normalize() + pd.offsets.MonthEnd(1),
+        periods=horizon_years * 12,
+        freq="ME",
+    ).insert(0, pd.Timestamp.today().normalize())
+    percentile_data = result.monthly_percentiles
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=percentile_data["P95"],
+            line={"width": 0, "color": "rgba(126,105,255,0)"},
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=percentile_data["P5"],
+            fill="tonexty",
+            fillcolor="rgba(126,105,255,.16)",
+            line={"width": 0, "color": "rgba(126,105,255,0)"},
+            name="5th–95th percentile",
+            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>5th percentile</extra>",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=percentile_data["P75"],
+            line={"width": 0, "color": "rgba(105,126,255,0)"},
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=percentile_data["P25"],
+            fill="tonexty",
+            fillcolor="rgba(105,126,255,.28)",
+            line={"width": 0, "color": "rgba(105,126,255,0)"},
+            name="25th–75th percentile",
+            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>25th percentile</extra>",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=percentile_data["P50"],
+            mode="lines",
+            name="Median scenario",
+            line={"width": 3, "color": PLOT_COLORS[0]},
+            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>Median scenario</extra>",
+        )
+    )
+    figure.update_layout(
+        height=480,
+        margin={"l": 12, "r": 12, "t": 24, "b": 12},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(6,8,16,.62)",
+        font={"color": "#F7F8FF"},
+        legend={"orientation": "h", "y": 1.08},
+        hovermode="x unified",
+        yaxis={"title": "Portfolio value", "tickprefix": "$", "gridcolor": "rgba(105,126,255,.14)"},
+        xaxis={"gridcolor": "rgba(105,126,255,.10)"},
+    )
+    st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+
+    annual = result.annual_percentiles.iloc[1:].reset_index()
+    annual.insert(1, "Calendar year", [date.today().year + year for year in annual["Year"]])
+    st.dataframe(
+        annual,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Year": st.column_config.NumberColumn("Year from now", format="%d"),
+            "Calendar year": st.column_config.NumberColumn(format="%d"),
+            **{
+                percentile: st.column_config.NumberColumn(format="$%,.0f")
+                for percentile in ("P5", "P25", "P50", "P75", "P95")
+            },
+        },
+    )
+    if result.target_probability is not None:
+        st.metric(
+            f"Chance of reaching {dollars(target_value)} in {horizon_years} years",
+            f"{result.target_probability:.0%}",
+        )
+    st.warning(
+        "Planning illustration only—not a prediction or financial advice. Outcomes are based on "
+        "your editable return, volatility, and contribution assumptions; past performance does "
+        "not guarantee future results. The range widens substantially over longer horizons."
+    )
 
 
 def transaction_frame(
@@ -1419,7 +1626,7 @@ def main() -> None:
     if flash := st.session_state.pop("flash", None):
         st.info(flash)
     closes, data_note = get_prices(selected_portfolios, master_start - timedelta(days=7))
-    labels = ["Overview", "Compare"]
+    labels = ["Overview", "Compare", "Forecast"]
     if owner:
         labels.extend(["Manage", "Trade", "Architecture"])
     if st.session_state.get("active_page") not in {None, *labels}:
@@ -1440,17 +1647,19 @@ def main() -> None:
             master_start,
             master_end,
         )
+    with tabs[2]:
+        render_forecast(selected_portfolios, closes)
     if owner:
-        with tabs[2]:
+        with tabs[3]:
             render_portfolio_admin(
                 selected_portfolios,
                 all_portfolios,
                 master_start,
                 master_end,
             )
-        with tabs[3]:
-            render_trade_admin(reporting_portfolios)
         with tabs[4]:
+            render_trade_admin(reporting_portfolios)
+        with tabs[5]:
             render_architecture()
     else:
         st.caption("Owner controls are password-protected and hidden from public viewers.")

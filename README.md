@@ -9,6 +9,7 @@ A compact personal portfolio dashboard with public benchmark views, password-pro
 - Seeded `KCs Traditional IRA`, `KCs Roth IRA`, and `KC and Papa` portfolios
 - Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
+- Public 1–10 year planning projections with editable scenarios, monthly contributions, percentile bands, and target probabilities
 - Password-protected portfolio editor and assigned Alpaca order ticket
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
 - Combined sortable transaction management with portfolio/type/date filters, totals, and guarded edits/deletes
