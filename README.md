@@ -13,7 +13,8 @@ A compact personal portfolio dashboard with public benchmark views, password-pro
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
 - Combined sortable transaction management with portfolio/type/date filters, totals, and guarded edits/deletes
 - Sticky, batched portfolio and master-date controls shared by Overview, Compare, and Manage
-- Portfolio-scoped YTD, trailing-365-day, and custom-range dividend totals
+- Compact portfolio-income reporting for realized dividends and interest, with master-end-aware
+  YTD, trailing-365-day, selected-range, normalized-quarterly, monthly, and source views
 - Transaction-aware all-time, daily, and custom-range portfolio gain/loss excluding contributions
 - Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, and lot drilldown
 - Selected-portfolio total value in both Overview and Compare

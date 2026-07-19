@@ -28,7 +28,6 @@ from chat_alpaca.portfolio_service import (
     create_portfolio,
     delete_portfolio,
     delete_transaction,
-    dividend_totals,
     format_short_date,
     import_statement,
     list_portfolios,
@@ -38,6 +37,8 @@ from chat_alpaca.portfolio_service import (
     parse_short_date,
     parse_statement_csv,
     portfolio_cost,
+    portfolio_income_events,
+    portfolio_income_summary,
     rebuild_portfolio_from_csv,
     record_transaction,
     rename_portfolio,
@@ -55,6 +56,7 @@ from chat_alpaca.trading import (
 )
 
 BENCHMARKS = ("SPY", "QQQ", "DIA", "IWM")
+ALL_PORTFOLIOS_OPTION = "__all_portfolios__"
 EDITABLE_KINDS = (*MANUAL_KINDS, "opening_position")
 MASTER_DEFAULT_START = date(2026, 5, 15)
 CSV_TEMPLATE = """Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount
@@ -146,73 +148,69 @@ def render_master_controls(
     available_ids = [portfolio.id for portfolio in portfolios]
     available_id_set = set(available_ids)
 
-    applied_all = st.session_state.get("master_all_portfolios", True)
     applied_ids = [
         portfolio_id
         for portfolio_id in st.session_state.get("master_portfolio_ids", available_ids)
         if portfolio_id in available_id_set
     ]
-    if applied_all:
-        applied_ids = available_ids
-    elif not applied_ids and available_ids:
-        applied_all = True
-        applied_ids = available_ids
+    applied_all = set(applied_ids) == available_id_set
 
     applied_start = st.session_state.get("master_start_date", min(MASTER_DEFAULT_START, today))
     applied_end = st.session_state.get("master_end_date", today)
     if applied_start > applied_end:
         applied_start = applied_end
 
-    default_draft_ids = [] if applied_all else applied_ids
+    default_draft_ids = [ALL_PORTFOLIOS_OPTION] if applied_all else applied_ids
     draft_ids = [
         portfolio_id
         for portfolio_id in st.session_state.get("master_portfolio_draft", default_draft_ids)
-        if portfolio_id in available_id_set
+        if portfolio_id == ALL_PORTFOLIOS_OPTION or portfolio_id in available_id_set
     ]
     st.session_state.master_portfolio_draft = draft_ids
-    st.session_state.setdefault("master_all_draft", applied_all)
     st.session_state.setdefault("master_start_draft", applied_start)
     st.session_state.setdefault("master_end_draft", applied_end)
 
     id_to_portfolio = {portfolio.id: portfolio for portfolio in portfolios}
     with st.container(key="master_controls"):
         with st.form("master_filters", border=False):
-            columns = st.columns([1.15, 3.2, 1.35, 1.35, 0.9], vertical_alignment="bottom")
-            all_selected = columns[0].checkbox("All Portfolios", key="master_all_draft")
-            selected_ids = columns[1].multiselect(
+            columns = st.columns([3.2, 1.35, 1.35, 0.9], vertical_alignment="bottom")
+            selected_ids = columns[0].multiselect(
                 "Portfolios",
-                available_ids,
+                [ALL_PORTFOLIOS_OPTION, *available_ids],
                 key="master_portfolio_draft",
-                format_func=lambda portfolio_id: id_to_portfolio[portfolio_id].name,
+                format_func=lambda portfolio_id: (
+                    "All Portfolios"
+                    if portfolio_id == ALL_PORTFOLIOS_OPTION
+                    else id_to_portfolio[portfolio_id].name
+                ),
                 placeholder="Choose portfolios",
             )
-            master_start = columns[2].date_input(
-                "Master start",
+            master_start = columns[1].date_input(
+                "Custom Start",
                 key="master_start_draft",
                 max_value=today,
                 format="MM/DD/YYYY",
             )
-            master_end = columns[3].date_input(
-                "Master end",
+            master_end = columns[2].date_input(
+                "Custom End",
                 key="master_end_draft",
                 max_value=today,
                 format="MM/DD/YYYY",
             )
-            applied = columns[4].form_submit_button("Apply", width="stretch", type="primary")
+            applied = columns[3].form_submit_button("Apply", width="stretch", type="primary")
 
         validation_message = None
         if applied:
+            all_selected = ALL_PORTFOLIOS_OPTION in selected_ids
             next_ids = available_ids if all_selected else list(selected_ids)
             if portfolios and not next_ids:
-                validation_message = "Select at least one portfolio or choose All Portfolios."
+                validation_message = "Select at least one portfolio."
             elif master_start > master_end:
-                validation_message = "Master start must be on or before Master end."
+                validation_message = "Custom Start must be on or before Custom End."
             else:
-                applied_all = all_selected
                 applied_ids = next_ids
                 applied_start = master_start
                 applied_end = master_end
-                st.session_state.master_all_portfolios = applied_all
                 st.session_state.master_portfolio_ids = applied_ids
                 st.session_state.master_start_date = applied_start
                 st.session_state.master_end_date = applied_end
@@ -289,13 +287,16 @@ def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) ->
             _, total = latest_values(portfolio, closes)
         unique_symbols = len({lot.symbol for lot in portfolio.holdings})
         cards.append(
-            f"""
-            <div class="portfolio-card">
-              <div class="eyebrow">{escape(portfolio.name)}</div>
-              <div class="value">{dollars(total)}</div>
-              <div class="detail">{unique_symbols} symbols · {dollars(portfolio.cash)} cash</div>
-            </div>
-            """
+            "".join(
+                (
+                    '<div class="portfolio-card">',
+                    f'<div class="eyebrow">{escape(portfolio.name)}</div>',
+                    f'<div class="value">{dollars(total)}</div>',
+                    f'<div class="detail">{unique_symbols} symbols · '
+                    f"{dollars(portfolio.cash)} cash</div>",
+                    "</div>",
+                )
+            )
         )
     st.markdown(
         f'<div class="portfolio-grid">{"".join(cards)}</div>',
@@ -481,22 +482,82 @@ def render_consolidated_holdings(
             )
 
 
-def render_dividend_totals(
+def render_portfolio_income(
     portfolios: list[Portfolio], custom_start: date, custom_end: date
 ) -> None:
-    today = date.today()
+    portfolio_ids = [portfolio.id for portfolio in portfolios]
     with session_scope() as session:
-        totals = dividend_totals(
-            session,
-            [portfolio.id for portfolio in portfolios],
-            custom_start,
-            custom_end,
-            as_of=today,
+        summary = portfolio_income_summary(session, portfolio_ids, custom_start, custom_end)
+        events = portfolio_income_events(session, portfolio_ids, custom_start, custom_end)
+
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Selected-range income", dollars(summary.selected_range))
+    metric_columns[1].metric("YTD through end date", dollars(summary.year_to_date))
+    metric_columns[2].metric("Trailing 365 through end date", dollars(summary.trailing_365_days))
+    metric_columns[3].metric(
+        "Normalized quarterly average", dollars(summary.normalized_quarterly_average)
+    )
+    st.caption(
+        "Cash received from gross dividend and interest credits. The quarterly average "
+        "normalizes the selected range to 91.3125 days; it is not a forecast."
+    )
+    if not events:
+        st.caption("No dividend or interest income was received in the selected range.")
+        return
+
+    names_by_id = {portfolio.id: portfolio.name for portfolio in portfolios}
+    rows = [
+        {
+            "Date": transaction.transaction_date,
+            "Month": pd.Timestamp(transaction.transaction_date).to_period("M").to_timestamp(),
+            "Portfolio": names_by_id[transaction.portfolio_id],
+            "Income type": kind_label(transaction.kind),
+            "Source": (
+                transaction.symbol or "Unassigned dividend"
+                if transaction.kind == "dividend"
+                else "Interest"
+            ),
+            "Cash received": float(transaction.cash_delta),
+        }
+        for transaction in events
+    ]
+    income = pd.DataFrame(rows)
+    monthly = income.groupby(["Month", "Income type"], as_index=False)["Cash received"].sum()
+    figure = go.Figure()
+    for index, income_type in enumerate(("Dividend", "Interest")):
+        values = monthly[monthly["Income type"] == income_type]
+        figure.add_trace(
+            go.Bar(
+                x=values["Month"],
+                y=values["Cash received"],
+                name=income_type,
+                marker_color=PLOT_COLORS[index % len(PLOT_COLORS)],
+                hovertemplate="%{x|%b %Y}<br>$%{y:,.2f}<extra>" + income_type + "</extra>",
+            )
         )
-    metric_columns = st.columns(3)
-    metric_columns[0].metric("Year to date", dollars(totals.year_to_date))
-    metric_columns[1].metric("Trailing 365 days", dollars(totals.trailing_365_days))
-    metric_columns[2].metric("Custom range", dollars(totals.custom_range))
+    figure.update_layout(
+        height=300,
+        barmode="stack",
+        margin={"l": 12, "r": 12, "t": 18, "b": 12},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend={"orientation": "h", "y": 1.08, "x": 0},
+        xaxis={"title": None, "gridcolor": "rgba(105,126,255,.08)"},
+        yaxis={"title": "Cash received", "tickprefix": "$", "gridcolor": "rgba(105,126,255,.14)"},
+    )
+    st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+
+    sources = (
+        income.groupby(["Portfolio", "Income type", "Source"], as_index=False)["Cash received"]
+        .sum()
+        .sort_values(["Portfolio", "Income type", "Source"])
+    )
+    st.dataframe(
+        sources,
+        hide_index=True,
+        width="stretch",
+        column_config={"Cash received": st.column_config.NumberColumn(format="$%,.2f")},
+    )
 
 
 def render_cash_positions(portfolios: list[Portfolio]) -> None:
@@ -529,8 +590,8 @@ def render_overview(
         render_portfolio_cards(portfolios, closes)
         if data_note:
             st.info(f"Live market values are unavailable, so cost basis is shown. {data_note}")
-    with st.expander("Dividend totals", expanded=False):
-        render_dividend_totals(portfolios, custom_start, custom_end)
+    with st.expander("Portfolio income", expanded=False):
+        render_portfolio_income(portfolios, custom_start, custom_end)
     render_consolidated_holdings(portfolios, closes, custom_start, custom_end)
     with st.expander("Cash positions", expanded=False):
         render_cash_positions(portfolios)
@@ -559,7 +620,7 @@ def render_compare(
             selected_benchmarks = st.multiselect(
                 "Benchmark ETFs",
                 BENCHMARKS,
-                default=list(BENCHMARKS),
+                default=["SPY"],
                 key="compare_benchmarks",
             )
         with controls[1]:
@@ -567,6 +628,7 @@ def render_compare(
                 "Additional stocks or ETFs",
                 placeholder="AAPL, MSFT, VTI",
                 key="compare_extras",
+                help="Enter one or more symbols, separated by commas.",
             )
         extras = tuple(
             dict.fromkeys(

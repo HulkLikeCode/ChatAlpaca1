@@ -13,9 +13,11 @@ def test_public_app_renders_without_credentials() -> None:
     assert [tab.label for tab in app.tabs] == ["Overview", "Compare"]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
     assert [item.label for item in app.metric].count("Total selected value") == 2
-    assert [item.label for item in app.checkbox] == ["All Portfolios"]
+    assert not app.checkbox
     assert "Portfolios" in [item.label for item in app.multiselect]
-    assert [item.label for item in app.date_input] == ["Master start", "Master end"]
+    portfolio_selector = next(item for item in app.multiselect if item.label == "Portfolios")
+    assert portfolio_selector.value == ["__all_portfolios__"]
+    assert [item.label for item in app.date_input] == ["Custom Start", "Custom End"]
     assert app.date_input[0].value == date(2026, 5, 15)
     assert "Exact holdings" in [item.label for item in app.expander]
     assert "By portfolio / lot" in app.radio[0].options
@@ -24,6 +26,19 @@ def test_public_app_renders_without_credentials() -> None:
     )
     assert cash_table.iloc[-1]["Portfolio"] == "Total"
     assert not any("latest market value" in item.value for item in app.markdown)
+
+    portfolio_grid = next(
+        item.value for item in app.markdown if item.value.startswith('<div class="portfolio-grid">')
+    )
+    assert portfolio_grid.count('<div class="portfolio-card">') > 1
+    assert "\n" not in portfolio_grid
+
+
+def test_comparison_defaults_to_spy_benchmark() -> None:
+    app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+
+    benchmark_selector = next(item for item in app.multiselect if item.label == "Benchmark ETFs")
+    assert benchmark_selector.value == ["SPY"]
 
 
 def test_phase_2_owner_manage_controls_render() -> None:
@@ -45,10 +60,12 @@ def test_phase_2_owner_manage_controls_render() -> None:
     assert "Import target portfolio" in [item.label for item in app.selectbox]
     assert "Portfolio action" in [item.label for item in app.selectbox]
     assert "Transaction date (M/D/YY)" in [item.label for item in app.text_input]
-    assert [item.label for item in app.metric].count("Year to date") == 1
-    assert [item.label for item in app.metric].count("Trailing 365 days") == 1
-    assert [item.label for item in app.metric].count("Custom range") == 1
-    assert [item.label for item in app.date_input] == ["Master start", "Master end"]
+    assert [item.label for item in app.metric].count("Selected-range income") == 1
+    assert [item.label for item in app.metric].count("YTD through end date") == 1
+    assert [item.label for item in app.metric].count("Trailing 365 through end date") == 1
+    assert [item.label for item in app.metric].count("Normalized quarterly average") == 1
+    assert "Portfolio income" in [item.label for item in app.expander]
+    assert [item.label for item in app.date_input] == ["Custom Start", "Custom End"]
     manage_sections = [item.label for item in app.expander]
     assert manage_sections.index("Transactions") < manage_sections.index("Add transaction")
     assert manage_sections.index("Add transaction") < manage_sections.index("Brokerage CSV")
@@ -72,14 +89,12 @@ def test_master_filters_apply_portfolios_and_dates_together() -> None:
     app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
     first_portfolio_id = 1
 
-    app.checkbox[0].uncheck()
     app.multiselect[0].set_value([first_portfolio_id])
     app.date_input[0].set_value(date(2026, 6, 1))
     app.date_input[1].set_value(date(2026, 6, 30))
     app.button[0].click().run()
 
     assert not app.exception
-    assert app.session_state["master_all_portfolios"] is False
     assert app.session_state["master_portfolio_ids"] == [first_portfolio_id]
     assert app.session_state["master_start_date"] == date(2026, 6, 1)
     assert app.session_state["master_end_date"] == date(2026, 6, 30)

@@ -36,6 +36,8 @@ from chat_alpaca.portfolio_service import (
     parse_short_date,
     parse_statement_csv,
     portfolio_cost,
+    portfolio_income_events,
+    portfolio_income_summary,
     rebuild_portfolio_from_csv,
     record_transaction,
     replace_holdings,
@@ -368,6 +370,49 @@ def test_multi_portfolio_listing_and_dividend_period_totals(session: Session) ->
     assert totals.year_to_date == Decimal("40.0000")
     assert totals.trailing_365_days == Decimal("60.0000")
     assert totals.custom_range == Decimal("30.0000")
+
+
+def test_portfolio_income_uses_master_end_and_includes_only_dividends_and_interest(
+    session: Session,
+) -> None:
+    portfolio = create_portfolio(session, "Income portfolio")
+    entries = [
+        (date(2025, 7, 1), "dividend", "OLD", Decimal("100")),
+        (date(2025, 7, 2), "interest", None, Decimal("5")),
+        (date(2026, 1, 1), "dividend", "YTD", Decimal("10")),
+        (date(2026, 6, 1), "dividend", "SOLD", Decimal("20")),
+        (date(2026, 6, 15), "interest", None, Decimal("30")),
+        (date(2026, 6, 20), "award", None, Decimal("500")),
+        (date(2026, 7, 1), "dividend", "FUTURE", Decimal("1000")),
+    ]
+    for transaction_date, kind, symbol, amount in entries:
+        record_transaction(
+            session,
+            portfolio.id,
+            TransactionDraft(
+                transaction_date,
+                kind.title(),
+                kind,
+                symbol,
+                "Income summary test",
+                None,
+                None,
+                None,
+                amount,
+            ),
+        )
+
+    summary = portfolio_income_summary(session, [portfolio.id], date(2026, 6, 1), date(2026, 6, 30))
+    events = portfolio_income_events(session, [portfolio.id], date(2026, 6, 1), date(2026, 6, 30))
+
+    assert summary.selected_range == Decimal("50.0000")
+    assert summary.year_to_date == Decimal("60.0000")
+    assert summary.trailing_365_days == Decimal("165.0000")
+    assert summary.normalized_quarterly_average == Decimal("152.1875")
+    assert [(event.kind, event.symbol) for event in events] == [
+        ("dividend", "SOLD"),
+        ("interest", None),
+    ]
 
 
 def test_short_transaction_date_format_round_trip() -> None:

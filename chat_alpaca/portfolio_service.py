@@ -107,6 +107,14 @@ class DividendTotals:
     custom_range: Decimal
 
 
+@dataclass(frozen=True)
+class PortfolioIncomeSummary:
+    year_to_date: Decimal
+    trailing_365_days: Decimal
+    selected_range: Decimal
+    normalized_quarterly_average: Decimal
+
+
 def format_short_date(value: date) -> str:
     """Format a date with the compact transaction convention used by the UI."""
     return f"{value.month}/{value.day}/{value.strftime('%y')}"
@@ -494,6 +502,64 @@ def dividend_totals(
         year_to_date=total(date(effective_date.year, 1, 1), effective_date),
         trailing_365_days=total(effective_date - timedelta(days=364), effective_date),
         custom_range=total(custom_start, custom_end),
+    )
+
+
+def portfolio_income_events(
+    session: Session,
+    portfolio_ids: Iterable[int],
+    start: date,
+    end: date,
+) -> list[PortfolioTransaction]:
+    """Return realized dividend and interest cash events in an inclusive reporting range."""
+    selected_ids = list(dict.fromkeys(portfolio_ids))
+    if start > end:
+        raise ValueError("The portfolio income start date must be on or before the end date.")
+    if not selected_ids:
+        return []
+    statement = (
+        select(PortfolioTransaction)
+        .where(
+            PortfolioTransaction.portfolio_id.in_(selected_ids),
+            PortfolioTransaction.kind.in_(("dividend", "interest")),
+            PortfolioTransaction.transaction_date.between(start, end),
+        )
+        .order_by(PortfolioTransaction.transaction_date, PortfolioTransaction.id)
+    )
+    return list(session.scalars(statement))
+
+
+def portfolio_income_summary(
+    session: Session,
+    portfolio_ids: Iterable[int],
+    selected_start: date,
+    selected_end: date,
+) -> PortfolioIncomeSummary:
+    """Summarize realized dividend and interest cash through the selected master end date."""
+    selected_ids = list(dict.fromkeys(portfolio_ids))
+    if selected_start > selected_end:
+        raise ValueError("The portfolio income start date must be on or before the end date.")
+
+    def total(start: date, end: date) -> Decimal:
+        if not selected_ids:
+            return money(0)
+        value = session.scalar(
+            select(func.coalesce(func.sum(PortfolioTransaction.cash_delta), 0)).where(
+                PortfolioTransaction.portfolio_id.in_(selected_ids),
+                PortfolioTransaction.kind.in_(("dividend", "interest")),
+                PortfolioTransaction.transaction_date.between(start, end),
+            )
+        )
+        return money(value or 0)
+
+    selected_total = total(selected_start, selected_end)
+    inclusive_days = Decimal((selected_end - selected_start).days + 1)
+    normalized_quarter = money(selected_total / inclusive_days * Decimal("91.3125"))
+    return PortfolioIncomeSummary(
+        year_to_date=total(date(selected_end.year, 1, 1), selected_end),
+        trailing_365_days=total(selected_end - timedelta(days=364), selected_end),
+        selected_range=selected_total,
+        normalized_quarterly_average=normalized_quarter,
     )
 
 
