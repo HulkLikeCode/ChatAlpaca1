@@ -160,6 +160,60 @@ def normalized_growth(series: pd.Series) -> pd.Series:
     return normalized
 
 
+def _flow_adjusted_growth(
+    values: pd.Series, transactions: Iterable[PortfolioTransaction]
+) -> pd.Series:
+    """Rebase a value series after removing non-performance portfolio flows."""
+    values = values.replace([np.inf, -np.inf], np.nan)
+    if values.empty:
+        return pd.Series(dtype=float, name=values.name)
+
+    flows_by_date: dict[date, float] = {}
+    for transaction in transactions:
+        flow = _external_flow(transaction)
+        if flow:
+            flows_by_date[transaction.transaction_date] = (
+                flows_by_date.get(transaction.transaction_date, 0.0) + flow
+            )
+
+    growth = pd.Series(np.nan, index=values.index, dtype=float, name=values.name)
+    level: float | None = None
+    previous_value: float | None = None
+    for timestamp, value in values.items():
+        if pd.isna(value):
+            continue
+        current_value = float(value)
+        flow = flows_by_date.get(timestamp.date(), 0.0)
+        if level is None:
+            if current_value != 0 or flow != 0:
+                level = 100.0
+                growth.loc[timestamp] = level
+        elif previous_value not in (None, 0.0):
+            level *= (current_value - flow) / previous_value
+            growth.loc[timestamp] = level
+        elif current_value != 0 or flow != 0:
+            level = 100.0
+            growth.loc[timestamp] = level
+        previous_value = current_value
+    return growth
+
+
+def performance_growth(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
+    """Return $100-rebased portfolio performance excluding external flows."""
+    return _flow_adjusted_growth(portfolio_series(portfolio, closes), _transactions(portfolio))
+
+
+def combined_performance_growth(portfolios: Iterable[Portfolio], closes: pd.DataFrame) -> pd.Series:
+    """Return $100-rebased combined performance excluding each portfolio's flows."""
+    portfolio_list = list(portfolios)
+    values = combined_series(portfolio_series(portfolio, closes) for portfolio in portfolio_list)
+    values.name = "Selected portfolios"
+    return _flow_adjusted_growth(
+        values,
+        (transaction for portfolio in portfolio_list for transaction in _transactions(portfolio)),
+    )
+
+
 def summary_metrics(series: pd.Series) -> dict[str, float]:
     values = series.replace([np.inf, -np.inf], np.nan).dropna()
     if len(values) < 2 or values.iloc[0] == 0:

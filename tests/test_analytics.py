@@ -8,6 +8,7 @@ import pandas as pd
 from chat_alpaca.analytics import (
     consolidated_holdings,
     normalized_growth,
+    performance_growth,
     portfolio_gain_loss,
     portfolio_series,
     summary_metrics,
@@ -105,6 +106,36 @@ def test_transaction_aware_values_and_gain_loss_exclude_external_cash_flows() ->
     assert gain_loss.daily == 9.0
     assert gain_loss.custom == 9.0
     assert total_portfolio_value([portfolio], closes) == Decimal("109.0")
+
+
+def test_performance_growth_excludes_external_flows_and_opening_positions() -> None:
+    portfolio = Portfolio(id=1, name="Performance portfolio", cash=Decimal("220"))
+    portfolio.transactions = [
+        PortfolioTransaction(
+            id=1, transaction_date=date(2026, 1, 1), kind="transfer", action="Transfer",
+            cash_delta=Decimal("100"), source="test",
+        ),
+        PortfolioTransaction(
+            id=2, transaction_date=date(2026, 1, 2), kind="cash_adjustment",
+            action="Cash Adjustment", cash_delta=Decimal("100"), source="test",
+        ),
+        PortfolioTransaction(
+            id=3, transaction_date=date(2026, 1, 3), kind="opening_position",
+            action="Opening Position", symbol="ABC", quantity=Decimal("2"), price=Decimal("10"),
+            cash_delta=Decimal("0"), source="test",
+        ),
+    ]
+    closes = pd.DataFrame(
+        {"ABC": [10.0, 10.0, 10.0, 11.0]},
+        index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]),
+    )
+
+    assert performance_growth(portfolio, closes).round(6).tolist() == [
+        100.0,
+        100.0,
+        100.0,
+        100.909091,
+    ]
 
 
 def test_consolidated_holdings_sum_symbols_and_preserve_lot_breakdown() -> None:

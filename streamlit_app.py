@@ -9,12 +9,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from chat_alpaca.analytics import (
-    combined_series,
+    combined_performance_growth,
     consolidated_holdings,
     latest_values,
     normalized_growth,
+    performance_growth,
     portfolio_gain_loss,
-    portfolio_series,
     summary_metrics,
     total_portfolio_value,
 )
@@ -658,10 +658,9 @@ def render_compare(
             return
 
         per_portfolio = {
-            portfolio.name: portfolio_series(portfolio, closes) for portfolio in portfolios
+            portfolio.name: performance_growth(portfolio, closes) for portfolio in portfolios
         }
-        combined = combined_series(per_portfolio.values())
-        combined.name = "Selected portfolios"
+        combined = combined_performance_growth(portfolios, closes)
         series: list[pd.Series] = [combined, *per_portfolio.values()]
         series = [
             item[(item.index.date >= custom_start) & (item.index.date <= custom_end)]
@@ -675,7 +674,10 @@ def render_compare(
                 ].copy()
                 stock_series.name = symbol
                 series.append(stock_series)
-        normalized = [normalized_growth(item) for item in series]
+        normalized = [
+            item if item.name in {*per_portfolio, combined.name} else normalized_growth(item)
+            for item in series
+        ]
         normalized = [item for item in normalized if not item.empty]
         if not normalized:
             st.info("The selected series do not share usable data in this date range.")
@@ -724,7 +726,10 @@ def render_compare(
                 )
             },
         )
-        st.caption("All series are rebased to $100. Metrics use adjusted daily closes from Alpaca.")
+        st.caption(
+            "All series are rebased to $100. Portfolio performance excludes transfers, cash "
+            "adjustments, and contributed opening positions; metrics use adjusted daily closes from Alpaca."
+        )
 
 
 def transaction_frame(
