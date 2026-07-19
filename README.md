@@ -12,6 +12,7 @@ A compact personal portfolio dashboard with public benchmark views, password-pro
 - Password-protected portfolio editor and assigned Alpaca order ticket
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
 - Combined sortable transaction management with portfolio/type/date filters, totals, and guarded edits/deletes
+- Sticky, batched portfolio and master-date controls shared by Overview, Compare, and Manage
 - Portfolio-scoped YTD, trailing-365-day, and custom-range dividend totals
 - Transaction-aware all-time, daily, and custom-range portfolio gain/loss excluding contributions
 - Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, and lot drilldown
@@ -69,12 +70,13 @@ can be rebuilt deterministically after a guarded service-level update or deletio
 Traditional and Roth holdings are recorded as cash-neutral opening-position transactions, and the
 three initial cash balances are recorded as Phase 1 cash adjustments effective `5/15/26`.
 
-Manage can show multiple portfolios in one sortable transaction table. Its portfolio, transaction
-type, and date-range filters also drive the displayed type totals and grand total. Select a row to
-edit or delete that transaction in its own portfolio; the separate **Target portfolio** selector is
-used only for new entries and CSV imports. Cash changes are totaled by transaction type, while share
-quantities are totaled separately by symbol and type. Transaction entry and posted dates use
-`M/D/YY`.
+Manage shows the master-selected portfolios in one sortable transaction table. The master date
+range and transaction-type filter also drive the displayed type totals and grand total. Select a
+row to edit or delete that transaction in its own portfolio; separate target selectors are used for
+new entries and CSV imports. Cash changes are totaled by transaction type, while share quantities
+are totaled separately by symbol and type. Manage keeps Transactions first, followed by Add
+Transaction, Brokerage CSV, and consolidated portfolio administration. Transaction entry and
+posted dates use `M/D/YY`.
 
 Every transaction edit or deletion requires a transaction-specific typed confirmation. Imported,
 seeded, and Alpaca-generated transactions show an additional divergence warning. Updates are marked
@@ -87,12 +89,14 @@ Historical portfolio values are reconstructed from dated transactions and adjust
 closes rather than projecting today's cash and holdings backward. Portfolio gain/loss excludes
 external transfers, cash adjustments, and the cost basis of contributed opening positions; market
 movement, dividends, interest, and awards remain part of performance. Daily gain/loss compares the
-two latest market closes, while custom gain/loss uses the close before the selected start date
-through the selected end date.
+two latest market closes, while custom gain/loss uses the close before the applied master start date
+through the master end date. The same range controls dividend custom totals, Compare charts and
+metrics, exact holdings, and transaction filtering.
 
-Exact Holdings combines the same symbol across every selected portfolio. It shows total shares,
-weighted-average cost, total basis, market value, and all-time/daily/custom gain or loss. The
-expandable portfolio/lot table preserves each acquisition date and original cost basis.
+Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
+two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or
+loss. Its Summary and By Portfolio / Lot views preserve each acquisition date and original cost
+basis without nesting collapsible sections.
 
 Brokerage CSV imports preview every row before posting. The included `KC and Papa.csv` format supports its current buy, sell, dividend, interest, transfer, award, fee, and foreign-tax rows. Re-importing a statement skips transactions already recorded, while the **Rebuild portfolio from statement** action deliberately replaces that portfolio's lots, cash, transaction history, legacy ledger rows, and saved Alpaca allocations after the owner types `REBUILD`.
 

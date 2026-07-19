@@ -6,4 +6,4 @@ psycopg[binary]>=3.2,<4
 pyarrow==14.0.2; platform_system == "Darwin" and platform_machine == "x86_64"
 python-dotenv>=1.0,<2
 SQLAlchemy>=2.0,<3
-streamlit>=1.42,<2
+streamlit>=1.55,<2

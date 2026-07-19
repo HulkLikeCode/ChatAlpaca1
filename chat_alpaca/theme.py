@@ -35,6 +35,24 @@ h1 {
 }
 [data-testid="stMetricValue"] {font-size: 1.55rem; color: var(--ink);}
 [data-testid="stMetricDelta"] {color: var(--cyan) !important;}
+.st-key-master_controls {
+  position: sticky;
+  top: 3.75rem;
+  z-index: 999;
+  margin: .55rem 0 .75rem;
+  padding: .35rem .75rem .15rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(7, 10, 19, .94);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .34);
+  backdrop-filter: blur(16px);
+}
+.st-key-master_controls [data-testid="stForm"] {border: 0; padding: 0;}
+.portfolio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: .75rem;
+}
 .portfolio-card {
   background: linear-gradient(145deg, rgba(17,25,47,.95), rgba(8,11,22,.95));
   border: 1px solid var(--line);
@@ -44,7 +62,7 @@ h1 {
   box-shadow: 0 14px 40px rgba(0,0,0,.24);
 }
 .portfolio-card .eyebrow {color: var(--violet); font-size: .72rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;}
-.portfolio-card .value {font-size: 1.6rem; font-weight: 760; margin-top: .35rem;}
+.portfolio-card .value {font-size: clamp(1.3rem, 2.2vw, 1.75rem); font-weight: 760; margin-top: .35rem; white-space: nowrap;}
 .portfolio-card .detail {color: var(--muted); font-size: .82rem; margin-top: .25rem;}
 .mode-chip {display:inline-block; padding:.18rem .48rem; border:1px solid rgba(103,215,255,.4); border-radius:999px; color:var(--cyan); font-size:.64rem; font-weight:800; letter-spacing:.1em;}
 .stButton > button, .stDownloadButton > button {
