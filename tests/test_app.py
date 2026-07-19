@@ -12,7 +12,7 @@ def test_public_app_renders_without_credentials() -> None:
     assert app.title[0].value == "KC's Retirement Dough, Let's GO!!!"
     assert [tab.label for tab in app.tabs] == ["Overview", "Compare", "Forecast"]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
-    assert [item.label for item in app.metric].count("Total selected value") == 2
+    assert [item.label for item in app.metric].count("Selected cost basis + cash") == 2
     assert [item.label for item in app.checkbox] == ["Set a target value"]
     assert "Portfolios" in [item.label for item in app.multiselect]
     portfolio_selector = next(item for item in app.multiselect if item.label == "Portfolios")

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from chat_alpaca.models import (
@@ -41,6 +42,7 @@ from chat_alpaca.portfolio_service import (
     rebuild_portfolio_from_csv,
     record_transaction,
     replace_holdings,
+    replay_integrity_diagnostic,
     replay_portfolio,
     seed_database,
     set_cash,
@@ -453,6 +455,7 @@ def test_replace_holdings_supports_short_positions(session: Session) -> None:
                 "Cost / share": 200,
             }
         ],
+        migration_or_test_only=True,
     )
     session.flush()
 
@@ -474,8 +477,56 @@ def test_replace_holdings_has_no_symbol_limit(session: Session) -> None:
         for index in range(26)
     ]
 
-    replace_holdings(session, portfolio.id, rows)
+    replace_holdings(session, portfolio.id, rows, migration_or_test_only=True)
     assert len(portfolio.holdings) == 26
+
+
+def test_replace_holdings_cannot_bypass_transaction_ledger(session: Session) -> None:
+    portfolio = create_portfolio(session, "Guarded")
+
+    with pytest.raises(PermissionError, match="opening-position transactions"):
+        replace_holdings(session, portfolio.id, [])
+
+
+def test_replay_integrity_diagnostic_identifies_mismatch_categories(session: Session) -> None:
+    portfolio = create_portfolio(session, "Diagnostic")
+    record_transaction(
+        session,
+        portfolio.id,
+        TransactionDraft(
+            date(2026, 1, 1),
+            "Buy",
+            "buy",
+            "ABC",
+            "Diagnostic buy",
+            Decimal("2"),
+            Decimal("10"),
+            None,
+            Decimal("-20"),
+        ),
+    )
+    assert replay_integrity_diagnostic(session, portfolio.id).is_consistent
+
+    portfolio.cash = Decimal("999")
+    result = replay_integrity_diagnostic(session, portfolio.id)
+
+    assert not result.is_consistent
+    assert set(result.mismatches) == {"cash"}
+
+
+def test_sqlite_rejects_invalid_foreign_key_write(session: Session) -> None:
+    session.add(
+        HoldingLot(
+            portfolio_id=999999,
+            symbol="ABC",
+            shares=Decimal("1"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("10"),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
 
 
 def test_statement_import_is_idempotent_and_preserves_duplicate_rows(session: Session) -> None:

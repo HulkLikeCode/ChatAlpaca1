@@ -37,7 +37,19 @@ def _feed(settings: Settings) -> DataFeed:
     return feeds.get(settings.alpaca_data_feed, DataFeed.IEX)
 
 
-def get_daily_closes(symbols: list[str], start: date, end: date | None = None) -> pd.DataFrame:
+def get_daily_closes(
+    symbols: list[str],
+    start: date,
+    end: date | None = None,
+    *,
+    adjustment: Adjustment = Adjustment.SPLIT,
+) -> pd.DataFrame:
+    """Return daily closes with accounting-safe adjustment semantics.
+
+    Portfolio reconstruction must use split-only adjustment because dividend cash is
+    already represented by canonical transactions. Callers doing benchmark-only
+    total-return analysis may explicitly request ``Adjustment.ALL``.
+    """
     normalized = sorted({normalize_symbol(symbol) for symbol in symbols})
     if not normalized:
         return pd.DataFrame()
@@ -50,7 +62,7 @@ def get_daily_closes(symbols: list[str], start: date, end: date | None = None) -
             if end
             else datetime.now(timezone.utc)
         ),
-        adjustment=Adjustment.ALL,
+        adjustment=adjustment,
         feed=_feed(get_settings()),
     )
     frame = _client().get_stock_bars(request).df
@@ -62,4 +74,17 @@ def get_daily_closes(symbols: list[str], start: date, end: date | None = None) -
         closes = frame[["close"]]
         closes.columns = normalized[:1]
     closes.index = pd.to_datetime(closes.index, utc=True).tz_convert(None).normalize()
-    return closes.sort_index().ffill()
+    closes = closes.sort_index()
+    closes.attrs["last_price_dates"] = {
+        symbol: series.dropna().index[-1].date()
+        for symbol, series in closes.items()
+        if not series.dropna().empty
+    }
+    return closes.ffill()
+
+
+def get_benchmark_daily_closes(
+    symbols: list[str], start: date, end: date | None = None
+) -> pd.DataFrame:
+    """Return dividend-adjusted benchmark closes for total-return comparisons only."""
+    return get_daily_closes(symbols, start, end, adjustment=Adjustment.ALL)

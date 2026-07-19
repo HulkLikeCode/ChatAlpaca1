@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from chat_alpaca.db import _enable_sqlite_foreign_keys  # noqa: F401
 from chat_alpaca.models import Base
 
 

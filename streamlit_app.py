@@ -11,17 +11,16 @@ import streamlit as st
 from chat_alpaca.analytics import (
     combined_performance_growth,
     consolidated_holdings,
-    latest_values,
-    normalized_growth,
     performance_growth,
     portfolio_gain_loss,
+    portfolio_valuation,
+    rebase_comparison_series,
     summary_metrics,
-    total_portfolio_value,
 )
 from chat_alpaca.config import get_settings
 from chat_alpaca.db import init_database, session_scope
 from chat_alpaca.forecasting import ProjectionResult, simulate_portfolio_projection
-from chat_alpaca.market_data import get_daily_closes
+from chat_alpaca.market_data import get_benchmark_daily_closes, get_daily_closes
 from chat_alpaca.models import OrderAllocation, Portfolio, PortfolioTransaction
 from chat_alpaca.portfolio_service import (
     MANUAL_KINDS,
@@ -78,6 +77,11 @@ st.markdown(THEME_CSS, unsafe_allow_html=True)
 @st.cache_data(ttl=900, show_spinner=False)
 def cached_closes(symbols: tuple[str, ...], start: date, end: date) -> pd.DataFrame:
     return get_daily_closes(list(symbols), start, end)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cached_benchmark_closes(symbols: tuple[str, ...], start: date, end: date) -> pd.DataFrame:
+    return get_benchmark_daily_closes(list(symbols), start, end)
 
 
 @st.cache_data(show_spinner=False)
@@ -303,15 +307,21 @@ def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) ->
     for portfolio in portfolios:
         if closes.empty:
             total = portfolio_cost(portfolio)
+            value_label = f"Cost basis {dollars(total)}"
         else:
-            _, total = latest_values(portfolio, closes)
+            valuation = portfolio_valuation(portfolio, closes)
+            value_label = (
+                dollars(valuation.total_calculated_value)
+                if valuation.is_complete
+                else "Incomplete valuation"
+            )
         unique_symbols = len({lot.symbol for lot in portfolio.holdings})
         cards.append(
             "".join(
                 (
                     '<div class="portfolio-card">',
                     f'<div class="eyebrow">{escape(portfolio.name)}</div>',
-                    f'<div class="value">{dollars(total)}</div>',
+                    f'<div class="value">{value_label}</div>',
                     f'<div class="detail">{unique_symbols} symbols · '
                     f"{dollars(portfolio.cash)} cash</div>",
                     "</div>",
@@ -325,8 +335,7 @@ def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) ->
 
 
 def _summed_metric(values: list[float | None]) -> float | None:
-    available = [value for value in values if value is not None]
-    return sum(available) if available else None
+    return sum(values) if values and all(value is not None for value in values) else None
 
 
 def _metric_dollars(value: float | None) -> str:
@@ -348,7 +357,15 @@ def render_performance_summary(
             )
             rows = []
         else:
-            total_value = total_portfolio_value(portfolios, closes)
+            valuations = [portfolio_valuation(portfolio, closes) for portfolio in portfolios]
+            total_value = (
+                sum(
+                    (valuation.total_calculated_value for valuation in valuations),
+                    start=money(0),
+                )
+                if all(valuation.is_complete for valuation in valuations)
+                else None
+            )
             rows = [
                 {
                     "Portfolio": portfolio.name,
@@ -358,7 +375,8 @@ def render_performance_summary(
             ]
 
         metrics = st.columns(4)
-        metrics[0].metric("Total selected value", dollars(total_value))
+        total_label = "Selected cost basis + cash" if closes.empty else "Total selected value"
+        metrics[0].metric(total_label, dollars(total_value) if total_value is not None else "—")
         metrics[1].metric(
             "All-time gain/loss",
             _metric_dollars(_summed_metric([row["all_time"] for row in rows])),
@@ -374,6 +392,9 @@ def render_performance_summary(
         if closes.empty:
             st.caption("Cost basis plus cash is shown; gain/loss requires market data.")
             return
+        warnings = sorted({warning for row in rows for warning in row["warnings"]})
+        for warning in warnings:
+            st.warning(warning)
 
         performance = pd.DataFrame(
             [
@@ -670,6 +691,8 @@ def render_compare(
         )
         try:
             closes = cached_closes(all_symbols, custom_start - timedelta(days=7), custom_end)
+            benchmark_symbols = tuple(dict.fromkeys([*selected_benchmarks, *extras]))
+            benchmark_closes = cached_benchmark_closes(benchmark_symbols, custom_start, custom_end)
         except Exception as exc:
             st.info(f"Comparison data is unavailable. Configure rotated Alpaca credentials. {exc}")
             return
@@ -687,17 +710,15 @@ def render_compare(
             for item in series
         ]
         for symbol in [*selected_benchmarks, *extras]:
-            if symbol in closes:
-                stock_series = closes.loc[
-                    (closes.index.date >= custom_start) & (closes.index.date <= custom_end),
+            if symbol in benchmark_closes:
+                stock_series = benchmark_closes.loc[
+                    (benchmark_closes.index.date >= custom_start)
+                    & (benchmark_closes.index.date <= custom_end),
                     symbol,
                 ].copy()
                 stock_series.name = symbol
                 series.append(stock_series)
-        normalized = [
-            item if item.name in {*per_portfolio, combined.name} else normalized_growth(item)
-            for item in series
-        ]
+        normalized = rebase_comparison_series(series)
         normalized = [item for item in normalized if not item.empty]
         if not normalized:
             st.info("The selected series do not share usable data in this date range.")
@@ -748,7 +769,8 @@ def render_compare(
         )
         st.caption(
             "All series are rebased to $100. Portfolio performance excludes transfers, cash "
-            "adjustments, and contributed opening positions; metrics use adjusted daily closes from Alpaca."
+            "adjustments, and contributed opening positions. Portfolio prices are split-adjusted "
+            "only; benchmark series use dividend-adjusted total-return closes."
         )
 
 
@@ -778,11 +800,18 @@ def render_forecast(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
         if scope == "Selected portfolios"
         else [next(portfolio for portfolio in portfolios if portfolio.name == scope)]
     )
-    current_value = float(
-        total_portfolio_value(scoped_portfolios, closes)
-        if not closes.empty
-        else sum((portfolio_cost(portfolio) for portfolio in scoped_portfolios), start=money(0))
-    )
+    if not closes.empty:
+        valuations = [portfolio_valuation(portfolio, closes) for portfolio in scoped_portfolios]
+        if not all(valuation.is_complete for valuation in valuations):
+            st.warning("A projection is unavailable until every held symbol has a usable price.")
+            return
+        current_value = float(
+            sum((valuation.total_calculated_value for valuation in valuations), start=money(0))
+        )
+    else:
+        current_value = float(
+            sum((portfolio_cost(portfolio) for portfolio in scoped_portfolios), start=money(0))
+        )
     if current_value <= 0:
         st.info("A projection requires a selected portfolio with a positive current value.")
         return

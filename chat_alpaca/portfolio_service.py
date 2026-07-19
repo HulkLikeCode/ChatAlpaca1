@@ -115,6 +115,12 @@ class PortfolioIncomeSummary:
     normalized_quarterly_average: Decimal
 
 
+@dataclass(frozen=True)
+class ReplayIntegrityResult:
+    is_consistent: bool
+    mismatches: dict[str, tuple[object, object]]
+
+
 def format_short_date(value: date) -> str:
     """Format a date with the compact transaction convention used by the UI."""
     return f"{value.month}/{value.day}/{value.strftime('%y')}"
@@ -641,7 +647,6 @@ def replay_portfolio(session: Session, portfolio_id: int) -> None:
     session.execute(delete(LedgerEntry).where(LedgerEntry.portfolio_id == portfolio.id))
     portfolio.cash = Decimal("0")
     session.flush()
-
     transactions = list(
         session.scalars(
             select(PortfolioTransaction)
@@ -692,6 +697,90 @@ def replay_portfolio(session: Session, portfolio_id: int) -> None:
             )
         )
     session.flush()
+
+
+def replay_integrity_diagnostic(session: Session, portfolio_id: int) -> ReplayIntegrityResult:
+    """Compare persisted derived state with a non-destructive transaction replay."""
+    portfolio = get_portfolio(session, portfolio_id)
+    transactions = list(
+        session.scalars(
+            select(PortfolioTransaction)
+            .where(PortfolioTransaction.portfolio_id == portfolio.id)
+            .order_by(PortfolioTransaction.transaction_date, PortfolioTransaction.id)
+        )
+    )
+    expected = Portfolio(name="diagnostic", cash=Decimal("0"))
+    expected_ledger: list[tuple[object, ...]] = []
+    for transaction in transactions:
+        draft = _draft_from_transaction(transaction)
+        _validate_transaction(draft)
+        expected.cash = Decimal(expected.cash) + draft.cash_delta
+        if draft.kind in {"buy", "opening_position"}:
+            assert draft.symbol is not None and draft.quantity is not None
+            assert draft.price is not None
+            expected.holdings.append(
+                HoldingLot(
+                    symbol=draft.symbol,
+                    shares=draft.quantity,
+                    acquired_on=draft.transaction_date,
+                    cost_basis=(
+                        draft.price
+                        if draft.kind == "opening_position"
+                        else abs(draft.cash_delta / draft.quantity)
+                    ),
+                )
+            )
+        elif draft.kind == "sell":
+            assert draft.symbol is not None and draft.quantity is not None
+            assert draft.price is not None
+            _reduce_fifo_or_short(
+                expected, draft.symbol, draft.quantity, draft.price, draft.transaction_date
+            )
+        expected_ledger.append(
+            (
+                draft.kind,
+                draft.symbol,
+                draft.quantity,
+                draft.price,
+                draft.cash_delta,
+                draft.description[:240] or draft.action[:240],
+                transaction.created_at,
+            )
+        )
+
+    def lot_state(lots: Iterable[HoldingLot]) -> tuple[tuple[object, ...], ...]:
+        return tuple(
+            sorted(
+                (lot.symbol, Decimal(lot.shares), lot.acquired_on, Decimal(lot.cost_basis))
+                for lot in lots
+            )
+        )
+
+    persisted_ledger = tuple(
+        (
+            entry.kind,
+            entry.symbol,
+            Decimal(entry.quantity) if entry.quantity is not None else None,
+            Decimal(entry.price) if entry.price is not None else None,
+            Decimal(entry.cash_delta),
+            entry.note,
+            entry.created_at,
+        )
+        for entry in session.scalars(
+            select(LedgerEntry)
+            .where(LedgerEntry.portfolio_id == portfolio.id)
+            .order_by(LedgerEntry.id)
+        )
+    )
+    comparisons = {
+        "cash": (Decimal(expected.cash), Decimal(portfolio.cash)),
+        "lots": (lot_state(expected.holdings), lot_state(portfolio.holdings)),
+        "ledger": (tuple(expected_ledger), persisted_ledger),
+    }
+    mismatches = {
+        category: values for category, values in comparisons.items() if values[0] != values[1]
+    }
+    return ReplayIntegrityResult(not mismatches, mismatches)
 
 
 def record_transaction(
@@ -907,9 +996,18 @@ def set_cash(
 
 
 def replace_holdings(
-    session: Session, portfolio_id: int, rows: Iterable[dict[str, object]]
+    session: Session,
+    portfolio_id: int,
+    rows: Iterable[dict[str, object]],
+    *,
+    migration_or_test_only: bool = False,
 ) -> None:
-    """Legacy opening-balance helper. Transaction entry is the normal owner workflow."""
+    """Legacy migration/test helper; application workflows must use transactions."""
+    if not migration_or_test_only:
+        raise PermissionError(
+            "replace_holdings() is restricted to explicit migration/test use; "
+            "record opening-position transactions instead."
+        )
     portfolio = get_portfolio(session, portfolio_id)
     cleaned: list[tuple[str, Decimal, date, Decimal]] = []
     for row in rows:

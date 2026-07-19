@@ -18,6 +18,24 @@ class GainLossMetrics:
     all_time: float | None
     daily: float | None
     custom: float | None
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ValuationResult:
+    total_calculated_value: Decimal
+    market_value: Decimal
+    is_complete: bool
+    missing_symbols: tuple[str, ...]
+    valued_market_value_percentage: float | None
+    warnings: tuple[str, ...]
+    common_valuation_date: date | None
+    stale_symbols: tuple[str, ...]
+    last_price_dates: dict[str, date]
+
+
+class IncompleteValuationError(ValueError):
+    """Raised when a compatibility value API cannot return a complete valuation."""
 
 
 def _transactions(portfolio: Portfolio) -> list[PortfolioTransaction]:
@@ -38,9 +56,10 @@ def portfolio_series(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
         result = pd.Series(float(portfolio.cash), index=prices.index, dtype=float)
         for lot in portfolio.holdings:
             if lot.symbol not in prices:
+                result.loc[prices.index.date >= lot.acquired_on] = np.nan
                 continue
-            active = prices[lot.symbol].where(prices.index.date >= lot.acquired_on)
-            result = result.add(active.fillna(0) * float(lot.shares), fill_value=0)
+            active = prices.loc[prices.index.date >= lot.acquired_on, lot.symbol]
+            result.loc[active.index] += active * float(lot.shares)
         result.name = portfolio.name
         return result
 
@@ -50,12 +69,14 @@ def portfolio_series(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
         result.loc[active] += float(transaction.cash_delta)
         if (
             transaction.kind not in {"buy", "sell", "opening_position"}
-            or transaction.symbol not in prices
             or transaction.quantity is None
         ):
             continue
+        if transaction.symbol not in prices:
+            result.loc[active] = np.nan
+            continue
         direction = -1 if transaction.kind == "sell" else 1
-        position_value = prices.loc[active, transaction.symbol].fillna(0)
+        position_value = prices.loc[active, transaction.symbol]
         result.loc[active] += direction * position_value * float(transaction.quantity)
     result.name = portfolio.name
     return result
@@ -110,8 +131,12 @@ def portfolio_gain_loss(
     if series.empty:
         return GainLossMetrics(None, None, None)
 
-    all_time_end = float(latest_values(portfolio, closes)[1])
-    all_time = all_time_end - _flow_total(portfolio, end=date.today())
+    valuation = portfolio_valuation(portfolio, closes)
+    all_time = (
+        float(valuation.total_calculated_value) - _flow_total(portfolio, end=date.today())
+        if valuation.is_complete
+        else None
+    )
 
     valid = series.dropna()
     if len(valid) >= 2:
@@ -131,22 +156,27 @@ def portfolio_gain_loss(
 
     custom_end_value = _value_on_or_before(series, custom_end)
     baseline = series[series.index.date < custom_start].dropna()
-    custom_start_value = float(baseline.iloc[-1]) if not baseline.empty else 0.0
+    warnings = list(valuation.warnings)
     custom = None
-    if custom_end_value is not None:
+    if baseline.empty:
+        warnings.append(
+            "Custom gain/loss is unavailable because no confirmed prior trading close exists."
+        )
+    elif custom_end_value is not None:
+        custom_start_value = float(baseline.iloc[-1])
         custom = (
             custom_end_value
             - custom_start_value
             - _flow_total(portfolio, start=custom_start, end=custom_end)
         )
-    return GainLossMetrics(all_time, daily, custom)
+    return GainLossMetrics(all_time, daily, custom, tuple(warnings))
 
 
 def combined_series(series: Iterable[pd.Series]) -> pd.Series:
     values = list(series)
     if not values:
         return pd.Series(dtype=float, name="All portfolios")
-    combined = pd.concat(values, axis=1).fillna(0).sum(axis=1)
+    combined = pd.concat(values, axis=1).sum(axis=1, min_count=len(values))
     combined.name = "All portfolios"
     return combined
 
@@ -248,17 +278,83 @@ def earliest_acquisition(portfolios: Iterable[Portfolio], fallback: date) -> dat
     return min(dates, default=fallback)
 
 
-def latest_values(portfolio: Portfolio, closes: pd.DataFrame) -> tuple[Decimal, Decimal]:
+def _last_price_dates(closes: pd.DataFrame, symbols: set[str]) -> dict[str, date]:
+    recorded = closes.attrs.get("last_price_dates", {})
+    dates: dict[str, date] = {}
+    for symbol in symbols:
+        if symbol in recorded:
+            dates[symbol] = recorded[symbol]
+        elif symbol in closes and not closes[symbol].dropna().empty:
+            dates[symbol] = closes[symbol].dropna().index[-1].date()
+    return dates
+
+
+def portfolio_valuation(portfolio: Portfolio, closes: pd.DataFrame) -> ValuationResult:
+    """Value holdings at one common close and disclose missing or stale prices."""
+    symbols = {lot.symbol for lot in portfolio.holdings if Decimal(lot.shares) != 0}
+    last_dates = _last_price_dates(closes, symbols)
+    missing = tuple(sorted(symbols - last_dates.keys()))
+    common_date = min(last_dates.values()) if last_dates and not missing else None
+    freshest_date = max(last_dates.values()) if last_dates else None
+    stale = (
+        tuple(
+            sorted(
+                symbol for symbol, price_date in last_dates.items() if price_date < freshest_date
+            )
+        )
+        if freshest_date
+        else ()
+    )
+
     market_value = Decimal("0")
+    missing_at_common = set(missing)
     for lot in portfolio.holdings:
-        if lot.symbol not in closes or closes[lot.symbol].dropna().empty:
+        cutoff = common_date if common_date is not None else last_dates.get(lot.symbol)
+        price = _price_on_or_before(closes, lot.symbol, cutoff) if cutoff is not None else None
+        if price is None:
+            missing_at_common.add(lot.symbol)
             continue
-        market_value += Decimal(str(closes[lot.symbol].dropna().iloc[-1])) * Decimal(lot.shares)
-    return market_value, market_value + Decimal(portfolio.cash)
+        market_value += Decimal(str(price)) * Decimal(lot.shares)
+
+    all_missing = tuple(sorted(missing_at_common))
+    complete = not all_missing and (not symbols or common_date is not None)
+    warnings: list[str] = []
+    if all_missing:
+        warnings.append("Missing prices for held symbols: " + ", ".join(all_missing) + ".")
+    if stale:
+        details = ", ".join(f"{symbol} ({last_dates[symbol]})" for symbol in stale)
+        warnings.append(
+            f"Prices have mixed freshness; valuation uses the common close {common_date}: {details}."
+        )
+    coverage = 100.0 if complete else (0.0 if symbols and not last_dates else None)
+    return ValuationResult(
+        total_calculated_value=market_value + Decimal(portfolio.cash),
+        market_value=market_value,
+        is_complete=complete,
+        missing_symbols=all_missing,
+        valued_market_value_percentage=coverage,
+        warnings=tuple(warnings),
+        common_valuation_date=common_date,
+        stale_symbols=stale,
+        last_price_dates=last_dates,
+    )
+
+
+def latest_values(portfolio: Portfolio, closes: pd.DataFrame) -> tuple[Decimal, Decimal]:
+    """Compatibility wrapper returning only complete valuations."""
+    valuation = portfolio_valuation(portfolio, closes)
+    if not valuation.is_complete:
+        raise IncompleteValuationError(" ".join(valuation.warnings))
+    return valuation.market_value, valuation.total_calculated_value
 
 
 def total_portfolio_value(portfolios: Iterable[Portfolio], closes: pd.DataFrame) -> Decimal:
     return sum((latest_values(portfolio, closes)[1] for portfolio in portfolios), Decimal("0"))
+
+
+def rebase_comparison_series(series: Iterable[pd.Series]) -> list[pd.Series]:
+    """Rebase every already-period-filtered comparison series to exactly $100."""
+    return [normalized_growth(item) for item in series]
 
 
 def _price_on_or_before(

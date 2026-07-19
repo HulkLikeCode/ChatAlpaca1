@@ -5,11 +5,20 @@ from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from chat_alpaca.config import get_settings
 from chat_alpaca.models import Base
+
+
+@event.listens_for(Engine, "connect")
+def _enable_sqlite_foreign_keys(dbapi_connection: object, _connection_record: object) -> None:
+    """Enable SQLite's opt-in foreign-key enforcement on every connection."""
+    if dbapi_connection.__class__.__module__ == "sqlite3":
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 @lru_cache(maxsize=1)

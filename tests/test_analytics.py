@@ -4,13 +4,17 @@ from datetime import date
 from decimal import Decimal
 
 import pandas as pd
+import pytest
 
 from chat_alpaca.analytics import (
+    IncompleteValuationError,
     consolidated_holdings,
     normalized_growth,
     performance_growth,
     portfolio_gain_loss,
     portfolio_series,
+    portfolio_valuation,
+    rebase_comparison_series,
     summary_metrics,
     total_portfolio_value,
 )
@@ -106,6 +110,164 @@ def test_transaction_aware_values_and_gain_loss_exclude_external_cash_flows() ->
     assert gain_loss.daily == 9.0
     assert gain_loss.custom == 9.0
     assert total_portfolio_value([portfolio], closes) == Decimal("109.0")
+
+
+def test_explicit_dividend_is_not_counted_twice_in_portfolio_history() -> None:
+    portfolio = Portfolio(id=1, name="Dividend", cash=Decimal("1"))
+    portfolio.transactions = [
+        PortfolioTransaction(
+            id=1,
+            transaction_date=date(2026, 1, 1),
+            kind="opening_position",
+            action="Opening Position",
+            symbol="ABC",
+            quantity=Decimal("1"),
+            price=Decimal("10"),
+            cash_delta=Decimal("0"),
+            source="test",
+        ),
+        PortfolioTransaction(
+            id=2,
+            transaction_date=date(2026, 1, 2),
+            kind="dividend",
+            action="Dividend",
+            symbol="ABC",
+            cash_delta=Decimal("1"),
+            source="test",
+        ),
+    ]
+    split_only_closes = pd.DataFrame(
+        {"ABC": [10.0, 9.0]}, index=pd.to_datetime(["2026-01-01", "2026-01-02"])
+    )
+
+    assert portfolio_series(portfolio, split_only_closes).tolist() == [10.0, 10.0]
+
+
+def _valuation_portfolio() -> Portfolio:
+    portfolio = Portfolio(id=1, name="Coverage", cash=Decimal("5"))
+    portfolio.holdings = [
+        HoldingLot(
+            symbol=symbol,
+            shares=Decimal("1"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("10"),
+        )
+        for symbol in ("ABC", "XYZ", "MISS")
+    ]
+    return portfolio
+
+
+@pytest.mark.parametrize(
+    ("columns", "missing"),
+    [
+        ({"ABC": [10.0], "XYZ": [20.0]}, ("MISS",)),
+        ({"ABC": [10.0]}, ("MISS", "XYZ")),
+        ({"ABC": [10.0], "XYZ": [20.0], "MISS": [30.0]}, ()),
+    ],
+)
+def test_valuation_discloses_missing_symbols(
+    columns: dict[str, list[float]], missing: tuple[str, ...]
+) -> None:
+    closes = pd.DataFrame(columns, index=pd.to_datetime(["2026-01-02"]))
+    result = portfolio_valuation(_valuation_portfolio(), closes)
+
+    assert result.missing_symbols == missing
+    assert result.is_complete is (not missing)
+    assert result.valued_market_value_percentage == (100.0 if not missing else None)
+    if missing:
+        with pytest.raises(IncompleteValuationError):
+            total_portfolio_value([_valuation_portfolio()], closes)
+
+
+def test_valuation_with_no_usable_prices_is_explicitly_incomplete() -> None:
+    result = portfolio_valuation(
+        _valuation_portfolio(), pd.DataFrame(columns=["ABC", "XYZ", "MISS"])
+    )
+
+    assert result.total_calculated_value == Decimal("5")
+    assert result.market_value == Decimal("0")
+    assert not result.is_complete
+    assert result.missing_symbols == ("ABC", "MISS", "XYZ")
+    assert result.valued_market_value_percentage == 0.0
+
+
+def test_historical_series_marks_missing_held_symbol_incomplete() -> None:
+    portfolio = _valuation_portfolio()
+    closes = pd.DataFrame({"ABC": [10.0], "XYZ": [20.0]}, index=pd.to_datetime(["2026-01-02"]))
+
+    assert pd.isna(portfolio_series(portfolio, closes).iloc[0])
+
+
+def test_valuation_uses_common_as_of_and_reports_stale_symbols() -> None:
+    portfolio = _valuation_portfolio()
+    portfolio.holdings = portfolio.holdings[:2]
+    closes = pd.DataFrame(
+        {"ABC": [10.0, 11.0, 12.0], "XYZ": [19.0, 20.0, float("nan")]},
+        index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+    )
+
+    result = portfolio_valuation(portfolio, closes)
+
+    assert result.total_calculated_value == Decimal("36.0")
+    assert result.common_valuation_date == date(2026, 1, 2)
+    assert result.stale_symbols == ("XYZ",)
+    assert result.last_price_dates["XYZ"] == date(2026, 1, 2)
+    assert result.is_complete
+
+
+def test_custom_gain_loss_requires_a_prior_trading_close() -> None:
+    portfolio = Portfolio(id=1, name="Baseline", cash=Decimal("100"))
+    closes = pd.DataFrame({"ABC": [10.0]}, index=pd.to_datetime(["2026-01-05"]))
+
+    result = portfolio_gain_loss(portfolio, closes, date(2026, 1, 5), date(2026, 1, 5))
+
+    assert result.custom is None
+    assert any("prior trading close" in warning for warning in result.warnings)
+
+
+def test_custom_gain_loss_uses_earlier_close_for_weekend_start() -> None:
+    portfolio = Portfolio(id=1, name="Weekend", cash=Decimal("100"))
+    closes = pd.DataFrame({"ABC": [10.0, 11.0]}, index=pd.to_datetime(["2026-01-02", "2026-01-05"]))
+
+    result = portfolio_gain_loss(portfolio, closes, date(2026, 1, 3), date(2026, 1, 5))
+
+    assert result.custom == 0.0
+
+
+def test_custom_gain_loss_handles_position_established_after_start() -> None:
+    portfolio = Portfolio(id=1, name="New position", cash=Decimal("80"))
+    portfolio.transactions = [
+        PortfolioTransaction(
+            id=1,
+            transaction_date=date(2026, 1, 5),
+            kind="buy",
+            action="Buy",
+            symbol="ABC",
+            quantity=Decimal("2"),
+            price=Decimal("10"),
+            cash_delta=Decimal("-20"),
+            source="test",
+        )
+    ]
+    closes = pd.DataFrame(
+        {"ABC": [9.0, 10.0, 12.0]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"]),
+    )
+
+    result = portfolio_gain_loss(portfolio, closes, date(2026, 1, 3), date(2026, 1, 6))
+
+    assert result.custom == 4.0
+
+
+def test_all_comparison_series_rebase_at_selected_report_start() -> None:
+    portfolio_growth = pd.Series(
+        [125.0, 150.0], index=pd.to_datetime(["2026-01-02", "2026-01-03"]), name="Portfolio"
+    )
+    benchmark = pd.Series([50.0, 55.0], index=portfolio_growth.index, name="SPY")
+
+    rebased = rebase_comparison_series([portfolio_growth, benchmark])
+
+    assert [series.iloc[0] for series in rebased] == [100.0, 100.0]
 
 
 def test_performance_growth_excludes_external_flows_and_opening_positions() -> None:
