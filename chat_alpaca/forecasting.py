@@ -6,6 +6,45 @@ import numpy as np
 import pandas as pd
 
 from chat_alpaca.analytics import portfolio_valuation
+from chat_alpaca.bootstrap_forecasting import (
+    BOOTSTRAP_MODEL_TYPE as BOOTSTRAP_MODEL_TYPE,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    BOOTSTRAP_MODEL_VERSION as BOOTSTRAP_MODEL_VERSION,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    BacktestCriteria as BacktestCriteria,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    BacktestResult as BacktestResult,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    BootstrapAssumptions as BootstrapAssumptions,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    BootstrapRequest as BootstrapRequest,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    BootstrapResult as BootstrapResult,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    build_bootstrap_request as build_bootstrap_request,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    monthly_returns_from_prices as monthly_returns_from_prices,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    rolling_origin_backtest as rolling_origin_backtest,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    run_block_bootstrap as run_block_bootstrap,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    sample_block_indices as sample_block_indices,
+)
+from chat_alpaca.bootstrap_forecasting import (
+    save_bootstrap_run as save_bootstrap_run,
+)
 from chat_alpaca.models import Portfolio
 from chat_alpaca.portfolio_service import money, portfolio_cost
 

@@ -67,6 +67,34 @@ validated.
 
 Historical block bootstrap and correlated parametric Monte Carlo remain outside Phase 7.
 
+## Phase 8 historical block bootstrap
+
+`chat_alpaca.bootstrap_forecasting` consumes monthly returns derived from the shared immutable
+market-data coverage and can construct its starting holdings and cash from the shared reconstruction
+result. It jointly samples holding and benchmark rows in circular 3-, 6-, or 12-month blocks,
+preserving within-block time order and observed cross-asset dependence. Portfolio-level sampling is
+also supported. The model bootstraps observed returns directly; it does not impose the legacy
+planning projection's lognormal expected return.
+
+The simulation supports deterministic seeds, configurable counts, 1–10 year horizons, monthly
+contributions, constant inflation, annual fees, and monthly, quarterly, annual, or no rebalancing.
+Insufficient holding histories require an explicit proxy with adequate overlapping history. Proxy
+substitution is disclosed and lowers sufficiency even when the joint history remains usable.
+
+Outputs include monthly and annual percentile bands, a summarized terminal distribution, target
+probability, downside percentiles, nominal and real contributed-capital loss probabilities,
+probability of beating a jointly sampled benchmark, and average holding return-P&L contribution in
+downside terminal outcomes. Assumptions and limitations define these measures explicitly.
+
+Rolling-origin expanding-window backtests report 5th–95th interval coverage, median bias,
+5th-percentile downside coverage, and valid, invalid, and insufficient windows. Meeting configured
+criteria yields only `eligible_for_review`; it does not set model validation. Persistence reuses the
+Phase 7 forecast-run and immutable dataset-reference records and saves reproducibility inputs,
+coverage, proxy use, percentile bands, summarized terminal output, and optional backtest summaries.
+Raw simulated paths and terminal samples are excluded by default.
+
+Correlated parametric Monte Carlo and full retirement tax modeling remain deferred after Phase 8.
+
 ## Real-time monitoring
 
 The current roadmap targets fewer than 400 distinct held symbols, with an expected stock-to-ETF ratio near 6:1. Favor broad monitoring across held symbols over exact continuous streaming for a small subset.

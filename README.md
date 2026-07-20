@@ -15,6 +15,8 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
 - Public 1–10 year planning projections with editable scenarios, monthly contributions, percentile bands, and target probabilities
+- Reproducible 1–10 year historical block-bootstrap forecasts with correlated monthly returns,
+  explicit proxies, inflation, fees, rebalancing, downside attribution, and rolling backtests
 - Saved, reproducible deterministic stress scenarios with household, portfolio, holding, sector,
   account-type, baseline, coverage, warning, and sensitivity output
 - Password-protected portfolio editor and assigned Alpaca order ticket
@@ -174,8 +176,25 @@ holding, sector, dividend, contribution, inflation, low-return, lost-decade, ret
 historical-replay stresses plus tabular sensitivity grids. Runs persist the model/version, exact
 ledger hash and dataset references, assumptions, coverage, proxy disclosure, validation state, and
 summary outputs. Deterministic scenarios generate no raw paths. Automated test success is retained
-as validation evidence but cannot by itself label a model validated. Bootstrap and Monte Carlo
-forecasting remain deferred.
+as validation evidence but cannot by itself label a model validated.
+
+Phase 8 adds historical block-bootstrap forecasting in `chat_alpaca.bootstrap_forecasting`. It
+samples observed, jointly aligned monthly holding or portfolio returns in circular 3-, 6-, or
+12-month blocks and does not impose an expected-return estimate. Runs support deterministic seeds,
+configurable simulation counts, 1–10 year horizons, month-end contributions, constant inflation,
+annual fees, monthly/quarterly/annual/no rebalancing, target and benchmark probabilities, nominal
+and real loss probabilities, terminal distributions, downside percentiles, and holding-level
+downside contribution. Holdings with inadequate histories require explicit documented proxies;
+proxy use lowers forecast sufficiency and joint row sampling preserves the proxy's observed market
+relationships.
+
+Rolling-origin backtests report 5th–95th percentile interval coverage, median forecast bias,
+downside-band coverage, and valid, invalid, and insufficient windows. Passing configured criteria
+makes a model eligible for review, never automatically validated. Saved runs retain model/version,
+seed, simulation count, block length, data period, immutable dataset references, proxies,
+assumptions, backtest summaries, percentile bands, and summarized terminal distributions. Raw
+simulated paths and terminal samples are not persisted. Parametric Monte Carlo and full retirement
+tax modeling remain deferred.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
 two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or
