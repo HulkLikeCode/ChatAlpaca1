@@ -24,6 +24,9 @@ A private, multi-portfolio personal portfolio manager that brings together portf
   sensitivities, and historical sequence replay
 - Saved, reproducible deterministic stress scenarios with household, portfolio, holding, sector,
   account-type, baseline, coverage, warning, and sensitivity output
+- Named, non-executable hypothetical scenarios with multiple proposed trades, cash and internal
+  assignment changes, before/after allocation, sector, benchmark, concentration, risk, forecast,
+  stress, and optional retirement analysis, plus ledger-baseline staleness warnings
 - Separate admin and read-only user passwords; only admins can mutate data, upload files, or act on brokerage orders
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
 - Combined sortable transaction management with portfolio/type/date filters, totals, and guarded edits/deletes
@@ -256,6 +259,20 @@ sequence diagnostics, and worst-decile scenarios. Sensitivity covers retirement 
 inflation, Social Security timing, contributions, expected returns, tax rates, and withdrawal order.
 Rolling historical sequence replay is validation evidence only and never self-validates the model.
 Saved runs retain summaries and annual bands but exclude raw paths and per-scenario arrays.
+
+Phase 11 adds non-executable hypothetical trade analysis in `chat_alpaca.hypothetical`. It copies
+ledger-derived cash and FIFO lots into isolated in-memory state, applies any number of proposed
+buys, sells, cash changes, or internal portfolio reassignments, and compares allocation, basis,
+look-through sectors, benchmark-relative exposure, concentration, historical risk, assumptions,
+forecast downside and target probability, deterministic stress loss, and optional retirement
+success probability. Named saved scenarios retain creator/time, portfolio scope, exact baseline
+ledger hash, market-data as-of time, assumptions, proposals, and summarized results. Loading a
+scenario recomputes the ledger hash and warns when its baseline is stale.
+
+Hypothetical analysis never writes transactions, lots, cash, ledger entries, Alpaca allocations,
+or orders. The separate order-ticket copy boundary accepts only a buy or sell after fresh owner
+confirmation, an unchanged ledger hash, and a newly reviewed non-stale market price; it returns
+reviewed ticket data and does not submit an order.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
 two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or

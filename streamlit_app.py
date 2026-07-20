@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hmac
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 from html import escape
 
 import pandas as pd
@@ -12,7 +12,10 @@ from chat_alpaca.analytics import (
     consolidated_holdings,
 )
 from chat_alpaca.bootstrap import initialize_application
-from chat_alpaca.classification import resolve_security_metadata
+from chat_alpaca.classification import (
+    resolve_etf_sector_snapshot,
+    resolve_security_metadata,
+)
 from chat_alpaca.commands import (
     TransactionCommand,
     build_transaction_draft,
@@ -28,6 +31,16 @@ from chat_alpaca.forecasting import (
     ProjectionResult,
     build_forecast_request,
     run_forecast,
+)
+from chat_alpaca.hypothetical import (
+    HypotheticalActionType,
+    HypotheticalAssumptions,
+    ProposedAction,
+    RetirementAnalysisAssumptions,
+    analyze_hypothetical_scenario,
+    baseline_from_portfolios,
+    load_hypothetical_scenarios,
+    save_hypothetical_scenario,
 )
 from chat_alpaca.models import OrderAllocation, Portfolio, PortfolioTransaction
 from chat_alpaca.portfolio_configuration import (
@@ -840,7 +853,6 @@ def render_forecast(
         if include_target
         else None
     )
-
     assumptions = ForecastAssumptions(
         annual_return=annual_return / 100,
         annual_volatility=annual_volatility / 100,
@@ -2086,6 +2098,401 @@ def render_architecture() -> None:
         )
 
 
+def _hypothetical_sector_inputs(
+    portfolios: list[Portfolio], proposed_symbols: set[str]
+) -> dict[str, str | dict[str, float]]:
+    symbols = {
+        lot.symbol.upper() for portfolio in portfolios for lot in portfolio.holdings
+    } | proposed_symbols
+    resolved: dict[str, str | dict[str, float]] = {}
+    with session_scope() as session:
+        for symbol in symbols:
+            metadata = resolve_security_metadata(session, symbol)
+            if metadata.asset_type == "etf":
+                snapshot = resolve_etf_sector_snapshot(session, symbol)
+                if snapshot.weights:
+                    resolved[symbol] = {
+                        sector: float(weight) / 100 for sector, weight in snapshot.weights.items()
+                    }
+                    continue
+            resolved[symbol] = metadata.sector or "Unclassified"
+    return resolved
+
+
+def _hypothetical_benchmark_weights(
+    portfolios: list[Portfolio], prices: dict[str, float], as_of: date
+) -> dict[str, float]:
+    """Value-weight each portfolio's effective benchmark blend for scope comparison."""
+    portfolio_values = {
+        portfolio.id: float(portfolio.cash)
+        + sum(float(lot.shares) * prices.get(lot.symbol.upper(), 0.0) for lot in portfolio.holdings)
+        for portfolio in portfolios
+    }
+    total = sum(portfolio_values.values())
+    combined: dict[str, float] = {}
+    with session_scope() as session:
+        for portfolio in portfolios:
+            effective = [
+                config
+                for config in benchmark_configurations(session, portfolio.id)
+                if config.effective_from <= as_of
+            ]
+            weights = effective[-1].weights if effective else {"SPY": 1.0}
+            scope_weight = portfolio_values[portfolio.id] / total if total > 0 else 0.0
+            for symbol, weight in weights.items():
+                combined[symbol] = combined.get(symbol, 0.0) + scope_weight * float(weight)
+    return combined or {"SPY": 1.0}
+
+
+def render_hypothetical_analysis(
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    benchmark_closes: pd.DataFrame,
+    *,
+    editable: bool,
+) -> None:
+    st.subheader("Hypothetical trade analysis")
+    st.caption(
+        "Analysis only. This workflow cannot create accounting records, change internal "
+        "allocations, or submit an Alpaca order. Any later ticket copy requires a new owner "
+        "review and a fresh price."
+    )
+    actions: list[ProposedAction] = st.session_state.setdefault("hypothetical_actions", [])
+    action_label = st.selectbox(
+        "Proposed action",
+        options=[item.value for item in HypotheticalActionType],
+        format_func=lambda value: value.replace("_", " ").title(),
+        key="hypothetical_action_type",
+    )
+    portfolio = st.selectbox(
+        "Scenario portfolio", portfolios, format_func=lambda item: item.name, key="hypo_portfolio"
+    )
+    destination = st.selectbox(
+        "Assignment destination",
+        portfolios,
+        format_func=lambda item: item.name,
+        key="hypo_destination",
+    )
+    symbol = st.text_input("Hypothetical symbol", key="hypo_symbol").strip().upper()
+    quantity_value = st.number_input(
+        "Hypothetical quantity", min_value=0.0, value=0.0, key="hypo_quantity"
+    )
+    price_value = st.number_input(
+        "Hypothetical analysis price", min_value=0.0, value=0.0, key="hypo_price"
+    )
+    amount_value = st.number_input(
+        "Hypothetical cash amount", min_value=0.0, value=0.0, key="hypo_amount"
+    )
+    fees_value = st.number_input("Hypothetical fees", min_value=0.0, value=0.0, key="hypo_fees")
+    add_column, clear_column = st.columns(2)
+    if add_column.button("Add proposed action"):
+        try:
+            action_type = HypotheticalActionType(action_label)
+            actions.append(
+                ProposedAction(
+                    action_type,
+                    portfolio.id,
+                    symbol=symbol or None,
+                    quantity=quantity_value or None,
+                    price=price_value or None,
+                    amount=amount_value or None,
+                    destination_portfolio_id=(
+                        destination.id if action_type == HypotheticalActionType.REASSIGN else None
+                    ),
+                    fees=fees_value,
+                )
+            )
+            st.session_state.hypothetical_actions = actions
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+    if clear_column.button("Clear proposed actions", disabled=not actions):
+        st.session_state.hypothetical_actions = []
+        st.session_state.pop("hypothetical_result", None)
+        st.rerun()
+
+    if actions:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Action": action.action.value.replace("_", " ").title(),
+                        "Portfolio": next(
+                            item.name for item in portfolios if item.id == action.portfolio_id
+                        ),
+                        "Symbol": action.symbol,
+                        "Quantity": action.quantity,
+                        "Price": action.price,
+                        "Amount": action.amount,
+                        "Destination": next(
+                            (
+                                item.name
+                                for item in portfolios
+                                if item.id == action.destination_portfolio_id
+                            ),
+                            None,
+                        ),
+                    }
+                    for action in actions
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+    expected_return = st.number_input(
+        "Annual expected return assumption (%)",
+        min_value=-99.0,
+        max_value=100.0,
+        value=7.0,
+        key="hypo_expected_return",
+    )
+    target_enabled = st.checkbox("Set a hypothetical forecast target", key="hypo_target_on")
+    target_value = (
+        st.number_input(
+            "Hypothetical forecast target",
+            min_value=1.0,
+            value=100000.0,
+            key="hypo_target",
+        )
+        if target_enabled
+        else None
+    )
+    retirement_enabled = st.checkbox(
+        "Include retirement success analysis", key="hypo_retirement_on"
+    )
+    retirement_horizon = 20
+    retirement_spending = 0.0
+    if retirement_enabled:
+        retirement_horizon = st.select_slider(
+            "Retirement analysis horizon (years)",
+            options=list(range(20, 41)),
+            value=20,
+            key="hypo_retirement_horizon",
+        )
+        retirement_spending = st.number_input(
+            "Annual retirement spending assumption",
+            min_value=0.0,
+            value=40000.0,
+            key="hypo_retirement_spending",
+        )
+    if st.button("Run hypothetical analysis", disabled=not actions):
+        try:
+            if closes.empty:
+                raise ValueError(
+                    "Confirmed market prices are required for hypothetical trade analysis."
+                )
+            prices = {
+                str(column).upper(): float(closes[column].dropna().iloc[-1])
+                for column in closes
+                if not closes[column].dropna().empty
+            }
+            proposed_symbols = {action.symbol for action in actions if action.symbol}
+            expected = {symbol: expected_return / 100 for symbol in set(prices) | proposed_symbols}
+            returns = closes.pct_change(fill_method=None)
+            benchmark = None
+            if "SPY" in benchmark_closes and not benchmark_closes["SPY"].dropna().empty:
+                benchmark = benchmark_closes["SPY"].pct_change(fill_method=None)
+            as_of = pd.Timestamp(closes.index.max()).to_pydatetime()
+            if as_of.tzinfo is None:
+                as_of = as_of.replace(tzinfo=timezone.utc)
+            assumptions = HypotheticalAssumptions(
+                expected,
+                _hypothetical_sector_inputs(portfolios, proposed_symbols),
+                _hypothetical_benchmark_weights(portfolios, prices, as_of.date()),
+                {"Broad market": -0.20},
+                forecast_target=float(target_value) if target_value else None,
+                retirement=(
+                    RetirementAnalysisAssumptions(retirement_horizon, float(retirement_spending))
+                    if retirement_enabled
+                    else None
+                ),
+            )
+            result = analyze_hypothetical_scenario(
+                baseline_from_portfolios(portfolios),
+                tuple(actions),
+                prices,
+                returns,
+                assumptions,
+                market_data_as_of=as_of,
+                benchmark_returns=benchmark,
+            )
+            st.session_state.hypothetical_result = (result, assumptions)
+        except ValueError as exc:
+            st.error(str(exc))
+
+    stored = st.session_state.get("hypothetical_result")
+    if stored:
+        result, assumptions = stored
+        before, after = result.before, result.after
+        columns = st.columns(4)
+        columns[0].metric("Before value", dollars(before.total_value))
+        columns[1].metric("After value", dollars(after.total_value))
+        columns[2].metric("Before cash", dollars(before.cash))
+        columns[3].metric("After cash", dollars(after.cash))
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before": {
+                        "Cash": before.cash,
+                        "Market value": before.market_value,
+                        "Cost basis": before.cost_basis,
+                    },
+                    "After": {
+                        "Cash": after.cash,
+                        "Market value": after.market_value,
+                        "Cost basis": after.cost_basis,
+                    },
+                }
+            ),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before": before.holding_weights,
+                    "After": after.holding_weights,
+                }
+            ).fillna(0),
+            width="stretch",
+        )
+        st.markdown("#### Portfolio assignment and benchmark-relative exposure")
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before assignment": before.assignment_weights,
+                    "After assignment": after.assignment_weights,
+                }
+            ).fillna(0),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before relative": before.benchmark_relative_exposure,
+                    "After relative": after.benchmark_relative_exposure,
+                }
+            ).fillna(0),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before sector": before.sector_exposure,
+                    "After sector": after.sector_exposure,
+                }
+            ).fillna(0),
+            width="stretch",
+        )
+        risk_rows = {
+            "Volatility": (before.volatility, after.volatility),
+            "Beta": (before.beta, after.beta),
+            "Maximum drawdown exposure": (
+                before.drawdown_exposure,
+                after.drawdown_exposure,
+            ),
+            "Effective holdings": (
+                before.effective_number_of_holdings,
+                after.effective_number_of_holdings,
+            ),
+            "Expected return": (before.expected_return, after.expected_return),
+            "Forecast target probability": (
+                before.forecast_target_probability,
+                after.forecast_target_probability,
+            ),
+            "Retirement success probability": (
+                before.retirement_success_probability,
+                after.retirement_success_probability,
+            ),
+        }
+        st.dataframe(
+            pd.DataFrame.from_dict(risk_rows, orient="index", columns=["Before", "After"]),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before concentration": before.concentration,
+                    "After concentration": after.concentration,
+                }
+            ),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before risk contribution": before.risk_contribution,
+                    "After risk contribution": after.risk_contribution,
+                }
+            ).fillna(0),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before downside": before.downside_percentiles,
+                    "After downside": after.downside_percentiles,
+                }
+            ),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Before stress loss": before.deterministic_stress_losses,
+                    "After stress loss": after.deterministic_stress_losses,
+                }
+            ),
+            width="stretch",
+        )
+        for warning in result.warnings:
+            st.warning(warning)
+        if editable:
+            scenario_name = st.text_input("Saved scenario name", key="hypo_scenario_name")
+            creator = st.text_input("Scenario creator", value="owner", key="hypo_creator")
+            if st.button("Save hypothetical scenario"):
+                try:
+                    with session_scope() as session:
+                        save_hypothetical_scenario(
+                            session,
+                            name=scenario_name,
+                            creator=creator,
+                            portfolios=portfolios,
+                            market_data_as_of=result.market_data_as_of,
+                            assumptions=assumptions,
+                            actions=actions,
+                            result=result,
+                        )
+                    st.success("Hypothetical scenario saved without changing accounting or orders.")
+                except ValueError as exc:
+                    st.error(str(exc))
+
+    with session_scope() as session:
+        saved = load_hypothetical_scenarios(session)
+    if saved:
+        st.markdown("#### Saved scenarios")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Name": item.name,
+                        "Creator": item.creator,
+                        "Created": item.created_at,
+                        "Market data as of": item.market_data_as_of,
+                        "Stale baseline": item.stale_baseline,
+                    }
+                    for item in saved
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+        if stale_names := [item.name for item in saved if item.stale_baseline]:
+            st.warning(
+                "Saved scenario baseline is stale and must be rerun before any ticket review: "
+                + ", ".join(stale_names)
+            )
+
+
 def main() -> None:
     role = authenticate_access()
     if role is None:
@@ -2101,7 +2508,15 @@ def main() -> None:
         st.info(flash)
     closes, data_note = get_prices(selected_portfolios, master_start, master_end)
     benchmark_closes, benchmark_note = get_alpha_beta_benchmark(master_start, master_end)
-    labels = ["Overview", "Compare", "Forecast", "Manage", "Trade", "Architecture"]
+    labels = [
+        "Overview",
+        "Compare",
+        "Forecast",
+        "Hypothetical",
+        "Manage",
+        "Trade",
+        "Architecture",
+    ]
     if st.session_state.get("active_page") not in {None, *labels}:
         st.session_state.active_page = labels[0]
     tabs = st.tabs(labels, key="active_page", on_change="rerun")
@@ -2125,6 +2540,13 @@ def main() -> None:
     with tabs[2]:
         render_forecast(selected_portfolios, closes, owner=owner)
     with tabs[3]:
+        render_hypothetical_analysis(
+            selected_portfolios,
+            closes,
+            benchmark_closes,
+            editable=owner,
+        )
+    with tabs[4]:
         render_portfolio_admin(
             selected_portfolios,
             all_portfolios,
@@ -2132,9 +2554,9 @@ def main() -> None:
             master_end,
             editable=owner,
         )
-    with tabs[4]:
-        render_trade_admin(reporting_portfolios, editable=owner)
     with tabs[5]:
+        render_trade_admin(reporting_portfolios, editable=owner)
+    with tabs[6]:
         render_architecture()
     if benchmark_note:
         st.caption(f"SPY Alpha/Beta data is unavailable: {benchmark_note}")

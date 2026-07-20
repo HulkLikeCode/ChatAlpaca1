@@ -47,6 +47,7 @@ EXPECTED_TABLES = {
     "forecast_runs",
     "forecast_run_datasets",
     "model_validations",
+    "hypothetical_scenarios",
 }
 
 

@@ -67,13 +67,18 @@ def test_read_only_app_renders_all_views() -> None:
         "Overview",
         "Compare",
         "Forecast",
+        "Hypothetical",
         "Manage",
         "Trade",
         "Architecture",
     ]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
     assert [item.label for item in app.metric].count("Selected cost basis + cash") == 2
-    assert [item.label for item in app.checkbox] == ["Set a target value"]
+    assert [item.label for item in app.checkbox] == [
+        "Set a target value",
+        "Set a hypothetical forecast target",
+        "Include retirement success analysis",
+    ]
     assert any(item.label.startswith("Portfolios · Applied:") for item in app.multiselect)
     portfolio_selector = next(
         item for item in app.multiselect if item.label.startswith("Portfolios · Applied:")
@@ -127,6 +132,7 @@ def test_phase_2_owner_manage_controls_render() -> None:
         "Overview",
         "Compare",
         "Forecast",
+        "Hypothetical",
         "Manage",
         "Trade",
         "Architecture",

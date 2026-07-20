@@ -108,6 +108,28 @@ class ForecastRunDataset(Base):
     dataset: Mapped[MarketDataset] = relationship()
 
 
+class HypotheticalScenario(Base):
+    """Saved non-executable analysis, isolated from every accounting/order table."""
+
+    __tablename__ = "hypothetical_scenarios"
+    __table_args__ = (
+        UniqueConstraint("creator", "name", name="uq_hypothetical_scenario_creator_name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    creator: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+    portfolio_scope: Mapped[str] = mapped_column(Text, nullable=False)
+    baseline_ledger_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    market_data_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    assumptions: Mapped[str] = mapped_column(Text, nullable=False)
+    proposed_trades: Mapped[str] = mapped_column(Text, nullable=False)
+    results: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class ModelValidation(Base):
     """Governance evidence for a model version, independent from execution success."""
 

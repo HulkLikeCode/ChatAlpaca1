@@ -174,3 +174,21 @@ Persistent monitoring while the app is closed is out of scope for now. Streamlit
 Each internal portfolio should have a configurable benchmark blend, rather than only one benchmark symbol. Hypothetical trades remain separate from order submission unless the user explicitly transfers a proposal into an order.
 
 Before-versus-after hypothetical analysis should address portfolio weights, cash, sector exposure, concentration, volatility, beta, risk contribution, drawdown exposure, expected return, forecast success probability, downside percentiles, and stress losses.
+
+## Phase 11 hypothetical trade analysis
+
+`chat_alpaca.hypothetical` is a non-executable domain boundary. It copies the selected
+ledger-derived cash and FIFO lots, then applies multiple proposed buys, sells, cash additions or
+removals, and internal portfolio assignment changes without mutating ORM portfolio state. Results
+compare cash, market value, cost basis, holding and assignment weights, look-through sectors,
+benchmark-relative exposure, concentration, effective holdings, volatility, beta, component risk,
+historical drawdown, expected-return assumptions, forecast target probability and downside bands,
+deterministic stress losses, and optional retirement success probability.
+
+Named scenario persistence retains creator and creation time, portfolio scope, the canonical
+baseline ledger hash, market-data as-of time, assumptions, proposals, and summary results. Reads
+recompute the scoped ledger hash and expose a stale-baseline warning. Hypothetical records have no
+foreign-key or service path to transactions, lots, ledger entries, order allocations, or Alpaca
+submission. A separate ticket-copy function requires explicit owner confirmation, an unchanged
+baseline, and a newly reviewed price inside the freshness window; it creates review data only and
+never submits an order.
