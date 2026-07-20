@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 from datetime import date, timedelta, timezone
 from html import escape
+from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
@@ -109,7 +110,7 @@ from chat_alpaca.scenarios import (
     save_scenario_run,
     sensitivity_grid,
 )
-from chat_alpaca.theme import PLOT_COLORS, THEME_CSS
+from chat_alpaca.theme import PLOT_COLORS, STALE_VALUE_COLOR, THEME_CSS
 from chat_alpaca.trading import (
     cancel_order,
     get_trading_client,
@@ -133,7 +134,7 @@ CSV_TEMPLATE = """Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amou
 
 st.set_page_config(
     page_title="ChatAlpaca · Portfolio Command Center",
-    page_icon="◆",
+    page_icon=str(Path(__file__).with_name("assets") / "favicon.png"),
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -412,6 +413,35 @@ def _metric_dollars(value: float | None) -> str:
     return dollars(value) if value is not None else "—"
 
 
+def _render_metric(
+    column: object,
+    label: str,
+    value: object,
+    *,
+    key: str,
+    stale: bool = False,
+) -> None:
+    """Render a metric with the theme's quiet stale-value treatment when needed."""
+    with column:
+        if stale:
+            with st.container(key=f"stale_metric_{key}"):
+                st.metric(label, value)
+        else:
+            st.metric(label, value)
+
+
+def _style_stale_values(
+    frame: pd.DataFrame,
+    stale_rows: pd.Series,
+    columns: tuple[str, ...],
+) -> object:
+    """Color only stale numeric cells while preserving the surrounding table styling."""
+    styles = pd.DataFrame("", index=frame.index, columns=frame.columns)
+    available = [column for column in columns if column in frame]
+    styles.loc[stale_rows.fillna(False), available] = f"color: {STALE_VALUE_COLOR}"
+    return frame.style.apply(lambda _: styles, axis=None)
+
+
 def _indicative_performance_pulse(portfolios: list[Portfolio], closes: pd.DataFrame):
     settings = get_settings()
     symbols = sorted({lot.symbol for portfolio in portfolios for lot in portfolio.holdings})
@@ -460,7 +490,12 @@ def render_performance_summary(
             benchmark_closes,
         )
         pulse = _indicative_performance_pulse(portfolios, closes)
-        if pulse is not None:
+        overlay_is_fresh = bool(
+            pulse is not None
+            and not pulse.stale_or_missing
+            and all(change is not None for change in pulse.by_portfolio.values())
+        )
+        if pulse is not None and overlay_is_fresh:
             report = overlay_intraday_performance(
                 report,
                 dict(pulse.by_portfolio),
@@ -469,13 +504,31 @@ def render_performance_summary(
             )
 
         metrics = st.columns(6)
-        metrics[0].metric(
+        _render_metric(
+            metrics[0],
             report.total_label,
             dollars(report.total_value) if report.total_value is not None else "—",
+            key=f"{key_prefix}_selected_totals",
         )
-        metrics[1].metric("All-time gain/loss", _metric_dollars(report.all_time))
-        metrics[2].metric("Daily gain/loss", _metric_dollars(report.daily))
-        metrics[3].metric("Custom gain/loss", _metric_dollars(report.custom))
+        _render_metric(
+            metrics[1],
+            "All-time gain/loss",
+            _metric_dollars(report.all_time),
+            key=f"{key_prefix}_all_time",
+        )
+        _render_metric(
+            metrics[2],
+            "Daily gain/loss",
+            _metric_dollars(report.daily),
+            key=f"{key_prefix}_daily",
+            stale=pulse is not None and not overlay_is_fresh and report.daily is not None,
+        )
+        _render_metric(
+            metrics[3],
+            "Custom gain/loss",
+            _metric_dollars(report.custom),
+            key=f"{key_prefix}_custom",
+        )
         metrics[4].metric(
             "Annualized Alpha",
             f"{report.alpha:.2%}" if report.alpha is not None else "—",
@@ -490,16 +543,16 @@ def render_performance_summary(
                 "returns; 60 are required."
             )
         if pulse is not None:
-            overlay_complete = all(change is not None for change in pulse.by_portfolio.values())
             custom_note = (
                 "Custom gain/loss includes the indicative intraday move."
-                if custom_end == date.today()
+                if overlay_is_fresh and custom_end == date.today()
                 else "Custom gain/loss remains fixed at its historical end date."
             )
             coverage_note = (
                 "All selected portfolios have complete quote moves."
-                if overlay_complete
-                else "Rows without complete quote moves remain close-based and show no daily move."
+                if overlay_is_fresh
+                else "The live overlay is incomplete, so confirmed-close values remain in view; "
+                "light-pink amounts are not real time."
             )
             st.caption(
                 f"IEX quote overlay refreshes every 30 seconds. {custom_note} {coverage_note}"
@@ -1243,9 +1296,22 @@ def render_deterministic_scenarios(
                 for name, impact in result.account_type_effects.items()
             ]
         )
-        impact_height = min(360, max(120, 36 * (max(len(portfolio_impact), len(detail)) + 1)))
-        impact_columns = st.columns(2)
+        assumption_frame = pd.DataFrame(
+            [
+                {"Assumption": name.replace("_", " ").title(), "Value": str(value)}
+                for name, value in result.assumptions.items()
+            ]
+        )
+        impact_height = min(
+            360,
+            max(
+                120,
+                36 * (max(len(portfolio_impact), len(detail), len(assumption_frame)) + 1),
+            ),
+        )
+        impact_columns = st.columns(3)
         with impact_columns[0]:
+            st.markdown("#### Portfolio")
             st.dataframe(
                 portfolio_impact,
                 hide_index=True,
@@ -1254,6 +1320,7 @@ def render_deterministic_scenarios(
                 column_config={"Impact": st.column_config.NumberColumn(format="$%,.0f")},
             )
         with impact_columns[1]:
+            st.markdown("#### Dimension")
             st.dataframe(
                 detail,
                 hide_index=True,
@@ -1261,17 +1328,14 @@ def render_deterministic_scenarios(
                 height=impact_height,
                 column_config={"Impact": st.column_config.NumberColumn(format="$%,.0f")},
             )
-        st.markdown("#### Assumptions")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"Assumption": name.replace("_", " ").title(), "Value": str(value)}
-                    for name, value in result.assumptions.items()
-                ]
-            ),
-            hide_index=True,
-            width="stretch",
-        )
+        with impact_columns[2]:
+            st.markdown("#### Assumptions")
+            st.dataframe(
+                assumption_frame,
+                hide_index=True,
+                width="stretch",
+                height=impact_height,
+            )
         st.markdown("#### Sensitivity")
         sensitivity_values: dict[str, list[object]]
         if selected_type == ScenarioType.HISTORICAL_REPLAY:
@@ -1385,113 +1449,113 @@ def transaction_frame(
 
 
 def render_transaction_editor(transaction: PortfolioTransaction, portfolio_name: str) -> None:
-    st.markdown("### Edit or delete selected transaction")
-    st.caption(
-        f"Transaction #{transaction.id} belongs to **{portfolio_name}**. "
-        "Any edit is applied to that portfolio."
-    )
-    if transaction.source != "manual":
-        st.warning(
-            f"This transaction originated from `{transaction.source}`. Editing or deleting it "
-            "manually overrides that source and may make the internal portfolio differ from the "
-            "brokerage statement or Alpaca account. The original transaction will be retained in "
-            "the override audit history."
-        )
-    else:
-        st.warning(
-            "Editing or deleting this transaction recalculates the portfolio's cash and holdings. "
-            "The original transaction will be retained in the override audit history."
-        )
-    with st.form(f"edit_transaction_{transaction.id}"):
-        first_row = st.columns(3)
-        edit_date = first_row[0].text_input(
-            "Transaction date (M/D/YY)", value=format_short_date(transaction.transaction_date)
-        )
-        edit_kind = first_row[1].selectbox(
-            "Transaction type",
-            EDITABLE_KINDS,
-            index=EDITABLE_KINDS.index(transaction.kind),
-            format_func=kind_label,
-        )
-        edit_symbol = first_row[2].text_input("Symbol", value=transaction.symbol or "")
-        edit_action = st.text_input("Action", value=transaction.action, max_chars=80)
-        edit_description = st.text_input(
-            "Description", value=transaction.description, max_chars=500
-        )
-        trade_row = st.columns(3)
-        edit_quantity = trade_row[0].number_input(
-            "Shares",
-            min_value=0.0,
-            value=float(transaction.quantity or 0),
-            format="%.2f",
-        )
-        edit_price = trade_row[1].number_input(
-            "Price per share",
-            min_value=0.0,
-            value=float(transaction.price or 0),
-            format="%.6f",
-        )
-        edit_fees = trade_row[2].number_input(
-            "Fees / commission",
-            min_value=0.0,
-            value=float(transaction.fees or 0),
-            format="%.4f",
-        )
-        edit_cash = st.number_input(
-            "Cash change",
-            value=float(transaction.cash_delta),
-            step=1.0,
-            format="%.4f",
-            help="Buy and sell cash changes are recalculated from shares, price, and fees.",
-        )
-        update_phrase = st.text_input(f'Type "UPDATE {transaction.id}" to confirm')
-        updated = st.form_submit_button("Save transaction changes")
-    if updated:
-        try:
-            draft = build_transaction_draft(
-                TransactionCommand(
-                    edit_date,
-                    edit_kind,
-                    edit_symbol,
-                    edit_description,
-                    edit_quantity,
-                    edit_price,
-                    edit_fees,
-                    edit_cash,
-                    action=edit_action,
-                )
+    with st.container(key=f"compact_transaction_editor_{transaction.id}"):
+        st.markdown("### Edit or delete selected transaction")
+        st.caption(f"Transaction #{transaction.id} · Portfolio: **{portfolio_name}**")
+        if transaction.source != "manual":
+            st.warning(
+                f"This transaction originated from `{transaction.source}`. A manual override may "
+                "diverge from the source; the original remains in the audit history."
             )
-            with session_scope() as session:
-                update_transaction(
-                    session,
-                    transaction.portfolio_id,
-                    transaction.id,
-                    draft,
-                    confirmation=update_phrase,
+        else:
+            st.warning(
+                "Editing or deleting recalculates cash and holdings; the original remains in the "
+                "audit history."
+            )
+        with st.form(f"edit_transaction_{transaction.id}"):
+            first_row = st.columns(4)
+            edit_date = first_row[0].text_input(
+                "Date (M/D/YY)", value=format_short_date(transaction.transaction_date)
+            )
+            edit_action = first_row[1].text_input("Action", value=transaction.action, max_chars=80)
+            edit_kind = first_row[2].selectbox(
+                "Type",
+                EDITABLE_KINDS,
+                index=EDITABLE_KINDS.index(transaction.kind),
+                format_func=kind_label,
+            )
+            edit_symbol = first_row[3].text_input("Symbol", value=transaction.symbol or "")
+            value_row = st.columns(4)
+            edit_quantity = value_row[0].number_input(
+                "Quantity",
+                min_value=0.0,
+                value=float(transaction.quantity or 0),
+                format="%.2f",
+            )
+            edit_price = value_row[1].number_input(
+                "Price",
+                min_value=0.0,
+                value=float(transaction.price or 0),
+                format="%.6f",
+            )
+            edit_fees = value_row[2].number_input(
+                "Fees",
+                min_value=0.0,
+                value=float(transaction.fees or 0),
+                format="%.4f",
+            )
+            edit_cash = value_row[3].number_input(
+                "Cash change",
+                value=float(transaction.cash_delta),
+                step=1.0,
+                format="%.4f",
+                help="Buy and sell cash changes are recalculated from quantity, price, and fees.",
+            )
+            edit_description = st.text_input(
+                "Description", value=transaction.description, max_chars=500
+            )
+            update_row = st.columns([3, 1], vertical_alignment="bottom")
+            update_phrase = update_row[0].text_input(f'Type "UPDATE {transaction.id}" to confirm')
+            updated = update_row[1].form_submit_button("Save changes", width="stretch")
+        if updated:
+            try:
+                draft = build_transaction_draft(
+                    TransactionCommand(
+                        edit_date,
+                        edit_kind,
+                        edit_symbol,
+                        edit_description,
+                        edit_quantity,
+                        edit_price,
+                        edit_fees,
+                        edit_cash,
+                        action=edit_action,
+                    )
                 )
-            cached_historical_data.clear()
-            st.session_state.flash = f"Transaction #{transaction.id} updated."
-            st.rerun()
-        except Exception as exc:
-            st.info(f"Transaction was not updated: {exc}")
+                with session_scope() as session:
+                    update_transaction(
+                        session,
+                        transaction.portfolio_id,
+                        transaction.id,
+                        draft,
+                        confirmation=update_phrase,
+                    )
+                cached_historical_data.clear()
+                st.session_state.flash = f"Transaction #{transaction.id} updated."
+                st.rerun()
+            except Exception as exc:
+                st.info(f"Transaction was not updated: {exc}")
 
-    with st.form(f"delete_transaction_{transaction.id}"):
-        delete_phrase = st.text_input(f'Type "DELETE {transaction.id}" to confirm')
-        deleted = st.form_submit_button("Delete transaction", type="secondary")
-    if deleted:
-        try:
-            with session_scope() as session:
-                delete_transaction(
-                    session,
-                    transaction.portfolio_id,
-                    transaction.id,
-                    confirmation=delete_phrase,
-                )
-            cached_historical_data.clear()
-            st.session_state.flash = f"Transaction #{transaction.id} deleted."
-            st.rerun()
-        except Exception as exc:
-            st.info(f"Transaction was not deleted: {exc}")
+        with st.form(f"delete_transaction_{transaction.id}"):
+            delete_row = st.columns([3, 1], vertical_alignment="bottom")
+            delete_phrase = delete_row[0].text_input(f'Type "DELETE {transaction.id}" to confirm')
+            deleted = delete_row[1].form_submit_button(
+                "Delete transaction", type="secondary", width="stretch"
+            )
+        if deleted:
+            try:
+                with session_scope() as session:
+                    delete_transaction(
+                        session,
+                        transaction.portfolio_id,
+                        transaction.id,
+                        confirmation=delete_phrase,
+                    )
+                cached_historical_data.clear()
+                st.session_state.flash = f"Transaction #{transaction.id} deleted."
+                st.rerun()
+            except Exception as exc:
+                st.info(f"Transaction was not deleted: {exc}")
 
 
 def render_csv_import(portfolio: Portfolio) -> None:
@@ -1626,38 +1690,6 @@ def render_transactions(
             st.caption("No transactions match the type filter and master date range.")
             return
 
-        totals = (
-            frame.groupby("Type", as_index=False)
-            .agg(Transactions=("Cash change", "size"), Total=("Cash change", "sum"))
-            .sort_values("Type")
-        )
-        totals_columns = st.columns([2, 1])
-        totals_columns[0].dataframe(
-            totals,
-            hide_index=True,
-            width="stretch",
-            column_config={"Total": st.column_config.NumberColumn(format="$%,.2f")},
-        )
-        totals_columns[1].metric("Grand total", dollars(frame["Cash change"].sum()))
-
-        quantity_rows = frame.dropna(subset=["Symbol", "Quantity"])
-        if not quantity_rows.empty:
-            quantity_totals = (
-                quantity_rows.groupby(["Symbol", "Type"], as_index=False)
-                .agg(
-                    Transactions=("Quantity", "size"),
-                    **{"Total quantity": ("Quantity", "sum")},
-                )
-                .sort_values(["Symbol", "Type"])
-            )
-            st.markdown("#### Quantity totals by symbol")
-            st.dataframe(
-                quantity_totals,
-                hide_index=True,
-                width="stretch",
-                column_config={"Total quantity": st.column_config.NumberColumn(format="%.2f")},
-            )
-
         st.caption(
             "Select any row to edit or delete it. Click a column header to sort."
             if editable
@@ -1758,93 +1790,103 @@ def render_add_transaction(
         if not portfolios:
             st.caption("Create a portfolio before recording a transaction.")
             return
-        first_row = st.columns(2)
-        transaction_date_text = first_row[0].text_input(
-            "Transaction date (M/D/YY)",
-            value=format_short_date(date.today()),
-            key="add_transaction_date",
-        )
-        kind = first_row[1].selectbox(
-            "Transaction type",
-            MANUAL_KINDS,
-            format_func=kind_label,
-            key="add_transaction_kind",
-        )
-        target = _target_portfolio_selector(
-            "Target portfolio",
-            "transaction_target",
-            portfolios,
-            selected_portfolios,
-        )
-        if target is None:
-            st.caption("Select a portfolio before recording a transaction.")
-            return
-        symbol = ""
-        manual_quantity = 0.0
-        manual_price = 0.0
-        manual_fees = 0.0
-        symbol_error = ""
-        if kind in TRADE_KINDS:
-            symbol = st.text_input(
-                "Symbol",
-                max_chars=16,
-                key="add_transaction_symbol",
-                on_change=_validate_manual_trade_symbol,
+        with st.container(key="compact_transaction_add"):
+            first_row = st.columns(4)
+            with first_row[0]:
+                target = _target_portfolio_selector(
+                    "Portfolio",
+                    "transaction_target",
+                    portfolios,
+                    selected_portfolios,
+                )
+            transaction_date_text = first_row[1].text_input(
+                "Date (M/D/YY)",
+                value=format_short_date(date.today()),
+                key="add_transaction_date",
             )
-            symbol_error = st.session_state.get("add_transaction_symbol_error", "")
-            if symbol_error:
-                st.error(symbol_error)
-            trade_row = st.columns(3)
-            manual_quantity = trade_row[0].number_input(
-                "Shares",
-                min_value=0.0,
-                value=0.0,
-                format="%.2f",
-                key="add_transaction_quantity",
+            kind = first_row[2].selectbox(
+                "Type",
+                MANUAL_KINDS,
+                format_func=kind_label,
+                key="add_transaction_kind",
             )
-            manual_price = trade_row[1].number_input(
-                "Price per share",
-                min_value=0.0,
-                value=0.0,
-                format="%.6f",
-                key="add_transaction_price",
-            )
-            manual_fees = trade_row[2].number_input(
-                "Fees / commission",
-                min_value=0.0,
-                value=0.0,
-                format="%.4f",
-                key="add_transaction_fees",
-            )
-            calculated_cash = calculated_trade_cash(
-                kind, manual_quantity, manual_price, manual_fees
-            )
-            st.session_state.add_transaction_calculated_cash = calculated_cash
-            cash_delta = st.number_input(
-                "Cash change",
-                key="add_transaction_calculated_cash",
-                format="%.4f",
-                disabled=True,
-                help="Buy and sell cash changes are calculated from shares, price, and fees.",
-            )
-        else:
+            symbol = ""
+            symbol_error = ""
             if kind in SYMBOL_CASH_KINDS:
-                symbol = st.text_input(
+                symbol = first_row[3].text_input(
                     "Symbol (optional)", max_chars=16, key="add_transaction_symbol"
                 )
-            cash_delta = st.number_input(
-                "Cash change",
-                value=0.0,
-                step=1.0,
-                format="%.4f",
-                key="add_transaction_cash",
+            elif kind in TRADE_KINDS:
+                symbol = first_row[3].text_input(
+                    "Symbol",
+                    max_chars=16,
+                    key="add_transaction_symbol",
+                    on_change=_validate_manual_trade_symbol,
+                )
+                symbol_error = st.session_state.get("add_transaction_symbol_error", "")
+            else:
+                first_row[3].text_input(
+                    "Symbol", value="", key="add_transaction_symbol_disabled", disabled=True
+                )
+
+            manual_quantity = 0.0
+            manual_price = 0.0
+            manual_fees = 0.0
+            value_row = st.columns(4)
+            if kind in TRADE_KINDS:
+                manual_quantity = value_row[0].number_input(
+                    "Quantity",
+                    min_value=0.0,
+                    value=0.0,
+                    format="%.2f",
+                    key="add_transaction_quantity",
+                )
+                manual_price = value_row[1].number_input(
+                    "Price",
+                    min_value=0.0,
+                    value=0.0,
+                    format="%.6f",
+                    key="add_transaction_price",
+                )
+                manual_fees = value_row[2].number_input(
+                    "Fees",
+                    min_value=0.0,
+                    value=0.0,
+                    format="%.4f",
+                    key="add_transaction_fees",
+                )
+                st.session_state.add_transaction_calculated_cash = calculated_trade_cash(
+                    kind, manual_quantity, manual_price, manual_fees
+                )
+                cash_delta = value_row[3].number_input(
+                    "Cash change",
+                    key="add_transaction_calculated_cash",
+                    format="%.4f",
+                    disabled=True,
+                    help="Calculated from quantity, price, and fees.",
+                )
+            else:
+                cash_delta = value_row[3].number_input(
+                    "Cash change",
+                    value=0.0,
+                    step=1.0,
+                    format="%.4f",
+                    key="add_transaction_cash",
+                )
+            action_row = st.columns([4, 1], vertical_alignment="bottom")
+            description = action_row[0].text_input(
+                "Description", max_chars=500, key="add_transaction_description"
             )
-        description = st.text_input("Description", max_chars=500, key="add_transaction_description")
-        recorded = st.button(
-            "Record transaction",
-            key="record_manual_transaction",
-            disabled=bool(symbol_error),
-        )
+            recorded = action_row[1].button(
+                "Record transaction",
+                key="record_manual_transaction",
+                disabled=bool(symbol_error) or target is None,
+                width="stretch",
+            )
+            if symbol_error:
+                st.error(symbol_error)
+            if target is None:
+                st.caption("Select a portfolio before recording a transaction.")
         if recorded:
             try:
                 draft = build_transaction_draft(
@@ -2748,15 +2790,21 @@ def render_active_monitoring(
 
     pulse = build_portfolio_pulse(portfolios, records)
     metrics = st.columns(4)
-    metrics[0].metric(
-        "Indicative total value",
+    _render_metric(
+        metrics[0],
+        "Selected Totals",
         dollars(pulse.indicative_total_value)
         if pulse.indicative_total_value is not None
         else "Unavailable",
+        key="monitor_selected_totals",
+        stale=bool(pulse.stale_or_missing and pulse.indicative_total_value is not None),
     )
-    metrics[1].metric(
+    _render_metric(
+        metrics[1],
         "Daily change",
         dollars(pulse.daily_change) if pulse.daily_change is not None else "Unavailable",
+        key="monitor_daily_change",
+        stale=bool(pulse.stale_or_missing and pulse.daily_change is not None),
     )
     metrics[2].metric("Held symbols", len(symbols))
     metrics[3].metric("Stale / missing", len(pulse.stale_or_missing))
@@ -2774,6 +2822,8 @@ def render_active_monitoring(
                 "Feed": records[row.symbol].feed,
                 "Provider": records[row.symbol].provider,
                 "Staleness reason": records[row.symbol].staleness_reason,
+                "_stale": row.status
+                not in {FreshnessStatus.STREAMING, FreshnessStatus.RECENTLY_REFRESHED},
             }
             for row in pulse.holdings
         ]
@@ -2784,10 +2834,17 @@ def render_active_monitoring(
         holding_rows["_absolute mover"] = pd.to_numeric(
             holding_rows["Daily change"], errors="coerce"
         ).abs()
+        holding_rows = holding_rows.sort_values(
+            "_absolute mover", ascending=False, na_position="last"
+        ).drop(columns="_absolute mover")
+        stale_holding_rows = holding_rows.pop("_stale")
+        styled_holdings = _style_stale_values(
+            holding_rows,
+            stale_holding_rows,
+            ("Price", "Value", "Daily change", "Contribution"),
+        )
         st.dataframe(
-            holding_rows.sort_values("_absolute mover", ascending=False, na_position="last").drop(
-                columns="_absolute mover"
-            ),
+            styled_holdings,
             hide_index=True,
             width="stretch",
             column_config={
@@ -2799,13 +2856,24 @@ def render_active_monitoring(
         )
     portfolio_rows = pd.DataFrame(
         [
-            {"Portfolio": name, "Daily contribution": change}
+            {
+                "Portfolio": name,
+                "Daily contribution": change,
+                "_stale": any(
+                    records[lot.symbol].status
+                    not in {FreshnessStatus.STREAMING, FreshnessStatus.RECENTLY_REFRESHED}
+                    for portfolio in portfolios
+                    if portfolio.name == name
+                    for lot in portfolio.holdings
+                ),
+            }
             for name, change in pulse.by_portfolio.items()
         ]
     )
     if not portfolio_rows.empty:
+        stale_portfolio_rows = portfolio_rows.pop("_stale")
         st.dataframe(
-            portfolio_rows,
+            _style_stale_values(portfolio_rows, stale_portfolio_rows, ("Daily contribution",)),
             hide_index=True,
             width="stretch",
             column_config={"Daily contribution": st.column_config.NumberColumn(format="$%,.0f")},
@@ -2830,27 +2898,40 @@ def render_active_monitoring(
     with detail_columns[0]:
         st.selectbox("Symbol", symbols, key="monitor_selected_symbol")
     with detail_columns[1]:
+        symbol_detail = pd.DataFrame(
+            [
+                {
+                    "Symbol": selected_symbol,
+                    "Latest trade": quote.latest_trade,
+                    "Bid": quote.bid,
+                    "Ask": quote.ask,
+                    "Midpoint": quote.midpoint,
+                    "Spread": quote.spread,
+                    "Quote time": format_eastern_timestamp(quote.quote_time),
+                    "Trade time": format_eastern_timestamp(quote.trade_time),
+                    "Receipt time": format_eastern_timestamp(quote.receipt_time),
+                    "As of": format_eastern_timestamp(quote.as_of_time),
+                    "Feed": quote.feed,
+                    "Freshness": freshness_label(quote.status),
+                    "Exposure shares": exposure_shares,
+                    "Exposure value": exposure_shares * quote.price if quote.price else None,
+                    "Order state": ", ".join(state) if state else "none",
+                }
+            ]
+        )
         st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Symbol": selected_symbol,
-                        "Latest trade": quote.latest_trade,
-                        "Bid": quote.bid,
-                        "Ask": quote.ask,
-                        "Midpoint": quote.midpoint,
-                        "Spread": quote.spread,
-                        "Quote time": format_eastern_timestamp(quote.quote_time),
-                        "Trade time": format_eastern_timestamp(quote.trade_time),
-                        "Receipt time": format_eastern_timestamp(quote.receipt_time),
-                        "As of": format_eastern_timestamp(quote.as_of_time),
-                        "Feed": quote.feed,
-                        "Freshness": freshness_label(quote.status),
-                        "Exposure shares": exposure_shares,
-                        "Exposure value": exposure_shares * quote.price if quote.price else None,
-                        "Order state": ", ".join(state) if state else "none",
-                    }
-                ]
+            _style_stale_values(
+                symbol_detail,
+                pd.Series(
+                    [
+                        quote.status
+                        not in {
+                            FreshnessStatus.STREAMING,
+                            FreshnessStatus.RECENTLY_REFRESHED,
+                        }
+                    ]
+                ),
+                ("Latest trade", "Bid", "Ask", "Midpoint", "Spread", "Exposure value"),
             ),
             hide_index=True,
             width="stretch",

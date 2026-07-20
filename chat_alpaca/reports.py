@@ -206,7 +206,7 @@ def assemble_combined_performance_report(
             total_value=sum(
                 (portfolio_cost(portfolio) for portfolio in portfolios), start=money(0)
             ),
-            total_label="Selected cost basis + cash",
+            total_label="Selected Totals",
             all_time=None,
             daily=None,
             custom=None,
@@ -284,7 +284,7 @@ def assemble_combined_performance_report(
     complete_count = sum(valuation.is_complete for valuation in valuations)
     return CombinedPerformanceReport(
         total_value=total_value,
-        total_label="Total selected value",
+        total_label="Selected Totals",
         all_time=_summed([row.all_time for row in rows]),
         daily=_summed([row.daily for row in rows]),
         custom=_summed([row.custom for row in rows]),
@@ -316,7 +316,7 @@ def overlay_intraday_performance(
                     if row.all_time is not None and change is not None
                     else row.all_time
                 ),
-                daily=change,
+                daily=change if change is not None else row.daily,
                 custom=(
                     row.custom + change
                     if include_custom and row.custom is not None and change is not None
@@ -332,11 +332,7 @@ def overlay_intraday_performance(
             if indicative_total_value is not None
             else report.total_value
         ),
-        total_label=(
-            "Indicative total selected value"
-            if indicative_total_value is not None
-            else report.total_label
-        ),
+        total_label="Selected Totals",
         all_time=_summed([row.all_time for row in updated_rows]),
         daily=_summed([row.daily for row in updated_rows]),
         custom=_summed([row.custom for row in updated_rows]),

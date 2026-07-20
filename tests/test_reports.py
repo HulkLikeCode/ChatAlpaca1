@@ -88,6 +88,7 @@ def test_combined_performance_report_returns_incomplete_coverage_warning() -> No
     )
 
     assert report.total_value is None
+    assert report.total_label == "Selected Totals"
     assert report.coverage == "Complete valuations: 0 of 1 portfolios."
     assert any("Missing prices for held symbols: ABC" in warning for warning in report.warnings)
     assert report.rows[0].cash == 0
@@ -109,10 +110,28 @@ def test_intraday_overlay_updates_current_metrics_but_can_hold_custom_fixed() ->
     live = overlay_intraday_performance(report, {"Example": 5.0}, include_custom=True)
 
     assert fixed.total_value == Decimal("17.00")
+    assert fixed.total_label == "Selected Totals"
     assert fixed.daily == 5.0
     assert fixed.all_time == report.all_time + 5.0
     assert fixed.custom == report.custom
     assert live.custom == report.custom + 5.0
+
+
+def test_intraday_overlay_preserves_confirmed_daily_value_when_quote_move_is_missing() -> None:
+    portfolio = _portfolio()
+    closes = pd.DataFrame(
+        {"ABC": [10.0, 12.0], "OLD": [10.0, 10.0]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-03"]),
+    )
+    report = assemble_combined_performance_report(
+        [portfolio], closes, date(2026, 1, 3), date(2026, 1, 3)
+    )
+
+    partial = overlay_intraday_performance(report, {"Example": None}, include_custom=True)
+
+    assert partial.daily == report.daily
+    assert partial.all_time == report.all_time
+    assert partial.custom == report.custom
 
 
 def test_comparison_report_assembles_series_metrics_and_missing_warning() -> None:

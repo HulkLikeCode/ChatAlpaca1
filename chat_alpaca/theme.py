@@ -1,3 +1,6 @@
+STALE_VALUE_COLOR = "#D6A6BA"
+
+
 THEME_CSS = """
 <style>
 :root {
@@ -8,6 +11,7 @@ THEME_CSS = """
   --blue: #4d8dff;
   --cyan: #67d7ff;
   --violet: #9b72ff;
+  --stale: __STALE_VALUE_COLOR__;
 }
 .stApp {
   background:
@@ -36,6 +40,15 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
 }
 [data-testid="stMetricValue"] {font-size: 1.55rem; color: var(--ink);}
 [data-testid="stMetricDelta"] {color: var(--cyan) !important;}
+[class*="st-key-stale_metric_"] [data-testid="stMetricValue"] {
+  color: var(--stale) !important;
+}
+[class*="st-key-compact_transaction_"] [data-testid="stVerticalBlock"] {gap: .45rem;}
+[class*="st-key-compact_transaction_"] [data-testid="stForm"] {
+  padding: .65rem .8rem;
+}
+[class*="st-key-compact_transaction_"] [data-testid="stForm"]
+  [data-testid="stVerticalBlock"] {gap: .35rem;}
 .st-key-master_controls {
   position: sticky;
   top: 3.75rem;
@@ -87,7 +100,7 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
 }
 hr {border-color: var(--line);}
 </style>
-"""
+""".replace("__STALE_VALUE_COLOR__", STALE_VALUE_COLOR)
 
 
 PLOT_COLORS = [

@@ -59,7 +59,7 @@ def test_password_selects_the_expected_permission_role(
         get_settings.cache_clear()
 
     assert app.session_state["access_role"] == expected_role
-    assert ("Target portfolio" in [item.label for item in app.selectbox]) is has_admin_controls
+    assert ("transaction_target" in [item.key for item in app.selectbox]) is has_admin_controls
     trade_app = AppTest.from_file("streamlit_app.py", default_timeout=30)
     trade_app.session_state["access_role"] = expected_role
     trade_app.session_state["active_page"] = "Trade"
@@ -85,7 +85,7 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
         "Architecture",
     ]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
-    assert [item.label for item in app.metric].count("Selected cost basis + cash") == 1
+    assert [item.label for item in app.metric].count("Selected Totals") == 1
     assert not app.checkbox
     assert any(item.label.startswith("Portfolios · Applied:") for item in app.multiselect)
     portfolio_selector = next(
@@ -188,15 +188,15 @@ def test_phase_2_owner_manage_controls_render() -> None:
     ]
     assert sum(item.label.startswith("Portfolios · Applied:") for item in app.multiselect) == 1
     assert "Transaction type filter" in [item.label for item in app.multiselect]
-    assert "Target portfolio" in [item.label for item in app.selectbox]
+    assert "Portfolio" in [item.label for item in app.selectbox]
     assert "Import target portfolio" in [item.label for item in app.selectbox]
     assert "Portfolio action" in [item.label for item in app.selectbox]
-    target_selector = next(item for item in app.selectbox if item.label == "Target portfolio")
+    target_selector = next(item for item in app.selectbox if item.key == "transaction_target")
     csv_selector = next(item for item in app.selectbox if item.label == "Import target portfolio")
     assert target_selector.value == SELECT_PORTFOLIO_OPTION
     assert csv_selector.value == SELECT_PORTFOLIO_OPTION
-    assert "Transaction date (M/D/YY)" in [item.label for item in app.text_input]
-    assert [item.label for item in app.metric] == ["Grand total"]
+    assert "Date (M/D/YY)" in [item.label for item in app.text_input]
+    assert not app.metric
     assert [item.label for item in app.date_input] == ["Custom Start", "Custom End"]
     manage_sections = [item.label for item in app.expander]
     assert manage_sections.index("Transactions") < manage_sections.index("Add transaction")
@@ -208,7 +208,7 @@ def test_phase_2_owner_manage_controls_render() -> None:
         "Transactions",
     ]
     assert not app.get("download_button")
-    assert any("Quantity totals by symbol" in item.value for item in app.markdown)
+    assert not any("Quantity totals by symbol" in item.value for item in app.markdown)
 
 
 def test_manage_targets_follow_single_master_portfolio_and_blank_for_multiple() -> None:
@@ -224,11 +224,11 @@ def test_manage_targets_follow_single_master_portfolio_and_blank_for_multiple() 
     master_selector.set_value([1])
     apply_button.click().run()
 
-    target_selector = next(item for item in app.selectbox if item.label == "Target portfolio")
+    target_selector = next(item for item in app.selectbox if item.key == "transaction_target")
     csv_selector = next(item for item in app.selectbox if item.label == "Import target portfolio")
     assert target_selector.value == 1
     assert csv_selector.value == 1
-    assert "Transaction date (M/D/YY)" in [item.label for item in app.text_input]
+    assert "Date (M/D/YY)" in [item.label for item in app.text_input]
     assert [item.label for item in app.get("download_button")] == [
         "Download Brokerage CSV template"
     ]
@@ -240,7 +240,7 @@ def test_manage_targets_follow_single_master_portfolio_and_blank_for_multiple() 
     master_selector.set_value([1, 2])
     apply_button.click().run()
 
-    target_selector = next(item for item in app.selectbox if item.label == "Target portfolio")
+    target_selector = next(item for item in app.selectbox if item.key == "transaction_target")
     csv_selector = next(item for item in app.selectbox if item.label == "Import target portfolio")
     assert target_selector.value == SELECT_PORTFOLIO_OPTION
     assert csv_selector.value == SELECT_PORTFOLIO_OPTION

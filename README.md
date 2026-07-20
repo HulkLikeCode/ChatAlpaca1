@@ -29,7 +29,7 @@ A private, multi-portfolio personal portfolio manager that brings together portf
   stress, and optional retirement analysis, plus ledger-baseline staleness warnings
 - Separate admin and read-only user passwords; only admins can mutate data, upload files, or act on brokerage orders
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
-- Combined sortable transaction management with portfolio/type/date filters, totals, and guarded edits/deletes
+- Combined sortable transaction management with portfolio/type/date filters and guarded edits/deletes
 - Sticky, batched portfolio and master-date controls shared by Overview, Compare, and Manage
 - Compact portfolio-income reporting for realized dividends and interest, with master-end-aware
   YTD, trailing-365-day, selected-range, normalized-quarterly, monthly, and source views
@@ -158,10 +158,10 @@ Traditional and Roth holdings are recorded as cash-neutral opening-position tran
 three initial cash balances are recorded as Phase 1 cash adjustments effective `5/15/26`.
 
 Manage shows the master-selected portfolios in one sortable transaction table. The master date
-range and transaction-type filter also drive the displayed type totals and grand total. Select a
-row to edit or delete that transaction in its own portfolio; separate target selectors are used for
-new entries and CSV imports. Cash changes are totaled by transaction type, while share quantities
-are totaled separately by symbol and type. Manage keeps Transactions first, followed by Add
+range and transaction-type filter drive the displayed rows. Select a row to edit or delete that
+transaction in its own portfolio; separate target selectors are used for new entries and CSV
+imports. Compact add and edit controls follow the transaction-table field order, while new-entry
+action text is derived from its transaction type. Manage keeps Transactions first, followed by Add
 Transaction, Brokerage CSV, and consolidated portfolio administration. Transaction entry and
 posted dates use `M/D/YY`.
 
@@ -183,7 +183,10 @@ metrics, exact holdings, and transaction filtering.
 During an active authenticated session, complete IEX quotes may overlay the latest confirmed close
 for indicative portfolio value and gain/loss. All-time and daily figures then refresh every 30
 seconds. Custom gain/loss receives the same overlay only when the applied master end date is today;
-a historical end date remains fixed. Missing quote moves remain unavailable rather than zero.
+a historical end date remains fixed. If the live overlay is incomplete, confirmed-close daily
+gain/loss remains visible instead of mixing live and stale portfolio rows. Muted pink numeric text
+identifies displayed quote-driven amounts that rely on stale or previous-close data. Missing quote
+moves remain unavailable rather than zero.
 
 Portfolio cards show cumulative dividend ledger credits in the inclusive applied master range;
 interest is excluded. Portfolio and
