@@ -130,6 +130,23 @@ def test_multiple_portfolios_remain_separate_and_combine() -> None:
     assert result.combined.positions.columns.names == ["portfolio", "symbol"]
 
 
+def test_combined_returns_exclude_a_new_years_day_cash_adjustment() -> None:
+    existing = Portfolio(id=1, name="Existing", cash=Decimal("0"))
+    existing.transactions = [_transaction(1, date(2025, 12, 31), "transfer", "100")]
+    new_year_contribution = Portfolio(id=2, name="New year", cash=Decimal("0"))
+    new_year_contribution.transactions = [
+        _transaction(2, date(2026, 1, 1), "cash_adjustment", "50")
+    ]
+    coverage = _coverage({}, ["2025-12-31", "2026-01-02"])
+    request = ReconstructionRequest((1, 2), date(2025, 12, 31), date(2026, 1, 2))
+
+    result = reconstruct_from_coverage([existing, new_year_contribution], request, coverage)
+
+    assert result.combined.external_cash_flows.loc["2026-01-02"] == 50
+    assert result.combined.total_return.loc["2026-01-02"] == 0
+    assert result.combined.time_weighted_return.loc["2026-01-02"] == 0
+
+
 def test_positions_opened_and_closed_mid_period_do_not_require_prices_while_flat() -> None:
     portfolio = Portfolio(id=1, name="Round trip", cash=Decimal("0"))
     portfolio.transactions = [

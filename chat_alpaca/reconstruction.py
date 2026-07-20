@@ -181,10 +181,16 @@ def _event_series(
 ) -> pd.Series:
     result = _empty_series(index, name)
     for transaction in transactions:
-        timestamp = pd.Timestamp(transaction.transaction_date)
-        if transaction.kind in kinds and timestamp in result.index:
+        timestamp = _event_timestamp(transaction.transaction_date, result.index)
+        if transaction.kind in kinds and timestamp is not None:
             result.loc[timestamp] += float(transaction.cash_delta)
     return result
+
+
+def _event_timestamp(event_date: date, index: pd.DatetimeIndex) -> pd.Timestamp | None:
+    """Post an event on its trading date or the next available calculation date."""
+    eligible = index[index >= pd.Timestamp(event_date)]
+    return eligible[0] if not eligible.empty else None
 
 
 def _opening_asset_flow(transaction: PortfolioTransaction) -> float:
@@ -256,14 +262,14 @@ def _daily_for_portfolio(
         transactions, calculation_index, EXTERNAL_FLOW_KINDS, "external_cash_flows"
     )
     for transaction in transactions:
-        timestamp = pd.Timestamp(transaction.transaction_date)
+        timestamp = _event_timestamp(transaction.transaction_date, external.index)
         if timestamp in external.index:
             external.loc[timestamp] += _opening_asset_flow(transaction)
     dividends = _event_series(transactions, calculation_index, {"dividend"}, "dividends")
     interest = _event_series(transactions, calculation_index, {"interest"}, "interest")
     fees = _event_series(transactions, calculation_index, {"fee"}, "fees")
     for transaction in transactions:
-        timestamp = pd.Timestamp(transaction.transaction_date)
+        timestamp = _event_timestamp(transaction.transaction_date, fees.index)
         if transaction.kind != "fee" and transaction.fees and timestamp in fees.index:
             fees.loc[timestamp] -= abs(float(transaction.fees))
     taxes = _event_series(transactions, calculation_index, {"tax"}, "taxes")

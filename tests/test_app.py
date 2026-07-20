@@ -26,7 +26,6 @@ def test_unauthenticated_app_only_renders_login(monkeypatch: pytest.MonkeyPatch)
         get_settings.cache_clear()
 
     assert not app.exception
-    assert app.title[0].value == "Retirement Dough, Let’s Go!"
     assert [item.label for item in app.text_input] == ["Password"]
     assert not app.tabs
 
@@ -63,7 +62,6 @@ def test_read_only_app_renders_all_views() -> None:
     app = viewer_app()
 
     assert not app.exception
-    assert app.title[0].value == "Retirement Dough, Let’s Go!"
     assert not any("portfolios · benchmarks · Alpaca orders" in item.value for item in app.markdown)
     assert [tab.label for tab in app.tabs] == [
         "Overview",
@@ -76,8 +74,10 @@ def test_read_only_app_renders_all_views() -> None:
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
     assert [item.label for item in app.metric].count("Selected cost basis + cash") == 2
     assert [item.label for item in app.checkbox] == ["Set a target value"]
-    assert "Portfolios" in [item.label for item in app.multiselect]
-    portfolio_selector = next(item for item in app.multiselect if item.label == "Portfolios")
+    assert any(item.label.startswith("Portfolios · Applied:") for item in app.multiselect)
+    portfolio_selector = next(
+        item for item in app.multiselect if item.label.startswith("Portfolios · Applied:")
+    )
     assert portfolio_selector.value == ["__all_portfolios__"]
     assert [item.label for item in app.date_input] == ["Custom Start", "Custom End"]
     assert app.date_input[0].value == date(2026, 5, 15)
@@ -95,7 +95,7 @@ def test_read_only_app_renders_all_views() -> None:
         item.value for item in app.markdown if item.value.startswith('<div class="portfolio-grid">')
     )
     assert portfolio_grid.count('<div class="portfolio-card">') > 1
-    assert "Expected Annual Dividends" in portfolio_grid
+    assert "Cum. Dividends" in portfolio_grid
     assert "symbols" not in portfolio_grid
     assert "\n" not in portfolio_grid
     assert not app.get("file_uploader")
@@ -131,7 +131,7 @@ def test_phase_2_owner_manage_controls_render() -> None:
         "Trade",
         "Architecture",
     ]
-    assert [item.label for item in app.multiselect].count("Portfolios") == 1
+    assert sum(item.label.startswith("Portfolios · Applied:") for item in app.multiselect) == 1
     assert "Transaction type filter" in [item.label for item in app.multiselect]
     assert "Target portfolio" in [item.label for item in app.selectbox]
     assert "Import target portfolio" in [item.label for item in app.selectbox]
@@ -169,7 +169,9 @@ def test_manage_targets_follow_single_master_portfolio_and_blank_for_multiple() 
     app.session_state["owner_authenticated"] = True
     app.run()
 
-    master_selector = next(item for item in app.multiselect if item.label == "Portfolios")
+    master_selector = next(
+        item for item in app.multiselect if item.label.startswith("Portfolios · Applied:")
+    )
     apply_button = next(item for item in app.button if item.label == "Apply")
     master_selector.set_value([1])
     apply_button.click().run()
@@ -183,7 +185,9 @@ def test_manage_targets_follow_single_master_portfolio_and_blank_for_multiple() 
         "Download Brokerage CSV template"
     ]
 
-    master_selector = next(item for item in app.multiselect if item.label == "Portfolios")
+    master_selector = next(
+        item for item in app.multiselect if item.label.startswith("Portfolios · Applied:")
+    )
     apply_button = next(item for item in app.button if item.label == "Apply")
     master_selector.set_value([1, 2])
     apply_button.click().run()
@@ -199,7 +203,9 @@ def test_add_transaction_customizes_fields_and_validates_trade_symbols() -> None
     app.session_state["owner_authenticated"] = True
     app.run()
 
-    master_selector = next(item for item in app.multiselect if item.label == "Portfolios")
+    master_selector = next(
+        item for item in app.multiselect if item.label.startswith("Portfolios · Applied:")
+    )
     apply_button = next(item for item in app.button if item.label == "Apply")
     master_selector.set_value([1])
     apply_button.click().run()

@@ -54,7 +54,7 @@ def test_universe_and_acquisition_plan_own_adjustment_and_baseline_policy() -> N
     assert plan.benchmark.price_policy == "benchmark_total_return"
 
 
-def test_portfolio_card_annualizes_selected_range_dividends() -> None:
+def test_portfolio_card_sums_selected_range_dividends() -> None:
     portfolio = _portfolio()
     portfolio.transactions.append(
         PortfolioTransaction(
@@ -72,7 +72,7 @@ def test_portfolio_card_annualizes_selected_range_dividends() -> None:
         [portfolio], pd.DataFrame(), date(2026, 1, 1), date(2026, 4, 10)
     )[0]
 
-    assert report.expected_annual_dividends == Decimal("365.2425")
+    assert report.cumulative_dividends == Decimal("100")
 
 
 def test_combined_performance_report_returns_incomplete_coverage_warning() -> None:

@@ -52,7 +52,7 @@ class PerformanceRow:
 class PortfolioCardReport:
     name: str
     value_label: str
-    expected_annual_dividends: Decimal
+    cumulative_dividends: Decimal
     cash: Decimal
     warnings: tuple[str, ...] = ()
 
@@ -156,7 +156,6 @@ def assemble_portfolio_card_reports(
 ) -> tuple[PortfolioCardReport, ...]:
     if selected_start > selected_end:
         raise ValueError("The portfolio card start date must be on or before the end date.")
-    inclusive_days = Decimal((selected_end - selected_start).days + 1)
     reports = []
     for portfolio in portfolios:
         if closes.empty:
@@ -184,8 +183,6 @@ def assemble_portfolio_card_reports(
                         ),
                         Decimal("0"),
                     )
-                    / inclusive_days
-                    * Decimal("365.2425")
                 ),
                 Decimal(portfolio.cash),
                 warnings,

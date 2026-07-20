@@ -28,7 +28,7 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Transaction-aware all-time, daily, and custom-range portfolio gain/loss excluding contributions
 - Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, and lot drilldown
 - Selected-portfolio total value in both Overview and Compare
-- Selected-range expected annual dividends on portfolio value cards
+- Selected-range cumulative dividends on portfolio value cards
 - Portfolio and holding Alpha/Beta against SPY total return, using at least 60 overlapping daily returns
 - Market and limit orders, cancellation, fill synchronization, and an auditable internal transaction ledger
 - Automatic persistence through SQLite locally or hosted PostgreSQL in production
@@ -164,8 +164,8 @@ two latest market closes, while custom gain/loss uses the close before the appli
 through the master end date. The same range controls dividend custom totals, Compare charts and
 metrics, exact holdings, and transaction filtering.
 
-Portfolio cards annualize dividend ledger credits in the inclusive applied master range using
-`selected dividends / selected calendar days × 365.2425`; interest is excluded. Portfolio and
+Portfolio cards show cumulative dividend ledger credits in the inclusive applied master range;
+interest is excluded. Portfolio and
 holding Alpha/Beta use the applied master range and require at least 60 overlapping daily returns
 against SPY total-return data. Alpha is the compounded annualized daily regression intercept.
 Portfolio returns are ledger-aware. Holding returns add symbol-assigned dividend credits to

@@ -168,8 +168,13 @@ def render_master_controls(
     with st.container(key="master_controls"):
         with st.form("master_filters", border=False):
             columns = st.columns([3.2, 1.35, 1.35, 0.9], vertical_alignment="bottom")
+            scope_label = "All Portfolios" if applied_all else f"{len(applied_ids)} portfolios"
+            portfolio_label = (
+                f"Portfolios · Applied: {scope_label} · "
+                f"{applied_start:%m/%d/%y}–{applied_end:%m/%d/%y}"
+            )
             selected_ids = columns[0].multiselect(
-                "Portfolios",
+                portfolio_label,
                 [ALL_PORTFOLIOS_OPTION, *available_ids],
                 key="master_portfolio_draft",
                 format_func=lambda portfolio_id: (
@@ -210,9 +215,6 @@ def render_master_controls(
                 st.session_state.master_end_date = applied_end
         if validation_message:
             st.error(validation_message)
-
-        scope_label = "All Portfolios" if applied_all else f"{len(applied_ids)} portfolios"
-        st.caption(f"Applied: {scope_label} · {applied_start:%m/%d/%y}–{applied_end:%m/%d/%y}")
 
     selected = [portfolio for portfolio in portfolios if portfolio.id in set(applied_ids)]
     return selected, applied_start, applied_end
@@ -301,13 +303,6 @@ def render_access_status(role: str) -> None:
             st.caption("Viewing and forecasts are enabled. Permanent changes are disabled.")
 
 
-def render_header() -> None:
-    settings = get_settings()
-    mode = "PAPER MODE" if settings.paper else "LIVE MODE"
-    st.markdown(f'<span class="mode-chip">{mode}</span>', unsafe_allow_html=True)
-    st.title("Retirement Dough, Let’s Go!")
-
-
 def render_portfolio_cards(
     portfolios: list[Portfolio], closes: pd.DataFrame, custom_start: date, custom_end: date
 ) -> None:
@@ -319,8 +314,8 @@ def render_portfolio_cards(
                     '<div class="portfolio-card">',
                     f'<div class="eyebrow">{escape(report.name)}</div>',
                     f'<div class="value">{report.value_label}</div>',
-                    f'<div class="detail">Expected Annual Dividends: '
-                    f"{dollars(report.expected_annual_dividends)} · "
+                    f'<div class="detail">Cum. Dividends: '
+                    f"{dollars(report.cumulative_dividends)} · "
                     f"{dollars(report.cash)} cash</div>",
                     "</div>",
                 )
@@ -2092,7 +2087,6 @@ def render_architecture() -> None:
 
 
 def main() -> None:
-    render_header()
     role = authenticate_access()
     if role is None:
         return
