@@ -18,6 +18,7 @@ from chat_alpaca.historical_data import (
     HistoricalDataRepository,
     HistoricalRequest,
 )
+from chat_alpaca.market_calendar import market_session_index
 from chat_alpaca.models import Instrument, Portfolio, PortfolioTransaction, ProxyAssignment
 
 EXTERNAL_FLOW_KINDS = {"transfer", "cash_adjustment"}
@@ -161,7 +162,7 @@ def _symbols(portfolios: Sequence[Portfolio], end: date) -> tuple[str, ...]:
 
 
 def _report_index(start: date, end: date, prices: pd.DataFrame) -> pd.DatetimeIndex:
-    requested = pd.bdate_range(start, end).normalize()
+    requested = market_session_index(start, end)
     confirmed = pd.DatetimeIndex(prices.index).normalize()
     return requested.union(
         confirmed[(confirmed.date >= start) & (confirmed.date <= end)]

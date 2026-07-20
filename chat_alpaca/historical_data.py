@@ -23,6 +23,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from chat_alpaca.config import Settings, get_settings
+from chat_alpaca.market_calendar import market_session_index
 from chat_alpaca.models import DailyBar, Instrument, MarketDataset, ProxyAssignment
 from chat_alpaca.portfolio_service import normalize_symbol
 
@@ -228,19 +229,25 @@ class DailyBarValidator:
         return tuple(sorted(normalized, key=lambda bar: (bar.symbol, bar.bar_date)))
 
 
-def _ranges(dates: Iterable[date]) -> tuple[tuple[date, date], ...]:
-    values = sorted(set(dates))
-    if not values:
+def _ranges(
+    dates: Iterable[date], expected_dates: Iterable[date] | None = None
+) -> tuple[tuple[date, date], ...]:
+    missing = set(dates)
+    if not missing:
         return ()
+    calendar = sorted(set(expected_dates) if expected_dates is not None else missing)
     ranges: list[tuple[date, date]] = []
-    start = previous = values[0]
-    for current in values[1:]:
-        expected = (pd.Timestamp(previous) + pd.offsets.BDay()).date()
-        if current != expected:
+    start: date | None = None
+    previous: date | None = None
+    for current in calendar:
+        if current in missing:
+            start = current if start is None else start
+            previous = current
+        elif start is not None and previous is not None:
             ranges.append((start, previous))
-            start = current
-        previous = current
-    ranges.append((start, previous))
+            start = previous = None
+    if start is not None and previous is not None:
+        ranges.append((start, previous))
     return tuple(ranges)
 
 
@@ -371,12 +378,14 @@ class SqlHistoricalDataRepository:
         }
         for (symbol, bar_date), value in selected.items():
             by_symbol[symbol][bar_date] = value
-        expected = {timestamp.date() for timestamp in pd.bdate_range(request.start, request.end)}
+        expected = {
+            timestamp.date() for timestamp in market_session_index(request.start, request.end)
+        }
         missing_symbols = tuple(
-            sorted(symbol for symbol, values in by_symbol.items() if not values)
+            sorted(symbol for symbol, values in by_symbol.items() if expected and not values)
         )
         missing_ranges = {
-            symbol: _ranges(expected - set(values))
+            symbol: _ranges(expected - set(values), expected)
             for symbol, values in by_symbol.items()
             if expected - set(values)
         }

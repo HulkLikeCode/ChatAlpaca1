@@ -7,6 +7,7 @@ import pandas as pd
 from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 
+from chat_alpaca.cash_equivalents import add_cash_equivalent_closes, split_cash_equivalent_symbols
 from chat_alpaca.config import Settings, get_settings
 from chat_alpaca.db import session_scope
 from chat_alpaca.historical_data import (
@@ -61,18 +62,26 @@ def get_daily_closes(
     normalized = sorted({normalize_symbol(symbol) for symbol in symbols})
     if not normalized:
         return pd.DataFrame()
-    result = get_historical_daily_bars(
-        normalized,
-        start,
-        end,
-        adjustment={
-            Adjustment.RAW: PriceAdjustment.RAW,
-            Adjustment.SPLIT: PriceAdjustment.SPLIT,
-            Adjustment.DIVIDEND: PriceAdjustment.DIVIDEND,
-            Adjustment.ALL: PriceAdjustment.TOTAL_RETURN,
-        }[adjustment],
-    )
-    return result.data
+    market_symbols, cash_equivalents = split_cash_equivalent_symbols(normalized)
+    requested_end = end or datetime.now(timezone.utc).date()
+    adjustment_policy = {
+        Adjustment.RAW: PriceAdjustment.RAW,
+        Adjustment.SPLIT: PriceAdjustment.SPLIT,
+        Adjustment.DIVIDEND: PriceAdjustment.DIVIDEND,
+        Adjustment.ALL: PriceAdjustment.TOTAL_RETURN,
+    }[adjustment]
+    if market_symbols:
+        result = get_historical_daily_bars(
+            list(market_symbols),
+            start,
+            requested_end,
+            adjustment=adjustment_policy,
+        )
+        closes = result.data
+    else:
+        closes = pd.DataFrame()
+        closes.attrs["adjustment"] = adjustment_policy.value
+    return add_cash_equivalent_closes(closes, cash_equivalents, start, requested_end)
 
 
 def get_historical_daily_bars(

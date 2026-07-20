@@ -210,6 +210,39 @@ def test_partial_symbol_coverage_and_missing_dates_are_explicit(session) -> None
     assert pd.isna(result.data.loc[pd.Timestamp("2026-01-05"), "MISSING"])
 
 
+@pytest.mark.parametrize(
+    ("start", "end", "bar_dates"),
+    [
+        (
+            date(2026, 5, 22),
+            date(2026, 5, 26),
+            (date(2026, 5, 22), date(2026, 5, 26)),
+        ),
+        (
+            date(2026, 6, 18),
+            date(2026, 6, 22),
+            (date(2026, 6, 18), date(2026, 6, 22)),
+        ),
+        (
+            date(2026, 7, 2),
+            date(2026, 7, 6),
+            (date(2026, 7, 2), date(2026, 7, 6)),
+        ),
+    ],
+)
+def test_exchange_holidays_are_not_missing_coverage(
+    session, start: date, end: date, bar_dates: tuple[date, ...]
+) -> None:
+    repository = SqlHistoricalDataRepository(session)
+    repository.persist(_dataset(tuple(_bar("ABC", day) for day in bar_dates)))
+
+    result = repository.coverage(HistoricalRequest(("ABC",), start, end))
+
+    assert result.usable
+    assert result.missing_date_ranges == {}
+    assert not any("Missing daily observations" in warning for warning in result.warnings)
+
+
 def test_incremental_refresh_does_not_refetch_covered_peer_symbols(session) -> None:
     repository = SqlHistoricalDataRepository(session)
     repository.persist(
