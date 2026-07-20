@@ -43,6 +43,7 @@ from chat_alpaca.hypothetical import (
     load_hypothetical_scenarios,
     save_hypothetical_scenario,
 )
+from chat_alpaca.market_calendar import format_eastern_timestamp
 from chat_alpaca.models import OrderAllocation, Portfolio, PortfolioTransaction
 from chat_alpaca.portfolio_configuration import (
     ACCOUNT_TYPE_LABELS,
@@ -78,6 +79,7 @@ from chat_alpaca.realtime import (
     ActiveSessionRefreshScheduler,
     ActiveSessionRegistry,
     AlpacaWebSocketSession,
+    FreshnessStatus,
     HistoricalGapBackfiller,
     QuoteBook,
     SlidingWindowRateLimiter,
@@ -96,6 +98,7 @@ from chat_alpaca.reports import (
     assemble_comparison_report,
     assemble_portfolio_card_reports,
     comparison_acquisition_plan,
+    overlay_intraday_performance,
     portfolio_acquisition_request,
 )
 from chat_alpaca.scenarios import (
@@ -186,6 +189,14 @@ def _new_active_monitor() -> ActiveSessionMonitor:
 
 def dollars(value: object) -> str:
     return f"${float(value):,.2f}"
+
+
+def freshness_label(status: FreshnessStatus) -> str:
+    return (
+        "Fresh"
+        if status in {FreshnessStatus.STREAMING, FreshnessStatus.RECENTLY_REFRESHED}
+        else "Stale"
+    )
 
 
 def quantity(value: object) -> str:
@@ -386,7 +397,7 @@ def render_portfolio_cards(
                     f'<div class="eyebrow">{escape(report.name)}</div>',
                     f'<div class="value">{report.value_label}</div>',
                     f'<div class="detail">Cash: {dollars(report.cash)} · '
-                    f"TDT Div: {dollars(report.cumulative_dividends)}</div>",
+                    f"CDT Div: {dollars(report.cumulative_dividends)}</div>",
                     "</div>",
                 )
             )
@@ -401,6 +412,36 @@ def _metric_dollars(value: float | None) -> str:
     return dollars(value) if value is not None else "—"
 
 
+def _indicative_performance_pulse(portfolios: list[Portfolio], closes: pd.DataFrame):
+    settings = get_settings()
+    symbols = sorted({lot.symbol for portfolio in portfolios for lot in portfolio.holdings})
+    if not settings.alpaca_configured or not symbols:
+        return None
+    previous_closes = _latest_closes(closes)
+    position_values: dict[str, float] = {}
+    for portfolio in portfolios:
+        for lot in portfolio.holdings:
+            position_values[lot.symbol] = position_values.get(lot.symbol, 0.0) + float(
+                lot.shares
+            ) * previous_closes.get(lot.symbol, float(lot.cost_basis))
+    session_id = st.session_state.setdefault("realtime_session_id", uuid4().hex)
+    monitor = active_session_registry().acquire(session_id, _new_active_monitor)
+    try:
+        monitor.refresh(
+            SubscriptionInputs(
+                held_symbols=frozenset(symbols),
+                visible_symbols=frozenset(symbols[:12]),
+                selected_portfolio_symbols=frozenset(symbols),
+                position_values=position_values,
+            ),
+            previous_closes=previous_closes,
+        )
+        return build_portfolio_pulse(portfolios, monitor.records(symbols))
+    except Exception:
+        return None
+
+
+@st.fragment(run_every="30s")
 def render_performance_summary(
     portfolios: list[Portfolio],
     closes: pd.DataFrame,
@@ -418,6 +459,14 @@ def render_performance_summary(
             custom_end,
             benchmark_closes,
         )
+        pulse = _indicative_performance_pulse(portfolios, closes)
+        if pulse is not None:
+            report = overlay_intraday_performance(
+                report,
+                dict(pulse.by_portfolio),
+                include_custom=custom_end == date.today(),
+                indicative_total_value=pulse.indicative_total_value,
+            )
 
         metrics = st.columns(6)
         metrics[0].metric(
@@ -432,23 +481,35 @@ def render_performance_summary(
             f"{report.alpha:.2%}" if report.alpha is not None else "—",
         )
         metrics[5].metric("Beta", f"{report.beta:.2f}" if report.beta is not None else "—")
-        if closes.empty:
-            for warning in report.warnings:
-                st.caption(warning)
-            st.caption(report.coverage)
-            return
         for warning in report.warnings:
-            st.warning(warning)
+            st.caption(warning) if closes.empty else st.warning(warning)
         st.caption(report.coverage)
-        st.caption(
-            f"Alpha/Beta coverage: {report.alpha_beta_observations} overlapping SPY daily "
-            "returns; 60 are required."
-        )
+        if not closes.empty:
+            st.caption(
+                f"Alpha/Beta coverage: {report.alpha_beta_observations} overlapping SPY daily "
+                "returns; 60 are required."
+            )
+        if pulse is not None:
+            overlay_complete = all(change is not None for change in pulse.by_portfolio.values())
+            custom_note = (
+                "Custom gain/loss includes the indicative intraday move."
+                if custom_end == date.today()
+                else "Custom gain/loss remains fixed at its historical end date."
+            )
+            coverage_note = (
+                "All selected portfolios have complete quote moves."
+                if overlay_complete
+                else "Rows without complete quote moves remain close-based and show no daily move."
+            )
+            st.caption(
+                f"IEX quote overlay refreshes every 30 seconds. {custom_note} {coverage_note}"
+            )
 
         performance = pd.DataFrame(
             [
                 {
                     "Portfolio": row.portfolio,
+                    "Cash": row.cash,
                     "All-time gain/loss": row.all_time,
                     "Daily gain/loss": row.daily,
                     "Custom gain/loss": row.custom,
@@ -464,8 +525,9 @@ def render_performance_summary(
             hide_index=True,
             width="stretch",
             column_config={
-                column: st.column_config.NumberColumn(format="$%,.2f")
+                column: st.column_config.NumberColumn(format="$%,.0f")
                 for column in (
+                    "Cash",
                     "All-time gain/loss",
                     "Daily gain/loss",
                     "Custom gain/loss",
@@ -551,11 +613,11 @@ def render_consolidated_holdings(
                 width="stretch",
                 column_order=summary_columns,
                 column_config={
-                    "Shares": st.column_config.NumberColumn(format="%.2f"),
+                    "Shares": st.column_config.NumberColumn(format="%.0f"),
                     "Annualized Alpha": st.column_config.NumberColumn(format="%.2f%%"),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
                     **{
-                        column: st.column_config.NumberColumn(format="$%,.2f")
+                        column: st.column_config.NumberColumn(format="$%,.0f")
                         for column in money_columns
                     },
                 },
@@ -585,12 +647,12 @@ def render_consolidated_holdings(
                 width="stretch",
                 column_order=detail_columns,
                 column_config={
-                    "Shares": st.column_config.NumberColumn(format="%.2f"),
+                    "Shares": st.column_config.NumberColumn(format="%.0f"),
                     "Annualized Alpha": st.column_config.NumberColumn(format="%.2f%%"),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
                     "Acquired": st.column_config.DateColumn(format="M/D/YY"),
                     **{
-                        column: st.column_config.NumberColumn(format="$%,.2f")
+                        column: st.column_config.NumberColumn(format="$%,.0f")
                         for column in money_columns
                     },
                 },
@@ -681,19 +743,6 @@ def render_portfolio_income(
     )
 
 
-def render_cash_positions(portfolios: list[Portfolio]) -> None:
-    rows = [
-        {"Portfolio": portfolio.name, "Cash": float(portfolio.cash)} for portfolio in portfolios
-    ]
-    rows.append({"Portfolio": "Total", "Cash": sum(row["Cash"] for row in rows)})
-    st.dataframe(
-        pd.DataFrame(rows),
-        hide_index=True,
-        width="stretch",
-        column_config={"Cash": st.column_config.NumberColumn(format="$%,.2f")},
-    )
-
-
 def render_overview(
     portfolios: list[Portfolio],
     closes: pd.DataFrame,
@@ -721,8 +770,6 @@ def render_overview(
     with st.expander("Portfolio income", expanded=False):
         render_portfolio_income(portfolios, custom_start, custom_end)
     render_consolidated_holdings(portfolios, closes, custom_start, custom_end, benchmark_closes)
-    with st.expander("Cash positions", expanded=False):
-        render_cash_positions(portfolios)
 
 
 def render_compare(
@@ -770,8 +817,12 @@ def render_compare(
             portfolios, custom_start, custom_end, benchmark_symbols
         )
         try:
-            closes = cached_historical_data(acquisition.portfolio)
-            benchmark_closes = cached_historical_data(acquisition.benchmark)
+            closes = portfolio_closes
+            comparison_benchmark_closes = (
+                benchmark_closes
+                if set(benchmark_symbols).issubset(benchmark_closes.columns)
+                else cached_historical_data(acquisition.benchmark)
+            )
         except Exception as exc:
             st.info(f"Comparison data is unavailable. Configure rotated Alpaca credentials. {exc}")
             return
@@ -782,7 +833,7 @@ def render_compare(
         report = assemble_comparison_report(
             portfolios,
             closes,
-            benchmark_closes,
+            comparison_benchmark_closes,
             custom_start,
             custom_end,
             benchmark_symbols,
@@ -824,7 +875,7 @@ def render_compare(
             hide_index=True,
             width="stretch",
             column_config={
-                key: st.column_config.NumberColumn(format="%.2f%%")
+                key: st.column_config.NumberColumn(format="%.0f%%")
                 for key in (
                     "Total return",
                     "Annualized return",
@@ -862,54 +913,59 @@ def render_forecast(
         return
 
     scope_options = ["Selected portfolios", *(portfolio.name for portfolio in portfolios)]
-    scope = st.selectbox("Projection scope", scope_options, key="forecast_scope")
-    scoped_portfolios = (
-        portfolios
-        if scope == "Selected portfolios"
-        else [next(portfolio for portfolio in portfolios if portfolio.name == scope)]
-    )
     st.session_state.setdefault("forecast_preset", "Baseline")
     st.session_state.setdefault("forecast_annual_return", 7.0)
     st.session_state.setdefault("forecast_annual_volatility", 12.0)
     st.session_state.setdefault("forecast_monthly_contribution", 0.0)
     st.session_state.setdefault("forecast_horizon", 10)
+    st.session_state.setdefault("forecast_target_value", 1_000_000.0)
 
-    first_row = st.columns(4)
-    first_row[0].selectbox(
+    first_row = st.columns(3)
+    scope = first_row[0].selectbox("Projection scope", scope_options, key="forecast_scope")
+    first_row[1].selectbox(
         "Scenario preset",
         list(FORECAST_PRESETS),
         key="forecast_preset",
         on_change=_apply_forecast_preset,
     )
-    horizon_years = first_row[1].select_slider(
+    horizon_years = first_row[2].select_slider(
         "Forecast horizon (years)", options=list(range(1, 11)), key="forecast_horizon"
     )
-    annual_return = first_row[2].number_input(
+    scoped_portfolios = (
+        portfolios
+        if scope == "Selected portfolios"
+        else [next(portfolio for portfolio in portfolios if portfolio.name == scope)]
+    )
+    second_row = st.columns(3)
+    annual_return = second_row[0].number_input(
         "Expected annual return (%)",
         min_value=-99.0,
         max_value=50.0,
         step=0.25,
         key="forecast_annual_return",
     )
-    annual_volatility = first_row[3].number_input(
+    annual_volatility = second_row[1].number_input(
         "Annual volatility (%)",
         min_value=0.0,
         max_value=100.0,
         step=0.25,
         key="forecast_annual_volatility",
     )
-    second_row = st.columns([1.2, 1.0, 2.0])
-    monthly_contribution = second_row[0].number_input(
+    monthly_contribution = second_row[2].number_input(
         "Monthly contribution ($)", min_value=0.0, step=100.0, key="forecast_monthly_contribution"
     )
-    include_target = second_row[1].checkbox("Set a target value", key="forecast_include_target")
-    target_value = (
-        second_row[2].number_input(
-            "Target portfolio value ($)", min_value=1.0, step=1_000.0, key="forecast_target_value"
-        )
-        if include_target
-        else None
+    target_row = st.columns([1.0, 1.5, 1.5], vertical_alignment="bottom")
+    include_target = target_row[0].checkbox("Set a target value", key="forecast_include_target")
+    entered_target = target_row[1].number_input(
+        "Target portfolio value ($)",
+        min_value=1.0,
+        step=1_000.0,
+        format="%.0f",
+        key="forecast_target_value",
+        disabled=not include_target,
     )
+    target_probability_slot = target_row[2].empty()
+    target_value = entered_target if include_target else None
     assumptions = ForecastAssumptions(
         annual_return=annual_return / 100,
         annual_volatility=annual_volatility / 100,
@@ -996,6 +1052,13 @@ def render_forecast(
         xaxis={"gridcolor": "rgba(105,126,255,.10)"},
     )
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+    st.caption(
+        "Methodology: 10,000 reproducible monthly lognormal simulations use the selected "
+        "expected return for drift and volatility for outcome dispersion; contributions are "
+        "added at month-end. The chart shows the median, 25th–75th, and 5th–95th percentile "
+        "ranges. This is assumption-driven planning analysis, not a prediction based on recent "
+        "portfolio performance."
+    )
 
     annual = result.annual_percentiles.iloc[1:].reset_index()
     annual.insert(1, "Calendar year", [date.today().year + year for year in annual["Year"]])
@@ -1013,7 +1076,7 @@ def render_forecast(
         },
     )
     if result.target_probability is not None:
-        st.metric(
+        target_probability_slot.metric(
             f"Chance of reaching {dollars(target_value)} in {horizon_years} years",
             f"{result.target_probability:.0%}",
         )
@@ -1160,16 +1223,11 @@ def render_deterministic_scenarios(
         metrics[0].metric("Baseline", dollars(result.baseline_value))
         metrics[1].metric("Scenario", dollars(result.scenario_value))
         metrics[2].metric("Household impact", dollars(result.total_household_impact))
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"Portfolio": name, "Impact": impact}
-                    for name, impact in result.impact_by_portfolio.items()
-                ]
-            ),
-            hide_index=True,
-            width="stretch",
-            column_config={"Impact": st.column_config.NumberColumn(format="$%,.2f")},
+        portfolio_impact = pd.DataFrame(
+            [
+                {"Portfolio": name, "Impact": impact}
+                for name, impact in result.impact_by_portfolio.items()
+            ]
         )
         detail = pd.DataFrame(
             [
@@ -1185,19 +1243,24 @@ def render_deterministic_scenarios(
                 for name, impact in result.account_type_effects.items()
             ]
         )
-        st.dataframe(
-            detail,
-            hide_index=True,
-            width="stretch",
-            column_config={"Impact": st.column_config.NumberColumn(format="$%,.2f")},
-        )
-        st.markdown("#### Largest loss contributors")
-        st.dataframe(
-            pd.DataFrame(result.largest_loss_contributors, columns=["Contributor", "Impact"]),
-            hide_index=True,
-            width="stretch",
-            column_config={"Impact": st.column_config.NumberColumn(format="$%,.2f")},
-        )
+        impact_height = min(360, max(120, 36 * (max(len(portfolio_impact), len(detail)) + 1)))
+        impact_columns = st.columns(2)
+        with impact_columns[0]:
+            st.dataframe(
+                portfolio_impact,
+                hide_index=True,
+                width="stretch",
+                height=impact_height,
+                column_config={"Impact": st.column_config.NumberColumn(format="$%,.0f")},
+            )
+        with impact_columns[1]:
+            st.dataframe(
+                detail,
+                hide_index=True,
+                width="stretch",
+                height=impact_height,
+                column_config={"Impact": st.column_config.NumberColumn(format="$%,.0f")},
+            )
         st.markdown("#### Assumptions")
         st.dataframe(
             pd.DataFrame(
@@ -1234,7 +1297,48 @@ def render_deterministic_scenarios(
                 ),
                 dataset_references=dataset_references,
             )
-            st.dataframe(sensitivity, hide_index=True, width="stretch")
+            sensitivity = sensitivity.copy()
+            percentage_columns = [
+                column
+                for column in (
+                    "market_decline",
+                    "inflation",
+                    "expected_return",
+                    "impact_percent",
+                )
+                if column in sensitivity
+            ]
+            sensitivity[percentage_columns] *= 100
+            usd_columns = [
+                column
+                for column in (
+                    "contribution_amount",
+                    "spending",
+                    "baseline_value",
+                    "scenario_value",
+                    "household_impact",
+                )
+                if column in sensitivity
+            ]
+            st.dataframe(
+                sensitivity,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    **{
+                        column: st.column_config.NumberColumn(
+                            column.replace("_", " ").title(), format="%.1f%%"
+                        )
+                        for column in percentage_columns
+                    },
+                    **{
+                        column: st.column_config.NumberColumn(
+                            column.replace("_", " ").title(), format="$%,.0f"
+                        )
+                        for column in usd_columns
+                    },
+                },
+            )
         else:
             st.caption("Historical replay uses its fixed available prior-period observations.")
         st.caption(
@@ -2660,14 +2764,13 @@ def render_active_monitoring(
     holding_rows = pd.DataFrame(
         [
             {
-                "Portfolio": row.portfolio,
                 "Symbol": row.symbol,
                 "Price": row.price,
                 "Value": row.value,
                 "Daily change": row.daily_change,
                 "Contribution": row.contribution,
-                "Freshness": row.status.value,
-                "As of": records[row.symbol].as_of_time,
+                "Freshness": freshness_label(row.status),
+                "As of": format_eastern_timestamp(records[row.symbol].as_of_time),
                 "Feed": records[row.symbol].feed,
                 "Provider": records[row.symbol].provider,
                 "Staleness reason": records[row.symbol].staleness_reason,
@@ -2688,10 +2791,10 @@ def render_active_monitoring(
             hide_index=True,
             width="stretch",
             column_config={
-                "Price": st.column_config.NumberColumn(format="$%,.4f"),
-                "Value": st.column_config.NumberColumn(format="$%,.2f"),
-                "Daily change": st.column_config.NumberColumn(format="$%,.2f"),
-                "Contribution": st.column_config.NumberColumn(format="%.2f%%"),
+                "Price": st.column_config.NumberColumn(format="$%,.0f"),
+                "Value": st.column_config.NumberColumn(format="$%,.0f"),
+                "Daily change": st.column_config.NumberColumn(format="$%,.0f"),
+                "Contribution": st.column_config.NumberColumn(format="%.0f%%"),
             },
         )
     portfolio_rows = pd.DataFrame(
@@ -2705,10 +2808,14 @@ def render_active_monitoring(
             portfolio_rows,
             hide_index=True,
             width="stretch",
-            column_config={"Daily contribution": st.column_config.NumberColumn(format="$%,.2f")},
+            column_config={"Daily contribution": st.column_config.NumberColumn(format="$%,.0f")},
         )
     if pulse.stale_or_missing:
-        st.warning("Stale or missing symbols: " + ", ".join(pulse.stale_or_missing))
+        stale_symbols = escape(", ".join(pulse.stale_or_missing))
+        st.markdown(
+            f'<div class="stale-symbol-alert">Stale or missing symbols: {stale_symbols}</div>',
+            unsafe_allow_html=True,
+        )
 
     quote = records[selected_symbol]
     exposure_shares = sum(
@@ -2733,12 +2840,12 @@ def render_active_monitoring(
                         "Ask": quote.ask,
                         "Midpoint": quote.midpoint,
                         "Spread": quote.spread,
-                        "Quote time": quote.quote_time,
-                        "Trade time": quote.trade_time,
-                        "Receipt time": quote.receipt_time,
-                        "As of": quote.as_of_time,
+                        "Quote time": format_eastern_timestamp(quote.quote_time),
+                        "Trade time": format_eastern_timestamp(quote.trade_time),
+                        "Receipt time": format_eastern_timestamp(quote.receipt_time),
+                        "As of": format_eastern_timestamp(quote.as_of_time),
                         "Feed": quote.feed,
-                        "Freshness": quote.status.value,
+                        "Freshness": freshness_label(quote.status),
                         "Exposure shares": exposure_shares,
                         "Exposure value": exposure_shares * quote.price if quote.price else None,
                         "Order state": ", ".join(state) if state else "none",
@@ -2789,7 +2896,7 @@ def render_active_monitoring(
             "12M return",
             "Drawdown",
             "Realized volatility",
-            "Cross-proxy dispersion",
+            "21-day SPY correlation",
         )
         context = context.copy()
         context[list(percentage_columns)] *= 100
@@ -2798,12 +2905,13 @@ def render_active_monitoring(
             hide_index=True,
             width="stretch",
             column_config={
-                name: st.column_config.NumberColumn(format="%.2f%%") for name in percentage_columns
+                name: st.column_config.NumberColumn(format="%.0f%%") for name in percentage_columns
             },
         )
         st.caption(
             "Components are disclosed individually: returns, 50-day trend, drawdown, 21-day "
-            "realized volatility, SPY correlation regime, and cross-proxy dispersion. No composite market score is used."
+            "realized volatility, SPY correlation regime, and 21-day rolling SPY correlation. "
+            "No composite market score is used."
         )
 
 
@@ -2820,8 +2928,6 @@ def main() -> None:
     selected_portfolios, master_start, master_end = render_master_controls(reporting_portfolios)
     if flash := st.session_state.pop("flash", None):
         st.info(flash)
-    closes, data_note = get_prices(selected_portfolios, master_start, master_end)
-    benchmark_closes, benchmark_note = get_alpha_beta_benchmark(master_start, master_end)
     labels = [
         "Overview",
         "Monitor",
@@ -2835,46 +2941,62 @@ def main() -> None:
     if st.session_state.get("active_page") not in {None, *labels}:
         st.session_state.active_page = labels[0]
     tabs = st.tabs(labels, key="active_page", on_change="rerun")
-    with tabs[0]:
-        render_overview(
-            selected_portfolios,
-            closes,
-            data_note,
-            master_start,
-            master_end,
-            benchmark_closes,
-        )
-    with tabs[1]:
-        render_active_monitoring(selected_portfolios, closes, editable=owner)
-    with tabs[2]:
-        render_compare(
-            selected_portfolios,
-            closes,
-            master_start,
-            master_end,
-            benchmark_closes,
-        )
-    with tabs[3]:
-        render_forecast(selected_portfolios, closes, owner=owner)
-    with tabs[4]:
-        render_hypothetical_analysis(
-            selected_portfolios,
-            closes,
-            benchmark_closes,
-            editable=owner,
-        )
-    with tabs[5]:
-        render_portfolio_admin(
-            selected_portfolios,
-            all_portfolios,
-            master_start,
-            master_end,
-            editable=owner,
-        )
-    with tabs[6]:
-        render_trade_admin(reporting_portfolios, editable=owner)
-    with tabs[7]:
-        render_architecture()
+    closes = pd.DataFrame()
+    data_note = None
+    benchmark_closes = pd.DataFrame()
+    benchmark_note = None
+    if any(tab.open for tab in tabs[:5]):
+        closes, data_note = get_prices(selected_portfolios, master_start, master_end)
+    if any(tabs[index].open for index in (0, 2, 4)):
+        benchmark_closes, benchmark_note = get_alpha_beta_benchmark(master_start, master_end)
+    if tabs[0].open:
+        with tabs[0]:
+            render_overview(
+                selected_portfolios,
+                closes,
+                data_note,
+                master_start,
+                master_end,
+                benchmark_closes,
+            )
+    elif tabs[1].open:
+        with tabs[1]:
+            render_active_monitoring(selected_portfolios, closes, editable=owner)
+    elif tabs[2].open:
+        with tabs[2]:
+            render_compare(
+                selected_portfolios,
+                closes,
+                master_start,
+                master_end,
+                benchmark_closes,
+            )
+    elif tabs[3].open:
+        with tabs[3]:
+            render_forecast(selected_portfolios, closes, owner=owner)
+    elif tabs[4].open:
+        with tabs[4]:
+            render_hypothetical_analysis(
+                selected_portfolios,
+                closes,
+                benchmark_closes,
+                editable=owner,
+            )
+    elif tabs[5].open:
+        with tabs[5]:
+            render_portfolio_admin(
+                selected_portfolios,
+                all_portfolios,
+                master_start,
+                master_end,
+                editable=owner,
+            )
+    elif tabs[6].open:
+        with tabs[6]:
+            render_trade_admin(reporting_portfolios, editable=owner)
+    elif tabs[7].open:
+        with tabs[7]:
+            render_architecture()
     if benchmark_note:
         st.caption(f"SPY Alpha/Beta data is unavailable: {benchmark_note}")
 

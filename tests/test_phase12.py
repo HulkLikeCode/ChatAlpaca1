@@ -209,6 +209,37 @@ def test_mixed_stream_and_snapshot_values_build_one_indicative_pulse() -> None:
     assert not pulse.stale_or_missing
 
 
+def test_pulse_combines_the_same_symbol_across_portfolios() -> None:
+    portfolios = [
+        SimpleNamespace(
+            name="First",
+            cash=0,
+            holdings=[SimpleNamespace(symbol="AAPL", shares=2)],
+        ),
+        SimpleNamespace(
+            name="Second",
+            cash=0,
+            holdings=[SimpleNamespace(symbol="AAPL", shares=3)],
+        ),
+    ]
+    quotes = {
+        "AAPL": QuoteRecord(
+            "AAPL",
+            latest_trade=200,
+            previous_close=195,
+            status=FreshnessStatus.STREAMING,
+        )
+    }
+
+    pulse = build_portfolio_pulse(portfolios, quotes)
+
+    assert len(pulse.holdings) == 1
+    assert pulse.holdings[0].shares == 5
+    assert pulse.holdings[0].value == 1_000
+    assert pulse.holdings[0].daily_change == 25
+    assert pulse.by_portfolio == {"First": 10, "Second": 15}
+
+
 def test_previous_close_values_do_not_claim_a_zero_daily_move() -> None:
     portfolio = SimpleNamespace(
         name="Primary",
@@ -430,6 +461,8 @@ def test_market_context_discloses_components_without_a_score() -> None:
     assert "Drawdown" in result
     assert "Realized volatility" in result
     assert "Correlation regime" in result
+    assert "21-day SPY correlation" in result
+    assert "Cross-proxy dispersion" not in result
     assert not any("score" in column.lower() for column in result)
 
 

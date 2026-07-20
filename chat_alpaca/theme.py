@@ -77,6 +77,14 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
 [aria-selected="true"] {color: white !important;}
 [data-testid="stDataFrame"], [data-testid="stDataEditor"] {border: 1px solid var(--line); border-radius: 12px; overflow: hidden;}
 [data-testid="stAlert"] {background: rgba(19,27,52,.88); border-color: rgba(105,126,255,.4); color: white;}
+.stale-symbol-alert {
+  margin: .35rem 0 .75rem;
+  padding: .75rem 1rem;
+  border: 1px solid rgba(255, 181, 205, .58);
+  border-radius: 12px;
+  background: rgba(255, 190, 210, .16);
+  color: #ffdbe7;
+}
 hr {border-color: var(--line);}
 </style>
 """

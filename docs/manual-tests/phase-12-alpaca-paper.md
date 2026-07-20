@@ -27,14 +27,19 @@ freshness checks once outside regular hours.
 ## Freshness and valuation
 
 1. For a liquid held symbol, compare latest trade, bid, ask, midpoint, spread, quote/trade/receipt
-   timestamps, feed, and as-of time with the Alpaca paper dashboard.
-2. Confirm live stream rows say `streaming`, snapshot rows say `recently refreshed`, delayed rows
-   become `stale`, durable close-only rows say `previous close`, and absent symbols say
-   `unavailable` with a reason.
+   timestamps, feed, and as-of time with the Alpaca paper dashboard. Confirm timestamps use the
+   compact daylight-aware format `7/20 3:42 PM ET`.
+2. Confirm streaming and recently refreshed mover rows display `Fresh`; delayed, previous-close,
+   and unavailable rows display `Stale`. Confirm stale/missing symbols use the light-pink themed
+   alert and retain a diagnostic reason.
 3. Confirm Portfolio pulse includes indicative total value, daily change, holding and portfolio
-   contribution, largest movers, and stale/missing symbols without replacing missing values by zero.
+   contribution, one combined largest-mover row per symbol, and stale/missing symbols without
+   replacing missing values by zero. Confirm the mover table has no Portfolio column.
 4. Confirm broad-market and sector rows disclose each return, trend, drawdown, volatility,
-   correlation, and dispersion component; there must be no unexplained composite market score.
+   correlation regime, and 21-day rolling SPY correlation component; confirm proxy dispersion is
+   absent and there is no unexplained composite market score.
+5. On Overview, confirm indicative all-time and daily gain/loss refresh with quotes. Confirm custom
+   gain/loss refreshes only when Custom End is today and remains fixed for an earlier end date.
 
 ## Orders, fills, reconnect, and cleanup
 

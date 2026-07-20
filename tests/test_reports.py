@@ -12,6 +12,7 @@ from chat_alpaca.reports import (
     assemble_portfolio_card_reports,
     comparison_acquisition_plan,
     historical_symbol_universe,
+    overlay_intraday_performance,
 )
 
 
@@ -89,6 +90,29 @@ def test_combined_performance_report_returns_incomplete_coverage_warning() -> No
     assert report.total_value is None
     assert report.coverage == "Complete valuations: 0 of 1 portfolios."
     assert any("Missing prices for held symbols: ABC" in warning for warning in report.warnings)
+    assert report.rows[0].cash == 0
+
+
+def test_intraday_overlay_updates_current_metrics_but_can_hold_custom_fixed() -> None:
+    portfolio = _portfolio()
+    closes = pd.DataFrame(
+        {"ABC": [10.0, 12.0], "OLD": [10.0, 10.0]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-03"]),
+    )
+    report = assemble_combined_performance_report(
+        [portfolio], closes, date(2026, 1, 3), date(2026, 1, 3)
+    )
+
+    fixed = overlay_intraday_performance(
+        report, {"Example": 5.0}, include_custom=False, indicative_total_value=17.0
+    )
+    live = overlay_intraday_performance(report, {"Example": 5.0}, include_custom=True)
+
+    assert fixed.total_value == Decimal("17.00")
+    assert fixed.daily == 5.0
+    assert fixed.all_time == report.all_time + 5.0
+    assert fixed.custom == report.custom
+    assert live.custom == report.custom + 5.0
 
 
 def test_comparison_report_assembles_series_metrics_and_missing_warning() -> None:

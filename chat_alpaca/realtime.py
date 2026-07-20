@@ -788,7 +788,6 @@ class ActiveSessionMonitor:
 
 @dataclass(frozen=True)
 class PulseHolding:
-    portfolio: str
     symbol: str
     shares: float
     price: float | None
@@ -810,19 +809,20 @@ class PortfolioPulse:
 def build_portfolio_pulse(
     portfolios: Iterable[object], quotes: Mapping[str, QuoteRecord]
 ) -> PortfolioPulse:
-    rows: list[PulseHolding] = []
+    portfolio_list = list(portfolios)
+    shares_by_symbol: dict[str, float] = {}
     portfolio_changes: dict[str, float | None] = {}
     cash_total = 0.0
-    for portfolio in portfolios:
+    for portfolio in portfolio_list:
         name = str(getattr(portfolio, "name"))
         cash_total += float(getattr(portfolio, "cash"))
         changes: list[float] = []
-        for lot in getattr(portfolio, "holdings"):
+        holdings = list(getattr(portfolio, "holdings"))
+        for lot in holdings:
             symbol = normalize_symbol(getattr(lot, "symbol"))
             shares = float(getattr(lot, "shares"))
+            shares_by_symbol[symbol] = shares_by_symbol.get(symbol, 0.0) + shares
             quote = quotes.get(symbol, QuoteRecord(symbol))
-            price = quote.price
-            value = shares * price if price is not None else None
             intraday_price = quote.latest_trade or quote.midpoint
             change = (
                 shares * (intraday_price - quote.previous_close)
@@ -831,17 +831,44 @@ def build_portfolio_pulse(
             )
             if change is not None:
                 changes.append(change)
-            rows.append(
-                PulseHolding(name, symbol, shares, price, value, change, None, quote.status)
+        portfolio_changes[name] = (
+            sum(changes) if holdings and len(changes) == len(holdings) else None
+        )
+    rows = []
+    for symbol, shares in sorted(shares_by_symbol.items()):
+        quote = quotes.get(symbol, QuoteRecord(symbol))
+        price = quote.price
+        intraday_price = quote.latest_trade or quote.midpoint
+        change = (
+            shares * (intraday_price - quote.previous_close)
+            if intraday_price is not None and quote.previous_close is not None
+            else None
+        )
+        rows.append(
+            PulseHolding(
+                symbol,
+                shares,
+                price,
+                shares * price if price is not None else None,
+                change,
+                None,
+                quote.status,
             )
-        portfolio_changes[name] = sum(changes) if changes else None
+        )
     market_value = sum(row.value for row in rows if row.value is not None)
     total = (
         cash_total + market_value if rows and all(row.value is not None for row in rows) else None
     )
-    total_change = sum(row.daily_change for row in rows if row.daily_change is not None)
+    total_change = (
+        sum(row.daily_change for row in rows if row.daily_change is not None)
+        if rows and all(row.daily_change is not None for row in rows)
+        else None
+    )
     changed_rows = tuple(
-        replace(row, contribution=(row.daily_change / total_change if total_change else None))
+        replace(
+            row,
+            contribution=(row.daily_change / total_change if total_change else None),
+        )
         for row in rows
     )
     stale = tuple(
@@ -860,7 +887,7 @@ def build_portfolio_pulse(
     )
     return PortfolioPulse(
         total,
-        total_change if any(row.daily_change is not None for row in rows) else None,
+        total_change,
         changed_rows,
         portfolio_changes,
         stale,
@@ -909,8 +936,9 @@ def market_context_metrics(closes: pd.DataFrame) -> pd.DataFrame:
                 else "mixed"
             )
         )
-        dispersion = daily.iloc[-1].std() if not daily.empty else np.nan
-        frame["Cross-proxy dispersion"] = dispersion
+        frame["21-day SPY correlation"] = frame["Symbol"].map(
+            lambda symbol: daily[symbol].corr(benchmark) if benchmark is not None else np.nan
+        )
     return frame
 
 

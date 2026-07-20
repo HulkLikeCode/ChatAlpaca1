@@ -10,9 +10,10 @@ from chat_alpaca.config import get_settings
 SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
 
 
-def viewer_app() -> AppTest:
+def viewer_app(page: str = "Overview") -> AppTest:
     app = AppTest.from_file("streamlit_app.py", default_timeout=30)
     app.session_state["access_role"] = "user"
+    app.session_state["active_page"] = page
     return app.run()
 
 
@@ -21,7 +22,9 @@ def test_unauthenticated_app_only_renders_login(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("USER_PASSWORD", "user-test-password")
     get_settings.cache_clear()
     try:
-        app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+        app = AppTest.from_file("streamlit_app.py", default_timeout=30)
+        app.session_state["active_page"] = "Manage"
+        app.run()
     finally:
         get_settings.cache_clear()
 
@@ -47,7 +50,9 @@ def test_password_selects_the_expected_permission_role(
     monkeypatch.setenv("USER_PASSWORD", "user-test-password")
     get_settings.cache_clear()
     try:
-        app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+        app = AppTest.from_file("streamlit_app.py", default_timeout=30)
+        app.session_state["active_page"] = "Manage"
+        app.run()
         app.text_input[0].set_value(password)
         next(item for item in app.button if item.label == "Sign in").click().run()
     finally:
@@ -55,10 +60,16 @@ def test_password_selects_the_expected_permission_role(
 
     assert app.session_state["access_role"] == expected_role
     assert ("Target portfolio" in [item.label for item in app.selectbox]) is has_admin_controls
-    assert ("Submit assigned order" in [item.label for item in app.button]) is has_admin_controls
+    trade_app = AppTest.from_file("streamlit_app.py", default_timeout=30)
+    trade_app.session_state["access_role"] = expected_role
+    trade_app.session_state["active_page"] = "Trade"
+    trade_app.run()
+    assert (
+        "Submit assigned order" in [item.label for item in trade_app.button]
+    ) is has_admin_controls
 
 
-def test_read_only_app_renders_all_views() -> None:
+def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
     app = viewer_app()
 
     assert not app.exception
@@ -74,12 +85,8 @@ def test_read_only_app_renders_all_views() -> None:
         "Architecture",
     ]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
-    assert [item.label for item in app.metric].count("Selected cost basis + cash") == 2
-    assert [item.label for item in app.checkbox] == [
-        "Set a target value",
-        "Set a hypothetical forecast target",
-        "Include retirement success analysis",
-    ]
+    assert [item.label for item in app.metric].count("Selected cost basis + cash") == 1
+    assert not app.checkbox
     assert any(item.label.startswith("Portfolios · Applied:") for item in app.multiselect)
     portfolio_selector = next(
         item for item in app.multiselect if item.label.startswith("Portfolios · Applied:")
@@ -88,21 +95,32 @@ def test_read_only_app_renders_all_views() -> None:
     assert [item.label for item in app.date_input] == ["Custom Start", "Custom End"]
     assert app.date_input[0].value == date(2026, 5, 15)
     assert "Exact holdings" in [item.label for item in app.expander]
-    assert "Projection scope" in [item.label for item in app.selectbox]
-    assert "Forecast horizon (years)" in [item.label for item in app.select_slider]
     assert "By portfolio / lot" in app.radio[0].options
-    cash_table = next(
-        item.value for item in app.dataframe if list(item.value.columns) == ["Portfolio", "Cash"]
+    gain_loss = next(
+        item.value
+        for item in app.dataframe
+        if list(item.value.columns)
+        == [
+            "Portfolio",
+            "Cash",
+            "All-time gain/loss",
+            "Daily gain/loss",
+            "Custom gain/loss",
+            "Annualized Alpha",
+            "Beta",
+            "Observations",
+        ]
     )
-    assert cash_table.iloc[-1]["Portfolio"] == "Total"
+    assert gain_loss["Cash"].sum() > 0
+    assert "Cash positions" not in [item.label for item in app.expander]
     assert not any("latest market value" in item.value for item in app.markdown)
 
     portfolio_grid = next(
         item.value for item in app.markdown if item.value.startswith('<div class="portfolio-grid">')
     )
     assert portfolio_grid.count('<div class="portfolio-card">') > 1
-    assert "TDT Div" in portfolio_grid
-    assert portfolio_grid.index("Cash:") < portfolio_grid.index("TDT Div:")
+    assert "CDT Div" in portfolio_grid
+    assert portfolio_grid.index("Cash:") < portfolio_grid.index("CDT Div:")
     assert "symbols" not in portfolio_grid
     assert "\n" not in portfolio_grid
     assert not app.get("file_uploader")
@@ -111,14 +129,41 @@ def test_read_only_app_renders_all_views() -> None:
 
 
 def test_comparison_defaults_to_spy_benchmark() -> None:
-    app = viewer_app()
+    app = viewer_app("Compare")
 
     benchmark_selector = next(item for item in app.multiselect if item.label == "Benchmark ETFs")
     assert benchmark_selector.value == ["SPY"]
 
 
+def test_monitor_consolidates_movers_and_simplifies_freshness() -> None:
+    app = viewer_app("Monitor")
+
+    movers = next(
+        item.value
+        for item in app.dataframe
+        if "Daily change" in item.value and "Contribution" in item.value
+    )
+    assert "Portfolio" not in movers
+    assert movers["Symbol"].is_unique
+    assert set(movers["Freshness"]) <= {"Fresh", "Stale"}
+    assert any("stale-symbol-alert" in item.value for item in app.markdown)
+
+
+def test_forecast_target_and_methodology_render_together() -> None:
+    app = viewer_app("Forecast")
+
+    target = next(item for item in app.number_input if item.label == "Target portfolio value ($)")
+    assert target.disabled
+    next(item for item in app.checkbox if item.label == "Set a target value").check().run()
+
+    target = next(item for item in app.number_input if item.label == "Target portfolio value ($)")
+    assert not target.disabled
+    assert any(item.label.startswith("Chance of reaching") for item in app.metric)
+    assert any("10,000 reproducible monthly" in item.value for item in app.caption)
+
+
 def test_incomplete_data_warnings_are_presented_without_credentials() -> None:
-    app = viewer_app()
+    app = viewer_app("Forecast")
 
     assert any("explicitly uses cost basis plus cash" in item.value for item in app.warning)
     assert any("Market-price coverage unavailable" in item.value for item in app.caption)
@@ -127,6 +172,7 @@ def test_incomplete_data_warnings_are_presented_without_credentials() -> None:
 def test_phase_2_owner_manage_controls_render() -> None:
     app = AppTest.from_file("streamlit_app.py", default_timeout=30)
     app.session_state["owner_authenticated"] = True
+    app.session_state["active_page"] = "Manage"
     app.run()
 
     assert not app.exception
@@ -150,11 +196,7 @@ def test_phase_2_owner_manage_controls_render() -> None:
     assert target_selector.value == SELECT_PORTFOLIO_OPTION
     assert csv_selector.value == SELECT_PORTFOLIO_OPTION
     assert "Transaction date (M/D/YY)" in [item.label for item in app.text_input]
-    assert [item.label for item in app.metric].count("Selected-range income") == 1
-    assert [item.label for item in app.metric].count("YTD through end date") == 1
-    assert [item.label for item in app.metric].count("Trailing 365 through end date") == 1
-    assert [item.label for item in app.metric].count("Normalized quarterly average") == 1
-    assert "Portfolio income" in [item.label for item in app.expander]
+    assert [item.label for item in app.metric] == ["Grand total"]
     assert [item.label for item in app.date_input] == ["Custom Start", "Custom End"]
     manage_sections = [item.label for item in app.expander]
     assert manage_sections.index("Transactions") < manage_sections.index("Add transaction")
@@ -163,11 +205,7 @@ def test_phase_2_owner_manage_controls_render() -> None:
         "Portfolio administration"
     )
     assert [item.label for item in app.expander if item.proto.expanded] == [
-        "Portfolio value and gain/loss",
-        "Portfolio value and gain/loss",
         "Transactions",
-        "Assigned order ticket",
-        "Extension architecture",
     ]
     assert not app.get("download_button")
     assert any("Quantity totals by symbol" in item.value for item in app.markdown)
@@ -176,6 +214,7 @@ def test_phase_2_owner_manage_controls_render() -> None:
 def test_manage_targets_follow_single_master_portfolio_and_blank_for_multiple() -> None:
     app = AppTest.from_file("streamlit_app.py", default_timeout=30)
     app.session_state["owner_authenticated"] = True
+    app.session_state["active_page"] = "Manage"
     app.run()
 
     master_selector = next(
@@ -210,6 +249,7 @@ def test_manage_targets_follow_single_master_portfolio_and_blank_for_multiple() 
 def test_add_transaction_customizes_fields_and_validates_trade_symbols() -> None:
     app = AppTest.from_file("streamlit_app.py", default_timeout=30)
     app.session_state["owner_authenticated"] = True
+    app.session_state["active_page"] = "Manage"
     app.run()
 
     master_selector = next(

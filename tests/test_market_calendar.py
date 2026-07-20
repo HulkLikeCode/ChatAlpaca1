@@ -1,7 +1,15 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from chat_alpaca.market_calendar import market_session_index
+from chat_alpaca.market_calendar import format_eastern_timestamp, market_session_index
+
+
+def test_eastern_timestamp_is_compact_and_daylight_aware() -> None:
+    assert (
+        format_eastern_timestamp(datetime(2026, 7, 20, 19, 42, tzinfo=ZoneInfo("UTC")))
+        == "7/20 3:42 PM ET"
+    )
+    assert format_eastern_timestamp(None) == "—"
 
 
 def test_market_sessions_exclude_holidays_and_in_progress_date() -> None:

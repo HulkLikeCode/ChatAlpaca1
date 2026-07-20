@@ -33,7 +33,8 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Sticky, batched portfolio and master-date controls shared by Overview, Compare, and Manage
 - Compact portfolio-income reporting for realized dividends and interest, with master-end-aware
   YTD, trailing-365-day, selected-range, normalized-quarterly, monthly, and source views
-- Transaction-aware all-time, daily, and custom-range portfolio gain/loss excluding contributions
+- Transaction-aware all-time, daily, and custom-range portfolio gain/loss excluding contributions,
+  with an indicative active-session IEX overlay and historical custom-end protection
 - Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, and lot drilldown
 - Selected-portfolio total value in both Overview and Compare
 - Selected-range cumulative dividends on portfolio value cards
@@ -179,6 +180,11 @@ two latest market closes, while custom gain/loss uses the close before the appli
 through the master end date. The same range controls dividend custom totals, Compare charts and
 metrics, exact holdings, and transaction filtering.
 
+During an active authenticated session, complete IEX quotes may overlay the latest confirmed close
+for indicative portfolio value and gain/loss. All-time and daily figures then refresh every 30
+seconds. Custom gain/loss receives the same overlay only when the applied master end date is today;
+a historical end date remains fixed. Missing quote moves remain unavailable rather than zero.
+
 Portfolio cards show cumulative dividend ledger credits in the inclusive applied master range;
 interest is excluded. Portfolio and
 holding Alpha/Beta use the applied master range and require at least 60 overlapping daily returns
@@ -282,9 +288,10 @@ confirmation, an unchanged ledger hash, and a newly reviewed non-stale market pr
 reviewed ticket data and does not submit an order.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
-two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or
-loss. Its Summary and By Portfolio / Lot views preserve each acquisition date and original cost
-basis without nesting collapsible sections.
+zero display decimals, weighted-average cost, total basis, market value, and all-time/daily/custom
+gain or loss. Currency values also use zero display decimals; stored shares, prices, and calculations
+retain their full precision. Its Summary and By Portfolio / Lot views preserve each acquisition date
+and original cost basis without nesting collapsible sections.
 
 ## Portfolio configuration and classification
 

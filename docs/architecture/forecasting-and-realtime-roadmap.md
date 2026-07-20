@@ -182,12 +182,16 @@ Intraday state is deliberately session-scoped and never updates holdings or acco
 Durable split-adjusted closes provide previous-close fallback through the existing historical-data
 repository. Abandoned leases are reaped on active reruns and explicit logout stops the connection;
 there is no persistent background worker and no uninterrupted closed-app or sleeping-device claim.
+Complete indicative quote changes may be overlaid on ledger-derived close-based all-time and daily
+gain/loss. Custom gain/loss receives the overlay only when its selected end date is the current day.
+This presentation overlay never mutates the ledger or durable historical datasets.
 
 The Monitor view presents an indicative IEX portfolio pulse, holding and portfolio daily
-contribution, largest movers, stale/missing symbols, assigned open orders and recent fills, symbol
-quote/trade detail, and controlled broad-market and sector proxy components. Returns, trend,
-drawdown, realized volatility, correlation regime, and dispersion remain individually disclosed;
-Phase 12 does not create a proprietary composite market score.
+contribution, symbol-consolidated largest movers, stale/missing symbols, assigned open orders and
+recent fills, symbol quote/trade detail, and controlled broad-market and sector proxy components.
+Returns, trend, drawdown, realized volatility, correlation regime, and 21-day rolling SPY
+correlation remain individually disclosed; Phase 12 does not create a proprietary composite market
+score.
 
 ## Benchmarks and hypothetical trades
 

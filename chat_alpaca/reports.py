@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Literal
@@ -40,6 +40,7 @@ class ComparisonAcquisitionPlan:
 @dataclass(frozen=True)
 class PerformanceRow:
     portfolio: str
+    cash: float
     all_time: float | None
     daily: float | None
     custom: float | None
@@ -212,7 +213,12 @@ def assemble_combined_performance_report(
             alpha=None,
             beta=None,
             alpha_beta_observations=0,
-            rows=(),
+            rows=tuple(
+                PerformanceRow(
+                    portfolio.name, float(portfolio.cash), None, None, None, None, None, 0
+                )
+                for portfolio in portfolios
+            ),
             warnings=("Cost basis plus cash is shown; gain/loss requires market data.",),
             coverage="Market-price coverage unavailable.",
         )
@@ -248,6 +254,7 @@ def assemble_combined_performance_report(
     rows = tuple(
         PerformanceRow(
             portfolio.name,
+            float(portfolio.cash),
             metrics.all_time,
             metrics.daily,
             metrics.custom,
@@ -287,6 +294,53 @@ def assemble_combined_performance_report(
         rows=rows,
         warnings=tuple(warnings),
         coverage=f"Complete valuations: {complete_count} of {len(valuations)} portfolios.",
+    )
+
+
+def overlay_intraday_performance(
+    report: CombinedPerformanceReport,
+    portfolio_changes: dict[str, float | None],
+    *,
+    include_custom: bool,
+    indicative_total_value: float | None = None,
+) -> CombinedPerformanceReport:
+    """Overlay complete indicative quote moves on close-based performance metrics."""
+    rows = []
+    for row in report.rows:
+        change = portfolio_changes.get(row.portfolio)
+        rows.append(
+            replace(
+                row,
+                all_time=(
+                    row.all_time + change
+                    if row.all_time is not None and change is not None
+                    else row.all_time
+                ),
+                daily=change,
+                custom=(
+                    row.custom + change
+                    if include_custom and row.custom is not None and change is not None
+                    else row.custom
+                ),
+            )
+        )
+    updated_rows = tuple(rows)
+    return replace(
+        report,
+        total_value=(
+            money(indicative_total_value)
+            if indicative_total_value is not None
+            else report.total_value
+        ),
+        total_label=(
+            "Indicative total selected value"
+            if indicative_total_value is not None
+            else report.total_label
+        ),
+        all_time=_summed([row.all_time for row in updated_rows]),
+        daily=_summed([row.daily for row in updated_rows]),
+        custom=_summed([row.custom for row in updated_rows]),
+        rows=updated_rows,
     )
 
 

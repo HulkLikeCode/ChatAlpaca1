@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -18,6 +18,16 @@ from pandas.tseries.holiday import (
 
 NEW_YORK = ZoneInfo("America/New_York")
 DAILY_BAR_READY_TIME = time(16, 15)
+
+
+def format_eastern_timestamp(value: datetime | None) -> str:
+    """Format a provider timestamp compactly in daylight-aware Eastern Time."""
+    if value is None:
+        return "—"
+    observed = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    local = observed.astimezone(NEW_YORK)
+    clock = local.strftime("%I:%M %p").lstrip("0")
+    return f"{local.month}/{local.day} {clock} ET"
 
 
 class UsEquityHolidayCalendar(AbstractHolidayCalendar):
