@@ -110,7 +110,7 @@ from chat_alpaca.scenarios import (
     save_scenario_run,
     sensitivity_grid,
 )
-from chat_alpaca.theme import PLOT_COLORS, STALE_VALUE_COLOR, THEME_CSS
+from chat_alpaca.theme import PLOT_COLORS, THEME_CSS
 from chat_alpaca.trading import (
     cancel_order,
     get_trading_client,
@@ -125,6 +125,7 @@ SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
 EDITABLE_KINDS = (*MANUAL_KINDS, "opening_position")
 TRADE_KINDS = {"buy", "sell"}
 SYMBOL_CASH_KINDS = {"dividend", "fee", "tax"}
+STALE_VALUE_COLOR = "#D6A6BA"
 MASTER_DEFAULT_START = date(2026, 5, 15)
 CSV_TEMPLATE = """Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount
 7/15/2026,Buy,AAPL,Apple Inc,10,$210.00,$0.00,"($2,100.00)"
