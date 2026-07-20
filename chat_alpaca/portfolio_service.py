@@ -436,7 +436,7 @@ def create_portfolio(session: Session, name: str) -> Portfolio:
     count = session.scalar(select(func.count()).select_from(Portfolio)) or 0
     if count >= MAX_PORTFOLIOS:
         raise ValueError(f"A maximum of {MAX_PORTFOLIOS} portfolios is allowed.")
-    portfolio = Portfolio(name=cleaned, cash=Decimal("0"))
+    portfolio = Portfolio(name=cleaned, account_type="unknown", cash=Decimal("0"))
     session.add(portfolio)
     session.flush()
     return portfolio

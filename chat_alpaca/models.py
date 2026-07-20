@@ -27,9 +27,16 @@ class Base(DeclarativeBase):
 
 class Portfolio(Base):
     __tablename__ = "portfolios"
+    __table_args__ = (
+        CheckConstraint(
+            "account_type IN ('traditional_ira', 'roth_ira', 'taxable', 'unknown')",
+            name="ck_portfolio_account_type",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    account_type: Mapped[str] = mapped_column(String(24), nullable=False, default="unknown")
     cash: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
@@ -38,6 +45,9 @@ class Portfolio(Base):
         back_populates="portfolio", cascade="all, delete-orphan"
     )
     transactions: Mapped[list[PortfolioTransaction]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+    benchmark_components: Mapped[list[PortfolioBenchmarkComponent]] = relationship(
         back_populates="portfolio", cascade="all, delete-orphan"
     )
 
@@ -313,3 +323,93 @@ class ProxyAssignment(Base):
     assignment_source: Mapped[str] = mapped_column(String(12), nullable=False)
     target_instrument: Mapped[Instrument] = relationship(foreign_keys=[target_instrument_id])
     proxy_instrument: Mapped[Instrument | None] = relationship(foreign_keys=[proxy_instrument_id])
+
+
+class PortfolioBenchmarkComponent(Base):
+    """One component of an append-only, effective-dated portfolio benchmark blend."""
+
+    __tablename__ = "portfolio_benchmark_components"
+    __table_args__ = (
+        CheckConstraint("weight > 0 AND weight <= 1", name="ck_benchmark_component_weight"),
+        CheckConstraint(
+            "rebalancing_frequency IN ('daily', 'monthly', 'quarterly', 'annual', 'none')",
+            name="ck_benchmark_rebalancing_frequency",
+        ),
+        UniqueConstraint(
+            "portfolio_id", "effective_from", "symbol", name="uq_benchmark_period_symbol"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    weight: Mapped[Decimal] = mapped_column(Numeric(9, 8), nullable=False)
+    rebalancing_frequency: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="monthly"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    portfolio: Mapped[Portfolio] = relationship(back_populates="benchmark_components")
+
+
+class SecurityMetadata(Base):
+    """Cached, provenance-bearing security classification snapshot."""
+
+    __tablename__ = "security_metadata"
+    __table_args__ = (
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="ck_security_metadata_confidence",
+        ),
+        UniqueConstraint(
+            "instrument_id", "source", "retrieved_at", name="uq_security_metadata_snapshot"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    security_name: Mapped[str | None] = mapped_column(String(240))
+    asset_type: Mapped[str | None] = mapped_column(String(24))
+    sector: Mapped[str | None] = mapped_column(String(120))
+    industry: Mapped[str | None] = mapped_column(String(160))
+    source: Mapped[str] = mapped_column(String(48), nullable=False)
+    effective_date: Mapped[date | None] = mapped_column(Date)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    quality_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    manual_override: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    instrument: Mapped[Instrument] = relationship()
+
+
+class EtfSectorWeight(Base):
+    """A sector allocation in a dated ETF look-through snapshot."""
+
+    __tablename__ = "etf_sector_weights"
+    __table_args__ = (
+        CheckConstraint("weight >= 0 AND weight <= 1", name="ck_etf_sector_weight"),
+        UniqueConstraint(
+            "instrument_id",
+            "effective_date",
+            "source",
+            "sector",
+            name="uq_etf_sector_snapshot_sector",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sector: Mapped[str] = mapped_column(String(120), nullable=False)
+    weight: Mapped[Decimal] = mapped_column(Numeric(9, 8), nullable=False)
+    source: Mapped[str] = mapped_column(String(48), nullable=False)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    quality_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    instrument: Mapped[Instrument] = relationship()

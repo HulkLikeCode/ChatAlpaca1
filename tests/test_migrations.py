@@ -41,6 +41,9 @@ EXPECTED_TABLES = {
     "market_datasets",
     "daily_bars",
     "proxy_assignments",
+    "portfolio_benchmark_components",
+    "security_metadata",
+    "etf_sector_weights",
 }
 
 
@@ -114,6 +117,49 @@ def test_phase_two_legacy_schema_is_adopted_then_upgraded(tmp_path) -> None:
 
     assert set(inspect(engine).get_table_names()) == EXPECTED_TABLES
     assert _revision(engine) == CURRENT_REVISION
+
+
+def test_phase_six_account_type_migration_is_conservative(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'account-types.db'}")
+    with engine.begin() as connection:
+        config = Config(PROJECT_ROOT / "alembic.ini")
+        config.attributes["connection"] = connection
+        command.upgrade(config, "20260719_0002")
+        connection.execute(
+            text(
+                "INSERT INTO portfolios (name, cash, created_at) VALUES "
+                "('Family Traditional IRA', 0, CURRENT_TIMESTAMP), "
+                "('Family Roth IRA', 0, CURRENT_TIMESTAMP), "
+                "('Ordinary Brokerage', 0, CURRENT_TIMESTAMP), "
+                "('IRA wording is absent', 0, CURRENT_TIMESTAMP)"
+            )
+        )
+        traditional_id = connection.scalar(
+            text("SELECT id FROM portfolios WHERE name = 'Family Traditional IRA'")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO holding_lots "
+                "(portfolio_id, symbol, shares, acquired_on, cost_basis) "
+                "VALUES (:portfolio_id, 'KEEP', 2, '2026-01-01', 10)"
+            ),
+            {"portfolio_id": traditional_id},
+        )
+
+    upgrade_database(engine)
+
+    with engine.connect() as connection:
+        rows = dict(
+            connection.execute(text("SELECT name, account_type FROM portfolios")).tuples().all()
+        )
+    assert rows == {
+        "Family Traditional IRA": "traditional_ira",
+        "Family Roth IRA": "roth_ira",
+        "Ordinary Brokerage": "unknown",
+        "IRA wording is absent": "unknown",
+    }
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM holding_lots")) == 1
 
 
 def test_migration_execution_is_repeatable(tmp_path) -> None:

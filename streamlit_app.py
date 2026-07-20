@@ -29,6 +29,15 @@ from chat_alpaca.forecasting import (
     run_forecast,
 )
 from chat_alpaca.models import OrderAllocation, Portfolio, PortfolioTransaction
+from chat_alpaca.portfolio_configuration import (
+    ACCOUNT_TYPE_LABELS,
+    ACCOUNT_TYPES,
+    REBALANCING_FREQUENCIES,
+    benchmark_configurations,
+    parse_benchmark_components,
+    save_benchmark_configuration,
+    set_account_type,
+)
 from chat_alpaca.portfolio_service import (
     MANUAL_KINDS,
     create_portfolio,
@@ -37,6 +46,7 @@ from chat_alpaca.portfolio_service import (
     format_short_date,
     import_statement,
     list_transactions_for_portfolios,
+    parse_short_date,
     parse_statement_csv,
     portfolio_income_events,
     portfolio_income_summary,
@@ -1372,15 +1382,77 @@ def render_portfolio_actions(portfolios: list[Portfolio]) -> None:
             target = next(portfolio for portfolio in portfolios if portfolio.name == target_name)
             with st.form(f"rename_portfolio_{target.id}"):
                 renamed_name = st.text_input("Portfolio name", value=target.name, max_chars=80)
-                renamed = st.form_submit_button("Save portfolio name")
+                selected_account_type = st.selectbox(
+                    "Account type",
+                    ACCOUNT_TYPES,
+                    index=ACCOUNT_TYPES.index(target.account_type),
+                    format_func=lambda value: ACCOUNT_TYPE_LABELS[value],
+                )
+                renamed = st.form_submit_button("Save portfolio settings")
             if renamed:
                 try:
                     with session_scope() as session:
                         rename_portfolio(session, target.id, renamed_name)
-                    st.session_state.flash = "Portfolio renamed."
+                        set_account_type(session, target.id, selected_account_type)
+                    st.session_state.flash = "Portfolio settings saved."
                     st.rerun()
                 except Exception as exc:
-                    st.info(f"Portfolio was not renamed: {exc}")
+                    st.info(f"Portfolio settings were not saved: {exc}")
+
+            with session_scope() as session:
+                configurations = benchmark_configurations(session, target.id)
+            if configurations:
+                st.caption("Effective-dated benchmark history (weights are percentages).")
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Effective": configuration.effective_from,
+                                "Components": ", ".join(
+                                    f"{symbol} {float(weight) * 100:g}%"
+                                    for symbol, weight in configuration.weights.items()
+                                ),
+                                "Rebalancing": configuration.rebalancing_frequency.title(),
+                            }
+                            for configuration in configurations
+                        ]
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+            st.caption(
+                "New benchmark configurations apply only from their effective date forward. "
+                "Total-return components rebalance at the selected frequency."
+            )
+            with st.form(f"benchmark_configuration_{target.id}"):
+                benchmark_effective_text = st.text_input(
+                    "Benchmark effective date (M/D/YY)", value=format_short_date(date.today())
+                )
+                benchmark_components = st.text_input(
+                    "Benchmark blend",
+                    value="SPY:100",
+                    help="Comma-separated SYMBOL:percentage entries; weights must total 100%.",
+                )
+                benchmark_frequency = st.selectbox(
+                    "Benchmark rebalancing", REBALANCING_FREQUENCIES, index=1
+                )
+                benchmark_saved = st.form_submit_button("Add benchmark configuration")
+            if benchmark_saved:
+                try:
+                    weights = parse_benchmark_components(benchmark_components)
+                    benchmark_effective = parse_short_date(benchmark_effective_text)
+                    with session_scope() as session:
+                        save_benchmark_configuration(
+                            session,
+                            target.id,
+                            benchmark_effective,
+                            weights,
+                            rebalancing_frequency=benchmark_frequency,
+                        )
+                    st.session_state.flash = "Benchmark configuration added."
+                    st.rerun()
+                except Exception as exc:
+                    st.info(f"Benchmark configuration was not added: {exc}")
 
         elif action == "Add portfolio":
             with st.form("create_portfolio"):

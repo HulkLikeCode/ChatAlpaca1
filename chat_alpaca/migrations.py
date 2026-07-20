@@ -16,7 +16,7 @@ from chat_alpaca.db import get_engine
 from chat_alpaca.models import Base
 
 BASELINE_REVISION = "20260719_0001"
-CURRENT_REVISION = "20260719_0002"
+CURRENT_REVISION = "20260719_0003"
 ALEMBIC_TABLE = "alembic_version"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_TABLES = {
@@ -27,6 +27,13 @@ BASELINE_TABLES = {
     "portfolio_transactions",
     "portfolios",
     "transaction_overrides",
+}
+PHASE_3_TABLES = BASELINE_TABLES | {
+    "instruments",
+    "symbol_aliases",
+    "market_datasets",
+    "daily_bars",
+    "proxy_assignments",
 }
 
 
@@ -54,10 +61,16 @@ def _expected_columns(table: Table) -> dict[str, Column[Any]]:
     return {column.name: column for column in table.columns}
 
 
-def _validate_columns(connection: Connection, table: Table) -> list[str]:
+def _validate_columns(
+    connection: Connection, table: Table, *, excluded_expected: set[str] | None = None
+) -> list[str]:
     inspector = inspect(connection)
     actual = {column["name"]: column for column in inspector.get_columns(table.name)}
-    expected = _expected_columns(table)
+    expected = {
+        name: column
+        for name, column in _expected_columns(table).items()
+        if name not in (excluded_expected or set())
+    }
     issues: list[str] = []
     missing = sorted(set(expected) - set(actual))
     unexpected = sorted(set(actual) - set(expected))
@@ -147,6 +160,9 @@ def validate_schema_for_adoption(connection: Connection) -> str:
     if actual_tables == BASELINE_TABLES:
         expected_tables = BASELINE_TABLES
         adoption_revision = BASELINE_REVISION
+    elif actual_tables == PHASE_3_TABLES:
+        expected_tables = PHASE_3_TABLES
+        adoption_revision = "20260719_0002"
     else:
         expected_tables = current_tables
         adoption_revision = CURRENT_REVISION
@@ -159,7 +175,13 @@ def validate_schema_for_adoption(connection: Connection) -> str:
         issues.append(f"unexpected tables: {', '.join(unexpected)}")
     for table_name in sorted(expected_tables & actual_tables):
         table = Base.metadata.tables[table_name]
-        issues.extend(_validate_columns(connection, table))
+        excluded = (
+            {"account_type"}
+            if adoption_revision in {BASELINE_REVISION, "20260719_0002"}
+            and table_name == "portfolios"
+            else set()
+        )
+        issues.extend(_validate_columns(connection, table, excluded_expected=excluded))
         issues.extend(_validate_constraints(connection, table))
     if issues:
         details = "\n- ".join(issues)

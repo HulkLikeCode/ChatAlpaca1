@@ -9,6 +9,9 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Durable, provider-neutral daily market-data cache with typed coverage and provenance
 - Typed ledger reconstruction for daily values, positions, flows, returns, benchmarks, and coverage
 - Seeded `KCs Traditional IRA`, `KCs Roth IRA`, and `KC and Papa` portfolios
+- Owner-editable Traditional IRA, Roth IRA, taxable, and unknown account classifications
+- Effective-dated per-portfolio benchmark blends with explicit rebalancing assumptions
+- Cached security metadata and dated ETF sector look-through classifications with provenance
 - Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
 - Public 1–10 year planning projections with editable scenarios, monthly contributions, percentile bands, and target probabilities
@@ -112,7 +115,8 @@ alembic downgrade -1
 ```
 
 The first revision is the safely adoptable Phase 2 baseline. Phase 3 adds the historical market-data
-tables in a second revision. Back up the database before downgrading. Set `DATABASE_URL` to select
+tables, and Phase 6 adds account classifications, effective-dated benchmark components, security
+metadata, and ETF sector snapshots. Back up the database before downgrading. Set `DATABASE_URL` to select
 the SQLite or PostgreSQL target; PostgreSQL URLs are normalized to the installed psycopg 3 driver.
 
 ## Portfolio transactions
@@ -166,6 +170,28 @@ Exact Holdings combines the same symbol across every selected portfolio. It show
 two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or
 loss. Its Summary and By Portfolio / Lot views preserve each acquisition date and original cost
 basis without nesting collapsible sections.
+
+## Portfolio configuration and classification
+
+Every portfolio has an explicit owner-editable account type: Traditional IRA, Roth IRA, taxable,
+or unknown. The Phase 6 migration classifies only names containing the unambiguous phrases
+“Traditional IRA” or “Roth IRA”; every other existing portfolio remains unknown. In particular,
+the absence of IRA wording never implies taxable status.
+
+Benchmark configurations are append-only effective periods made from arbitrary stock or ETF
+symbols whose percentage weights total 100% within a small decimal tolerance. Benchmark history
+uses component total returns. Each configuration records a daily, monthly, quarterly, annual, or
+never-rebalance assumption; monthly is the owner-form default. A later configuration takes effect
+on its date without changing earlier periods. Combined household analytics retain each portfolio's
+own benchmark rather than silently substituting a single household reference.
+
+Security name, asset type, sector, industry, source, effective/retrieval time, confidence/status,
+and manual-override state are cached independently of the ledger. Alpaca asset metadata can be
+cached when available, but the app has no required supplemental metadata subscription. ETF sector
+snapshots retain source, dates, and quality status. Reusable sector analytics combine direct-stock
+classification with proportional ETF look-through; incomplete ETF weights and unavailable
+classifications remain explicitly Unclassified, and stale inputs are disclosed. Sector dashboards
+remain deferred beyond Phase 6.
 
 Brokerage CSV imports preview every row before posting. The included `KC and Papa.csv` format supports its current buy, sell, dividend, interest, transfer, award, fee, and foreign-tax rows. Re-importing a statement skips transactions already recorded, while the **Rebuild portfolio from statement** action deliberately replaces that portfolio's lots, cash, transaction history, legacy ledger rows, and saved Alpaca allocations after the owner types `REBUILD`.
 
