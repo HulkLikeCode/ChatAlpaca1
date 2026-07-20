@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from datetime import time as wall_time
-from enum import StrEnum
+from enum import Enum
 from typing import Any, Protocol
 
 import numpy as np
@@ -29,7 +29,7 @@ SECTOR_PROXIES = ("XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE"
 OPEN_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "replaced"}
 
 
-class FreshnessStatus(StrEnum):
+class FreshnessStatus(str, Enum):
     STREAMING = "streaming"
     RECENTLY_REFRESHED = "recently refreshed"
     STALE = "stale"
