@@ -5,6 +5,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from chat_alpaca.analytics import portfolio_valuation
+from chat_alpaca.models import Portfolio
+from chat_alpaca.portfolio_service import money, portfolio_cost
+
 PERCENTILES = (5, 25, 50, 75, 95)
 
 
@@ -15,6 +19,93 @@ class ProjectionResult:
     monthly_percentiles: pd.DataFrame
     annual_percentiles: pd.DataFrame
     target_probability: float | None
+
+
+@dataclass(frozen=True)
+class ForecastAssumptions:
+    annual_return: float
+    annual_volatility: float
+    monthly_contribution: float
+    horizon_years: int
+    target_value: float | None = None
+
+
+@dataclass(frozen=True)
+class ForecastRequest:
+    current_value: float
+    assumptions: ForecastAssumptions
+    valuation_basis: str
+    warnings: tuple[str, ...] = ()
+    coverage: str = ""
+
+
+def build_forecast_request(
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    assumptions: ForecastAssumptions,
+) -> ForecastRequest:
+    """Construct a reproducible request with an explicit starting-value policy."""
+    if not portfolios:
+        raise ValueError("A forecast requires at least one portfolio.")
+    if closes.empty:
+        current_value = float(
+            sum((portfolio_cost(portfolio) for portfolio in portfolios), start=money(0))
+        )
+        warnings = (
+            "Market data is unavailable; this scenario explicitly uses cost basis plus cash "
+            "as its starting value.",
+        )
+        valuation_basis = "cost_basis_plus_cash"
+        coverage = "Market-price coverage unavailable; cost basis fallback disclosed."
+    else:
+        valuations = [portfolio_valuation(portfolio, closes) for portfolio in portfolios]
+        incomplete = [
+            portfolio.name
+            for portfolio, valuation in zip(portfolios, valuations, strict=True)
+            if not valuation.is_complete
+        ]
+        if incomplete:
+            raise ValueError(
+                "A projection is unavailable until every held symbol has a usable price. "
+                "Incomplete portfolios: " + ", ".join(incomplete) + "."
+            )
+        current_value = float(
+            sum(
+                (valuation.total_calculated_value for valuation in valuations),
+                start=money(0),
+            )
+        )
+        warnings = tuple(
+            sorted(
+                {
+                    *closes.attrs.get("warnings", ()),
+                    *(warning for valuation in valuations for warning in valuation.warnings),
+                }
+            )
+        )
+        valuation_basis = "confirmed_market_value"
+        coverage = f"Complete valuations: {len(valuations)} of {len(valuations)} portfolios."
+    if current_value <= 0:
+        raise ValueError("A projection requires a selected portfolio with a positive value.")
+    return ForecastRequest(
+        current_value,
+        assumptions,
+        valuation_basis,
+        warnings,
+        coverage,
+    )
+
+
+def run_forecast(request: ForecastRequest) -> ProjectionResult:
+    assumptions = request.assumptions
+    return simulate_portfolio_projection(
+        current_value=request.current_value,
+        annual_return=assumptions.annual_return,
+        annual_volatility=assumptions.annual_volatility,
+        monthly_contribution=assumptions.monthly_contribution,
+        horizon_years=assumptions.horizon_years,
+        target_value=assumptions.target_value,
+    )
 
 
 def simulate_portfolio_projection(

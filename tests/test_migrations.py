@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from chat_alpaca.bootstrap import bootstrap_database
+from chat_alpaca.bootstrap import bootstrap_database, initialize_application
 from chat_alpaca.migrations import (
     BASELINE_REVISION,
     CURRENT_REVISION,
@@ -173,6 +173,19 @@ def test_application_bootstrap_seeds_after_schema_upgrade(tmp_path) -> None:
         "Portfolio 5",
     ]
     assert {PHASE_1_MIGRATION_KEY, PHASE_1_DATE_CORRECTION_KEY} <= markers
+
+
+def test_application_initialization_returns_bootstrapped_state(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'application-state.db'}")
+
+    portfolios = initialize_application(engine)
+
+    assert [portfolio.name for portfolio in portfolios[:3]] == [
+        "KCs Traditional IRA",
+        "KCs Roth IRA",
+        "KC and Papa",
+    ]
+    assert portfolios[0].holdings
 
 
 def test_sqlite_foreign_keys_remain_enforced_after_migration(tmp_path) -> None:

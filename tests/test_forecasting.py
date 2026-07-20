@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+
+import pandas as pd
 import pytest
 
-from chat_alpaca.forecasting import simulate_portfolio_projection
+from chat_alpaca.forecasting import (
+    ForecastAssumptions,
+    build_forecast_request,
+    simulate_portfolio_projection,
+)
+from chat_alpaca.models import HoldingLot, Portfolio
 
 
 def test_projection_without_volatility_has_known_month_end_values() -> None:
@@ -63,3 +72,38 @@ def test_projection_rejects_invalid_assumptions(arguments: dict[str, float]) -> 
 
     with pytest.raises(ValueError):
         simulate_portfolio_projection(**values)
+
+
+def test_forecast_request_discloses_cost_basis_fallback() -> None:
+    portfolio = Portfolio(id=1, name="Example", cash=Decimal("5"))
+    portfolio.holdings = [
+        HoldingLot(
+            symbol="ABC",
+            shares=Decimal("2"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("10"),
+        )
+    ]
+    assumptions = ForecastAssumptions(0.07, 0.12, 0, 10)
+
+    request = build_forecast_request([portfolio], pd.DataFrame(), assumptions)
+
+    assert request.current_value == 25
+    assert request.valuation_basis == "cost_basis_plus_cash"
+    assert any("explicitly uses cost basis" in warning for warning in request.warnings)
+
+
+def test_forecast_request_does_not_silently_fill_incomplete_prices() -> None:
+    portfolio = Portfolio(id=1, name="Example", cash=Decimal("5"))
+    portfolio.holdings = [
+        HoldingLot(
+            symbol="ABC",
+            shares=Decimal("2"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("10"),
+        )
+    ]
+    closes = pd.DataFrame({"OTHER": [10.0]}, index=pd.to_datetime(["2026-01-02"]))
+
+    with pytest.raises(ValueError, match="Incomplete portfolios: Example"):
+        build_forecast_request([portfolio], closes, ForecastAssumptions(0.07, 0.12, 0, 10))

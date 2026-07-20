@@ -154,6 +154,14 @@ separate external flows and ledger income or expense categories, and report pric
 time-weighted, and money-weighted returns. Its transparent data-sufficiency score is a bounded
 status, not a claim of precision. Proxy assignments are disclosed but never used to value holdings.
 
+Phase 5 keeps Streamlit as the forms-and-presentation layer. `chat_alpaca.commands` constructs and
+validates transaction commands, `chat_alpaca.reports` owns symbol universes, baseline windows,
+market-data adjustment policy, comparison assembly, combined performance reports, coverage, and
+warnings, and `chat_alpaca.forecasting` constructs explicit forecast requests. When market prices
+are unavailable, a planning scenario may retain the existing cost-basis-plus-cash workflow only
+with that fallback and its coverage disclosed. Application database migration, seeding, and initial
+portfolio loading are coordinated by `chat_alpaca.bootstrap.initialize_application` outside the UI.
+
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
 two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or
 loss. Its Summary and By Portfolio / Lot views preserve each acquisition date and original cost

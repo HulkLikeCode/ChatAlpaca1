@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hmac
-from datetime import date, timedelta
+from datetime import date
 from html import escape
 
 import pandas as pd
@@ -9,42 +9,50 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from chat_alpaca.analytics import (
-    combined_performance_growth,
     consolidated_holdings,
-    performance_growth,
-    portfolio_gain_loss,
-    portfolio_valuation,
-    rebase_comparison_series,
-    summary_metrics,
 )
-from chat_alpaca.bootstrap import bootstrap_database
+from chat_alpaca.bootstrap import initialize_application
+from chat_alpaca.commands import (
+    TransactionCommand,
+    build_transaction_draft,
+    calculated_trade_cash,
+    transaction_kind_label,
+    validate_transaction_symbol,
+)
 from chat_alpaca.config import get_settings
 from chat_alpaca.db import session_scope
-from chat_alpaca.forecasting import ProjectionResult, simulate_portfolio_projection
-from chat_alpaca.market_data import get_benchmark_daily_closes, get_daily_closes
+from chat_alpaca.forecasting import (
+    ForecastAssumptions,
+    ForecastRequest,
+    ProjectionResult,
+    build_forecast_request,
+    run_forecast,
+)
 from chat_alpaca.models import OrderAllocation, Portfolio, PortfolioTransaction
 from chat_alpaca.portfolio_service import (
     MANUAL_KINDS,
-    TransactionDraft,
     create_portfolio,
     delete_portfolio,
     delete_transaction,
     format_short_date,
     import_statement,
-    list_portfolios,
     list_transactions_for_portfolios,
-    money,
-    normalize_symbol,
-    parse_short_date,
     parse_statement_csv,
-    portfolio_cost,
     portfolio_income_events,
     portfolio_income_summary,
     rebuild_portfolio_from_csv,
     record_transaction,
     rename_portfolio,
-    shares,
     update_transaction,
+)
+from chat_alpaca.reports import (
+    HistoricalDataRequest,
+    acquire_historical_data,
+    assemble_combined_performance_report,
+    assemble_comparison_report,
+    assemble_portfolio_card_reports,
+    comparison_acquisition_plan,
+    portfolio_acquisition_request,
 )
 from chat_alpaca.theme import PLOT_COLORS, THEME_CSS
 from chat_alpaca.trading import (
@@ -78,32 +86,15 @@ st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def cached_closes(symbols: tuple[str, ...], start: date, end: date) -> pd.DataFrame:
-    return get_daily_closes(list(symbols), start, end)
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def cached_benchmark_closes(symbols: tuple[str, ...], start: date, end: date) -> pd.DataFrame:
-    return get_benchmark_daily_closes(list(symbols), start, end)
+def cached_historical_data(request: HistoricalDataRequest) -> pd.DataFrame:
+    return acquire_historical_data(request)
 
 
 @st.cache_data(show_spinner=False)
 def cached_projection(
-    current_value: float,
-    annual_return: float,
-    annual_volatility: float,
-    monthly_contribution: float,
-    horizon_years: int,
-    target_value: float | None,
+    request: ForecastRequest,
 ) -> ProjectionResult:
-    return simulate_portfolio_projection(
-        current_value=current_value,
-        annual_return=annual_return,
-        annual_volatility=annual_volatility,
-        monthly_contribution=monthly_contribution,
-        horizon_years=horizon_years,
-        target_value=target_value,
-    )
+    return run_forecast(request)
 
 
 def dollars(value: object) -> str:
@@ -116,50 +107,7 @@ def quantity(value: object) -> str:
 
 
 def kind_label(value: str) -> str:
-    return value.replace("_", " ").title()
-
-
-def transaction_draft(
-    transaction_date_text: str,
-    kind: str,
-    symbol: str,
-    description: str,
-    raw_quantity: float,
-    raw_price: float,
-    raw_fees: float,
-    raw_cash_delta: float,
-    action: str | None = None,
-) -> TransactionDraft:
-    position_kind = kind in {"buy", "sell", "opening_position"}
-    parsed_quantity = shares(raw_quantity) if position_kind else None
-    parsed_price = money(raw_price) if position_kind else None
-    parsed_fees = money(raw_fees) if raw_fees else None
-    if kind == "buy":
-        assert parsed_quantity is not None and parsed_price is not None
-        parsed_cash_delta = -(parsed_quantity * parsed_price + (parsed_fees or 0))
-    elif kind == "sell":
-        assert parsed_quantity is not None and parsed_price is not None
-        parsed_cash_delta = parsed_quantity * parsed_price - (parsed_fees or 0)
-    elif kind == "opening_position":
-        parsed_cash_delta = money(0)
-    else:
-        parsed_cash_delta = money(raw_cash_delta)
-    return TransactionDraft(
-        transaction_date=parse_short_date(transaction_date_text),
-        action=(action or kind_label(kind)).strip(),
-        kind=kind,
-        symbol=normalize_symbol(symbol) if symbol.strip() else None,
-        description=description.strip(),
-        quantity=parsed_quantity,
-        price=parsed_price,
-        fees=parsed_fees,
-        cash_delta=parsed_cash_delta,
-    )
-
-
-def load_portfolios() -> list[Portfolio]:
-    with session_scope() as session:
-        return list_portfolios(session)
+    return transaction_kind_label(value)
 
 
 def portfolio_has_data(portfolio: Portfolio) -> bool:
@@ -252,22 +200,13 @@ def render_master_controls(
 
 
 def get_prices(
-    portfolios: list[Portfolio], start: date, extra: tuple[str, ...] = ()
+    portfolios: list[Portfolio], report_start: date, report_end: date
 ) -> tuple[pd.DataFrame, str | None]:
-    symbols = (
-        {lot.symbol for portfolio in portfolios for lot in portfolio.holdings}
-        | {
-            transaction.symbol
-            for portfolio in portfolios
-            for transaction in portfolio.transactions
-            if transaction.symbol
-        }
-        | set(extra)
-    )
-    if not symbols:
+    request = portfolio_acquisition_request(portfolios, report_start, report_end)
+    if not request.symbols:
         return pd.DataFrame(), None
     try:
-        return cached_closes(tuple(sorted(symbols)), start, date.today()), None
+        return cached_historical_data(request), None
     except Exception as exc:
         return pd.DataFrame(), str(exc)
 
@@ -306,26 +245,15 @@ def render_header() -> None:
 
 def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
     cards = []
-    for portfolio in portfolios:
-        if closes.empty:
-            total = portfolio_cost(portfolio)
-            value_label = f"Cost basis {dollars(total)}"
-        else:
-            valuation = portfolio_valuation(portfolio, closes)
-            value_label = (
-                dollars(valuation.total_calculated_value)
-                if valuation.is_complete
-                else "Incomplete valuation"
-            )
-        unique_symbols = len({lot.symbol for lot in portfolio.holdings})
+    for report in assemble_portfolio_card_reports(portfolios, closes):
         cards.append(
             "".join(
                 (
                     '<div class="portfolio-card">',
-                    f'<div class="eyebrow">{escape(portfolio.name)}</div>',
-                    f'<div class="value">{value_label}</div>',
-                    f'<div class="detail">{unique_symbols} symbols · '
-                    f"{dollars(portfolio.cash)} cash</div>",
+                    f'<div class="eyebrow">{escape(report.name)}</div>',
+                    f'<div class="value">{report.value_label}</div>',
+                    f'<div class="detail">{report.symbol_count} symbols · '
+                    f"{dollars(report.cash)} cash</div>",
                     "</div>",
                 )
             )
@@ -334,10 +262,6 @@ def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) ->
         f'<div class="portfolio-grid">{"".join(cards)}</div>',
         unsafe_allow_html=True,
     )
-
-
-def _summed_metric(values: list[float | None]) -> float | None:
-    return sum(values) if values and all(value is not None for value in values) else None
 
 
 def _metric_dollars(value: float | None) -> str:
@@ -353,60 +277,34 @@ def render_performance_summary(
     expanded: bool = False,
 ) -> None:
     with st.expander("Portfolio value and gain/loss", expanded=expanded):
-        if closes.empty:
-            total_value = sum(
-                (portfolio_cost(portfolio) for portfolio in portfolios), start=money(0)
-            )
-            rows = []
-        else:
-            valuations = [portfolio_valuation(portfolio, closes) for portfolio in portfolios]
-            total_value = (
-                sum(
-                    (valuation.total_calculated_value for valuation in valuations),
-                    start=money(0),
-                )
-                if all(valuation.is_complete for valuation in valuations)
-                else None
-            )
-            rows = [
-                {
-                    "Portfolio": portfolio.name,
-                    **portfolio_gain_loss(portfolio, closes, custom_start, custom_end).__dict__,
-                }
-                for portfolio in portfolios
-            ]
+        report = assemble_combined_performance_report(portfolios, closes, custom_start, custom_end)
 
         metrics = st.columns(4)
-        total_label = "Selected cost basis + cash" if closes.empty else "Total selected value"
-        metrics[0].metric(total_label, dollars(total_value) if total_value is not None else "—")
-        metrics[1].metric(
-            "All-time gain/loss",
-            _metric_dollars(_summed_metric([row["all_time"] for row in rows])),
+        metrics[0].metric(
+            report.total_label,
+            dollars(report.total_value) if report.total_value is not None else "—",
         )
-        metrics[2].metric(
-            "Daily gain/loss",
-            _metric_dollars(_summed_metric([row["daily"] for row in rows])),
-        )
-        metrics[3].metric(
-            "Custom gain/loss",
-            _metric_dollars(_summed_metric([row["custom"] for row in rows])),
-        )
+        metrics[1].metric("All-time gain/loss", _metric_dollars(report.all_time))
+        metrics[2].metric("Daily gain/loss", _metric_dollars(report.daily))
+        metrics[3].metric("Custom gain/loss", _metric_dollars(report.custom))
         if closes.empty:
-            st.caption("Cost basis plus cash is shown; gain/loss requires market data.")
+            for warning in report.warnings:
+                st.caption(warning)
+            st.caption(report.coverage)
             return
-        warnings = sorted({warning for row in rows for warning in row["warnings"]})
-        for warning in warnings:
+        for warning in report.warnings:
             st.warning(warning)
+        st.caption(report.coverage)
 
         performance = pd.DataFrame(
             [
                 {
-                    "Portfolio": row["Portfolio"],
-                    "All-time gain/loss": row["all_time"],
-                    "Daily gain/loss": row["daily"],
-                    "Custom gain/loss": row["custom"],
+                    "Portfolio": row.portfolio,
+                    "All-time gain/loss": row.all_time,
+                    "Daily gain/loss": row.daily,
+                    "Custom gain/loss": row.custom,
                 }
-                for row in rows
+                for row in report.rows
             ]
         )
         st.dataframe(
@@ -678,23 +576,13 @@ def render_compare(
                 symbol.strip().upper() for symbol in extra_text.split(",") if symbol.strip()
             )
         )
-        all_symbols = tuple(
-            sorted(
-                {lot.symbol for portfolio in portfolios for lot in portfolio.holdings}
-                | {
-                    transaction.symbol
-                    for portfolio in portfolios
-                    for transaction in portfolio.transactions
-                    if transaction.symbol
-                }
-                | set(selected_benchmarks)
-                | set(extras)
-            )
+        benchmark_symbols = tuple(dict.fromkeys([*selected_benchmarks, *extras]))
+        acquisition = comparison_acquisition_plan(
+            portfolios, custom_start, custom_end, benchmark_symbols
         )
         try:
-            closes = cached_closes(all_symbols, custom_start - timedelta(days=7), custom_end)
-            benchmark_symbols = tuple(dict.fromkeys([*selected_benchmarks, *extras]))
-            benchmark_closes = cached_benchmark_closes(benchmark_symbols, custom_start, custom_end)
+            closes = cached_historical_data(acquisition.portfolio)
+            benchmark_closes = cached_historical_data(acquisition.benchmark)
         except Exception as exc:
             st.info(f"Comparison data is unavailable. Configure rotated Alpaca credentials. {exc}")
             return
@@ -702,31 +590,22 @@ def render_compare(
             st.info("No market data was returned for this comparison.")
             return
 
-        per_portfolio = {
-            portfolio.name: performance_growth(portfolio, closes) for portfolio in portfolios
-        }
-        combined = combined_performance_growth(portfolios, closes)
-        series: list[pd.Series] = [combined, *per_portfolio.values()]
-        series = [
-            item[(item.index.date >= custom_start) & (item.index.date <= custom_end)]
-            for item in series
-        ]
-        for symbol in [*selected_benchmarks, *extras]:
-            if symbol in benchmark_closes:
-                stock_series = benchmark_closes.loc[
-                    (benchmark_closes.index.date >= custom_start)
-                    & (benchmark_closes.index.date <= custom_end),
-                    symbol,
-                ].copy()
-                stock_series.name = symbol
-                series.append(stock_series)
-        normalized = rebase_comparison_series(series)
-        normalized = [item for item in normalized if not item.empty]
-        if not normalized:
+        report = assemble_comparison_report(
+            portfolios,
+            closes,
+            benchmark_closes,
+            custom_start,
+            custom_end,
+            benchmark_symbols,
+        )
+        for warning in report.warnings:
+            st.warning(warning)
+        st.caption(report.coverage)
+        if not report.series:
             st.info("The selected series do not share usable data in this date range.")
             return
         figure = go.Figure()
-        for index, item in enumerate(normalized):
+        for index, item in enumerate(report.series):
             figure.add_trace(
                 go.Scatter(
                     x=item.index,
@@ -751,12 +630,8 @@ def render_compare(
             xaxis={"gridcolor": "rgba(105,126,255,.10)"},
         )
         st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
-        rows = []
-        for item in normalized:
-            metrics = {key: value * 100 for key, value in summary_metrics(item).items()}
-            rows.append({"Series": item.name, **metrics})
         st.dataframe(
-            pd.DataFrame(rows),
+            report.metrics,
             hide_index=True,
             width="stretch",
             column_config={
@@ -802,26 +677,6 @@ def render_forecast(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
         if scope == "Selected portfolios"
         else [next(portfolio for portfolio in portfolios if portfolio.name == scope)]
     )
-    if not closes.empty:
-        valuations = [portfolio_valuation(portfolio, closes) for portfolio in scoped_portfolios]
-        if not all(valuation.is_complete for valuation in valuations):
-            st.warning("A projection is unavailable until every held symbol has a usable price.")
-            return
-        current_value = float(
-            sum((valuation.total_calculated_value for valuation in valuations), start=money(0))
-        )
-    else:
-        current_value = float(
-            sum((portfolio_cost(portfolio) for portfolio in scoped_portfolios), start=money(0))
-        )
-    if current_value <= 0:
-        st.info("A projection requires a selected portfolio with a positive current value.")
-        return
-
-    st.caption(
-        f"Starting value for {scope}: {dollars(current_value)}"
-        + (" (cost basis because live market data is unavailable)." if closes.empty else ".")
-    )
     st.session_state.setdefault("forecast_preset", "Baseline")
     st.session_state.setdefault("forecast_annual_return", 7.0)
     st.session_state.setdefault("forecast_annual_volatility", 12.0)
@@ -865,14 +720,23 @@ def render_forecast(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
         else None
     )
 
-    result = cached_projection(
-        current_value=current_value,
+    assumptions = ForecastAssumptions(
         annual_return=annual_return / 100,
         annual_volatility=annual_volatility / 100,
         monthly_contribution=monthly_contribution,
         horizon_years=horizon_years,
         target_value=target_value,
     )
+    try:
+        request = build_forecast_request(scoped_portfolios, closes, assumptions)
+    except ValueError as exc:
+        st.warning(str(exc))
+        return
+    st.caption(f"Starting value for {scope}: {dollars(request.current_value)}.")
+    st.caption(request.coverage)
+    for warning in request.warnings:
+        st.warning(warning)
+    result = cached_projection(request)
     dates = pd.date_range(
         pd.Timestamp.today().normalize() + pd.offsets.MonthEnd(1),
         periods=horizon_years * 12,
@@ -1059,16 +923,18 @@ def render_transaction_editor(transaction: PortfolioTransaction, portfolio_name:
         updated = st.form_submit_button("Save transaction changes")
     if updated:
         try:
-            draft = transaction_draft(
-                edit_date,
-                edit_kind,
-                edit_symbol,
-                edit_description,
-                edit_quantity,
-                edit_price,
-                edit_fees,
-                edit_cash,
-                action=edit_action,
+            draft = build_transaction_draft(
+                TransactionCommand(
+                    edit_date,
+                    edit_kind,
+                    edit_symbol,
+                    edit_description,
+                    edit_quantity,
+                    edit_price,
+                    edit_fees,
+                    edit_cash,
+                    action=edit_action,
+                )
             )
             with session_scope() as session:
                 update_transaction(
@@ -1078,7 +944,7 @@ def render_transaction_editor(transaction: PortfolioTransaction, portfolio_name:
                     draft,
                     confirmation=update_phrase,
                 )
-            cached_closes.clear()
+            cached_historical_data.clear()
             st.session_state.flash = f"Transaction #{transaction.id} updated."
             st.rerun()
         except Exception as exc:
@@ -1096,7 +962,7 @@ def render_transaction_editor(transaction: PortfolioTransaction, portfolio_name:
                     transaction.id,
                     confirmation=delete_phrase,
                 )
-            cached_closes.clear()
+            cached_historical_data.clear()
             st.session_state.flash = f"Transaction #{transaction.id} deleted."
             st.rerun()
         except Exception as exc:
@@ -1171,7 +1037,7 @@ sells positive, and blank quantity/price/fees cells are allowed for cash-only ac
         try:
             with session_scope() as session:
                 added, duplicates = import_statement(session, portfolio.id, parsed_statement)
-            cached_closes.clear()
+            cached_historical_data.clear()
             st.session_state.flash = (
                 f"Imported {added} transaction(s); skipped {duplicates} duplicate(s)."
             )
@@ -1188,7 +1054,7 @@ sells positive, and blank quantity/price/fees cells are allowed for cash-only ac
             try:
                 with session_scope() as session:
                     rebuilt = rebuild_portfolio_from_csv(session, portfolio.id, statement_content)
-                cached_closes.clear()
+                cached_historical_data.clear()
                 st.session_state.flash = f"Portfolio rebuilt from {rebuilt} transaction(s)."
                 st.rerun()
             except Exception as exc:
@@ -1348,20 +1214,10 @@ def _validate_manual_trade_symbol() -> None:
     error_key = "add_transaction_symbol_error"
     value = st.session_state.get(key, "")
     try:
-        st.session_state[key] = normalize_symbol(value)
+        st.session_state[key] = validate_transaction_symbol(value)
         st.session_state.pop(error_key, None)
     except ValueError as exc:
         st.session_state[error_key] = str(exc)
-
-
-def _calculated_trade_cash(
-    kind: str, quantity_value: float, price_value: float, fees_value: float
-) -> float:
-    quantity_value = max(quantity_value, 0.0)
-    price_value = max(price_value, 0.0)
-    fees_value = max(fees_value, 0.0)
-    notional = quantity_value * price_value
-    return -(notional + fees_value) if kind == "buy" else notional - fees_value
 
 
 def render_add_transaction(
@@ -1429,7 +1285,7 @@ def render_add_transaction(
                 format="%.4f",
                 key="add_transaction_fees",
             )
-            calculated_cash = _calculated_trade_cash(
+            calculated_cash = calculated_trade_cash(
                 kind, manual_quantity, manual_price, manual_fees
             )
             st.session_state.add_transaction_calculated_cash = calculated_cash
@@ -1460,19 +1316,21 @@ def render_add_transaction(
         )
         if recorded:
             try:
-                draft = transaction_draft(
-                    transaction_date_text,
-                    kind,
-                    symbol,
-                    description,
-                    manual_quantity,
-                    manual_price,
-                    manual_fees,
-                    cash_delta,
+                draft = build_transaction_draft(
+                    TransactionCommand(
+                        transaction_date_text,
+                        kind,
+                        symbol,
+                        description,
+                        manual_quantity,
+                        manual_price,
+                        manual_fees,
+                        cash_delta,
+                    )
                 )
                 with session_scope() as session:
                     record_transaction(session, target.id, draft)
-                cached_closes.clear()
+                cached_historical_data.clear()
                 st.session_state.flash = f"Transaction recorded in {target.name}."
                 st.rerun()
             except Exception as exc:
@@ -1560,7 +1418,7 @@ def render_portfolio_actions(portfolios: list[Portfolio]) -> None:
                     try:
                         with session_scope() as session:
                             delete_portfolio(session, target.id)
-                        cached_closes.clear()
+                        cached_historical_data.clear()
                         st.session_state.flash = (
                             "Portfolio and all of its data were permanently deleted."
                         )
@@ -1681,7 +1539,7 @@ def render_trade_admin(portfolios: list[Portfolio]) -> None:
             try:
                 with session_scope() as session:
                     changed = sync_allocations(session)
-                cached_closes.clear()
+                cached_historical_data.clear()
                 st.session_state.flash = f"Fill sync complete. {changed} allocation(s) updated."
                 st.rerun()
             except Exception as exc:
@@ -1758,8 +1616,7 @@ def render_architecture() -> None:
 
 
 def main() -> None:
-    bootstrap_database()
-    all_portfolios = load_portfolios()
+    all_portfolios = initialize_application()
     reporting_portfolios = [
         portfolio for portfolio in all_portfolios if portfolio_has_data(portfolio)
     ]
@@ -1768,7 +1625,7 @@ def main() -> None:
     selected_portfolios, master_start, master_end = render_master_controls(reporting_portfolios)
     if flash := st.session_state.pop("flash", None):
         st.info(flash)
-    closes, data_note = get_prices(selected_portfolios, master_start - timedelta(days=7))
+    closes, data_note = get_prices(selected_portfolios, master_start, master_end)
     labels = ["Overview", "Compare", "Forecast"]
     if owner:
         labels.extend(["Manage", "Trade", "Architecture"])

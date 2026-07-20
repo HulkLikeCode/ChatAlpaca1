@@ -46,6 +46,13 @@ def test_comparison_defaults_to_spy_benchmark() -> None:
     assert benchmark_selector.value == ["SPY"]
 
 
+def test_incomplete_data_warnings_are_presented_without_credentials() -> None:
+    app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+
+    assert any("explicitly uses cost basis plus cash" in item.value for item in app.warning)
+    assert any("Market-price coverage unavailable" in item.value for item in app.caption)
+
+
 def test_phase_2_owner_manage_controls_render() -> None:
     app = AppTest.from_file("streamlit_app.py", default_timeout=30)
     app.session_state["owner_authenticated"] = True
