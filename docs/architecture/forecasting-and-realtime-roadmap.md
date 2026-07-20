@@ -126,7 +126,34 @@ sources and estimates, shrinkage and covariance methods, dataset references, pro
 validation evidence, percentile bands, and summarized output. Raw paths and terminal samples are
 not saved.
 
-Full retirement tax modeling remains deferred after Phase 9.
+Retirement cash-flow and transparent first-pass tax modeling begin in Phase 10.
+
+## Phase 10 long-horizon retirement modeling
+
+`chat_alpaca.retirement` composes the shared Phase 8 block-bootstrap and Phase 9 parametric return
+engines with a separate monthly retirement cash-flow layer. It covers 20–40-year accumulation and
+withdrawal horizons, retirement by age or date, monthly or annual contributions, fixed real
+spending, one-time spending, inflation, fees, rebalancing, Social Security, pensions, other income,
+and optional estate targets expressed in real dollars. It does not add guardrail or
+percentage-spending strategies.
+
+Account balances retain Traditional IRA, Roth IRA, taxable, and unknown classifications from the
+shared portfolio configuration. Withdrawal order is explicit and configurable. Roth withdrawals
+are tax free; Traditional IRA and unknown-account withdrawals use configured ordinary-rate
+assumptions; taxable withdrawals use aggregate embedded gains when cost basis is supplied and a
+configured realization fraction otherwise. Dividend and outside-income tax assumptions are also
+explicit. This is a transparent planning estimate, not tax advice. Brackets, deductions, RMDs,
+filing status, state/local rules, detailed future tax lots, loss harvesting, and unsupported
+jurisdiction-specific rules remain out of scope.
+
+Results disclose funding and depletion probabilities, depletion ages, nominal and real percentile
+paths, retirement-date value, lifetime taxes, withdrawals by account type, outside-income funding,
+shortfalls, real target-estate probability, early-retirement sequence risk, and worst-decile
+scenarios. Sensitivities vary retirement timing, spending, inflation, Social Security timing,
+contributions, returns, taxes, and withdrawal order with a stable seed. Complete rolling historical
+sequences can be replayed as backtest evidence. Neither replay nor automated tests grant validated
+status. Generic forecast persistence stores reproducibility inputs, summarized results, and annual
+bands without raw stochastic paths.
 
 ## Real-time monitoring
 

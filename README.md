@@ -19,6 +19,9 @@ A private, multi-portfolio personal portfolio manager that brings together portf
   explicit proxies, inflation, fees, rebalancing, downside attribution, and rolling backtests
 - Reproducible correlated parametric forecasts using multivariate normal or Student's t returns,
   shrunk and owner-blended parameters, matrix validation, sensitivity analysis, and backtests
+- Reproducible 20–40-year retirement forecasts with accumulation, fixed real spending,
+  outside income, account-aware withdrawals, transparent tax estimates, sequence-risk diagnostics,
+  sensitivities, and historical sequence replay
 - Saved, reproducible deterministic stress scenarios with household, portfolio, holding, sector,
   account-type, baseline, coverage, warning, and sensitivity output
 - Separate admin and read-only user passwords; only admins can mutate data, upload files, or act on brokerage orders
@@ -229,8 +232,30 @@ volatility, and correlation sensitivities, normal-versus-fat-tail downside compa
 backtests, and like-for-like bootstrap comparison are supported. Saved runs retain distribution,
 degrees of freedom, seed, model version, parameter sources and estimates, shrinkage and covariance
 methods, exact datasets, proxies, assumptions, validation result, output bands, and summarized
-terminal results. Raw paths and terminal samples remain excluded. Full retirement tax modeling
-remains deferred.
+terminal results. Raw paths and terminal samples remain excluded.
+
+Phase 10 adds long-horizon retirement planning in `chat_alpaca.retirement`. It reuses the Phase 8
+historical block-bootstrap and Phase 9 correlated parametric return engines for 20–40-year
+accumulation and withdrawal paths. Profiles support retirement by age or date, monthly or annual
+pre-retirement contributions, fixed inflation-adjusted real spending, one-time spending events,
+Social Security, pensions, other outside income, fees, rebalancing, and an optional real target
+estate value.
+
+Traditional IRA, Roth IRA, taxable, and unknown balances remain explicit. Configurable withdrawal
+ordering applies tax-free Roth, ordinary-income Traditional IRA, taxable realization/capital-gain,
+dividend, and conservative unknown-account assumptions. The tax calculation is a transparent first
+planning estimate, not tax advice or a tax-return calculation. It intentionally excludes tax
+brackets, deductions, required minimum distributions, state/local rules, filing status, detailed
+tax lots, loss harvesting, and jurisdiction-specific complexity. Social Security uses a configured
+taxable fraction rather than provisional-income rules.
+
+Outputs include nominal and real percentile paths, retirement-date and terminal distributions,
+full-horizon funding and depletion probabilities, depletion ages, lifetime taxes, withdrawals by
+account type, outside-income funding, shortfalls, target-estate probability, early-retirement
+sequence diagnostics, and worst-decile scenarios. Sensitivity covers retirement age, spending,
+inflation, Social Security timing, contributions, expected returns, tax rates, and withdrawal order.
+Rolling historical sequence replay is validation evidence only and never self-validates the model.
+Saved runs retain summaries and annual bands but exclude raw paths and per-scenario arrays.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
 two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or

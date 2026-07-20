@@ -59,3 +59,15 @@
 **Decision:** Keep hypothetical-trade analysis separate from order submission until a user explicitly transfers a proposal into an order.
 
 **Rationale:** This preserves a clear review boundary while enabling before/after analysis of allocation, risk, forecast, and stress effects.
+
+## ADR-011: Retirement taxes are transparent planning assumptions
+
+**Decision:** Phase 10 uses configurable effective rates and explicit account treatment for a
+first-pass retirement tax estimate. It must be labeled as planning analysis rather than tax advice,
+and it does not infer unsupported jurisdiction-specific rules.
+
+**Rationale:** Account-aware withdrawals materially affect long-horizon funding, but tax brackets,
+deductions, RMDs, filing status, state/local law, detailed future lots, and Social Security
+provisional-income calculations require facts and legal scope the application does not possess.
+Keeping rates, realization, withdrawal order, and limitations visible is more reproducible than
+implying tax-return precision.
