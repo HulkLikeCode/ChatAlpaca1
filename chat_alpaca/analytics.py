@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import numpy as np
 import pandas as pd
 
+from chat_alpaca.historical_data import HistoricalCoverageResult
 from chat_alpaca.models import Portfolio, PortfolioTransaction
+from chat_alpaca.reconstruction import ReconstructionRequest, reconstruct_from_coverage
 
 EXTERNAL_CASH_FLOW_KINDS = {"transfer", "cash_adjustment"}
 
@@ -45,6 +47,38 @@ def _transactions(portfolio: Portfolio) -> list[PortfolioTransaction]:
     )
 
 
+def _frame_coverage(closes: pd.DataFrame) -> HistoricalCoverageResult:
+    """Adapt legacy caller frames to the typed reconstruction boundary."""
+    normalized = closes.copy()
+    normalized.index = pd.to_datetime(normalized.index).normalize()
+    sources = normalized.attrs.get("source", "legacy_frame")
+    if isinstance(sources, list):
+        sources = tuple(sources)
+    return HistoricalCoverageResult(
+        data=normalized,
+        source=sources,
+        feed=normalized.attrs.get("feed"),
+        adjustment=normalized.attrs.get("adjustment", "split"),
+        coverage_start=normalized.index.min().date() if not normalized.empty else None,
+        coverage_end=normalized.index.max().date() if not normalized.empty else None,
+        missing_symbols=tuple(symbol for symbol in normalized if normalized[symbol].dropna().empty),
+        missing_date_ranges={},
+        warnings=tuple(normalized.attrs.get("warnings", ())),
+        freshness={symbol: datetime.now() for symbol in normalized},
+        usable=not normalized.isna().any().any(),
+        usability="legacy in-memory frame supplied by compatibility caller",
+    )
+
+
+def _typed_reconstruction(portfolios: list[Portfolio], closes: pd.DataFrame):
+    if closes.empty:
+        return None
+    start = pd.to_datetime(closes.index).min().date()
+    end = pd.to_datetime(closes.index).max().date()
+    request = ReconstructionRequest(tuple(portfolio.id for portfolio in portfolios), start, end)
+    return reconstruct_from_coverage(portfolios, request, _frame_coverage(closes))
+
+
 def portfolio_series(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
     if closes.empty:
         return pd.Series(dtype=float, name=portfolio.name)
@@ -62,22 +96,10 @@ def portfolio_series(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
             result.loc[active.index] += active * float(lot.shares)
         result.name = portfolio.name
         return result
-
-    result = pd.Series(0.0, index=prices.index, dtype=float)
-    for transaction in transactions:
-        active = prices.index.date >= transaction.transaction_date
-        result.loc[active] += float(transaction.cash_delta)
-        if (
-            transaction.kind not in {"buy", "sell", "opening_position"}
-            or transaction.quantity is None
-        ):
-            continue
-        if transaction.symbol not in prices:
-            result.loc[active] = np.nan
-            continue
-        direction = -1 if transaction.kind == "sell" else 1
-        position_value = prices.loc[active, transaction.symbol]
-        result.loc[active] += direction * position_value * float(transaction.quantity)
+    reconstructed = _typed_reconstruction([portfolio], prices)
+    if reconstructed is None:
+        return pd.Series(dtype=float, name=portfolio.name)
+    result = reconstructed.portfolios[portfolio.id].daily.portfolio_value.reindex(prices.index)
     result.name = portfolio.name
     return result
 
@@ -132,14 +154,21 @@ def portfolio_gain_loss(
         return GainLossMetrics(None, None, None)
 
     valuation = portfolio_valuation(portfolio, closes)
+    typed = _typed_reconstruction([portfolio], closes) if _transactions(portfolio) else None
     all_time = (
-        float(valuation.total_calculated_value) - _flow_total(portfolio, end=date.today())
-        if valuation.is_complete
-        else None
+        typed.portfolios[portfolio.id].gain_loss
+        if typed is not None
+        else (
+            float(valuation.total_calculated_value) - _flow_total(portfolio, end=date.today())
+            if valuation.is_complete
+            else None
+        )
     )
 
     valid = series.dropna()
-    if len(valid) >= 2:
+    if typed is not None and not typed.portfolios[portfolio.id].daily.gain_loss.dropna().empty:
+        daily = float(typed.portfolios[portfolio.id].daily.gain_loss.dropna().iloc[-1])
+    elif len(valid) >= 2:
         daily_end_date = valid.index[-1].date()
         daily_start_date = valid.index[-2].date()
         daily = (
@@ -163,12 +192,19 @@ def portfolio_gain_loss(
             "Custom gain/loss is unavailable because no confirmed prior trading close exists."
         )
     elif custom_end_value is not None:
-        custom_start_value = float(baseline.iloc[-1])
-        custom = (
-            custom_end_value
-            - custom_start_value
-            - _flow_total(portfolio, start=custom_start, end=custom_end)
-        )
+        if typed is not None:
+            typed_gain = typed.portfolios[portfolio.id].daily.gain_loss
+            selected = typed_gain[
+                (typed_gain.index.date >= custom_start) & (typed_gain.index.date <= custom_end)
+            ].dropna()
+            custom = float(selected.sum()) if not selected.empty else 0.0
+        else:
+            custom_start_value = float(baseline.iloc[-1])
+            custom = (
+                custom_end_value
+                - custom_start_value
+                - _flow_total(portfolio, start=custom_start, end=custom_end)
+            )
     return GainLossMetrics(all_time, daily, custom, tuple(warnings))
 
 
@@ -230,12 +266,24 @@ def _flow_adjusted_growth(
 
 def performance_growth(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
     """Return $100-rebased portfolio performance excluding external flows."""
+    if _transactions(portfolio):
+        typed = _typed_reconstruction([portfolio], closes)
+        if typed is not None:
+            growth = (typed.portfolios[portfolio.id].daily.time_weighted_return + 1.0) * 100
+            growth.name = portfolio.name
+            return growth
     return _flow_adjusted_growth(portfolio_series(portfolio, closes), _transactions(portfolio))
 
 
 def combined_performance_growth(portfolios: Iterable[Portfolio], closes: pd.DataFrame) -> pd.Series:
     """Return $100-rebased combined performance excluding each portfolio's flows."""
     portfolio_list = list(portfolios)
+    if portfolio_list and all(_transactions(portfolio) for portfolio in portfolio_list):
+        typed = _typed_reconstruction(portfolio_list, closes)
+        if typed is not None:
+            growth = (typed.combined.time_weighted_return + 1.0) * 100
+            growth.name = "Selected portfolios"
+            return growth
     values = combined_series(portfolio_series(portfolio, closes) for portfolio in portfolio_list)
     values.name = "Selected portfolios"
     return _flow_adjusted_growth(

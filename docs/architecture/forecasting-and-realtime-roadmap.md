@@ -20,6 +20,23 @@ Expected-return inputs must support a blend of historical estimates, external pu
 
 Every output must communicate probability bands, downside scenarios, assumption sensitivity, model limitations, data sufficiency, and reproducibility. A model is not validated merely because it executes: forecast models must support rolling historical backtesting.
 
+## Phase 4 reconstruction foundation
+
+`chat_alpaca.reconstruction.PortfolioReconstructionService` is the shared typed boundary between
+the canonical ledger, historical-data repository, and analytics consumers. It replays dated
+transactions deterministically for each portfolio, produces a separate household aggregate, and
+uses only confirmed split-adjusted, non-dividend-adjusted closes for accounting. Explicit ledger
+dividends are therefore not duplicated through adjusted valuation prices.
+
+Results include daily value, cash, positions, external flows, income and expense categories, return
+attribution, TWR, XIRR, gain/loss, optional total-return benchmarks, common as-of status, missing and
+stale symbols, assumptions, warnings, and forecast suitability. Missing observations remain unknown.
+The sufficiency status scores history length, observation completeness, freshness, proxy use,
+adjustment quality, and common-date completeness, retaining its components so the status cannot
+imply more precision than the underlying data supports.
+
+Forecast models and real-time streaming remain outside Phase 4.
+
 ## Delivery sequence
 
 1. Historical-data and portfolio-reconstruction foundation

@@ -7,6 +7,7 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Up to 20 portfolios with an uncapped number of tracked symbols
 - Transaction-backed cash, FIFO lots, cost basis, and market value
 - Durable, provider-neutral daily market-data cache with typed coverage and provenance
+- Typed ledger reconstruction for daily values, positions, flows, returns, benchmarks, and coverage
 - Seeded `KCs Traditional IRA`, `KCs Roth IRA`, and `KC and Papa` portfolios
 - Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
@@ -144,6 +145,14 @@ movement, dividends, interest, and awards remain part of performance. Daily gain
 two latest market closes, while custom gain/loss uses the close before the applied master start date
 through the master end date. The same range controls dividend custom totals, Compare charts and
 metrics, exact holdings, and transaction filtering.
+
+The reusable Phase 4 service in `chat_alpaca.reconstruction` is the shared analytics boundary. It
+consumes canonical transactions and confirmed split-adjusted, non-dividend-adjusted repository
+closes; it never replaces missing prices with zero or a silent forward fill. Typed results preserve
+individual portfolios and a combined household view, disclose common-date freshness and provenance,
+separate external flows and ledger income or expense categories, and report price, income, total,
+time-weighted, and money-weighted returns. Its transparent data-sufficiency score is a bounded
+status, not a claim of precision. Proxy assignments are disclosed but never used to value holdings.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
 two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or
