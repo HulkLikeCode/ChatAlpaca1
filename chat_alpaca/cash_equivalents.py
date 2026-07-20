@@ -45,11 +45,6 @@ def add_cash_equivalent_closes(
     warnings = [
         warning for warning in attrs.get("warnings", ()) if warning not in obsolete_warnings
     ]
-    warnings.append(
-        "SPAXX is a cash-equivalent money-market holding outside Alpaca stock-bar coverage; "
-        "it is valued at its disclosed fixed $1.00 NAV convention. Ledger distributions remain "
-        "the source of income."
-    )
     last_dates = dict(attrs.get("last_price_dates", {}))
     if not index.empty:
         last_dates.update({symbol: index[-1].date() for symbol in requested})

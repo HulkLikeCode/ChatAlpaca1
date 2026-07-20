@@ -62,4 +62,4 @@ def test_spaxx_uses_disclosed_fixed_nav_without_stock_bar_request(monkeypatch) -
     assert closes["SPAXX"].dropna().eq(1.0).all()
     assert closes.attrs["cash_equivalent_conventions"] == {"SPAXX": 1.0}
     assert "Alpaca returned no split daily bars for SPAXX." not in closes.attrs["warnings"]
-    assert any("fixed $1.00 NAV" in warning for warning in closes.attrs["warnings"])
+    assert closes.attrs["warnings"] == ()

@@ -39,8 +39,8 @@ Daily coverage is measured against completed regular US-equity exchange sessions
 Monday-through-Friday dates. Full-day exchange holidays and the current unfinished session are not
 reported as missing observations. Explicitly configured stable-NAV cash equivalents may use a
 fixed-NAV accounting convention when the instrument is outside Alpaca stock-bar coverage. SPAXX is
-currently configured at $1.00; the convention is disclosed in output, and ledger distributions
-remain the income source. No fixed NAV is inferred from symbol shape.
+currently configured at $1.00, and ledger distributions remain the income source. No fixed NAV is
+inferred from symbol shape.
 
 Alpaca historical data is cached durably and refreshed only for missing or stale ranges. Requests
 use the configured Basic-plan feed (IEX by default), are rate constrained, and persist only
