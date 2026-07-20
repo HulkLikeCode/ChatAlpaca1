@@ -8,6 +8,7 @@ import pytest
 
 from chat_alpaca.analytics import (
     IncompleteValuationError,
+    alpha_beta_from_returns,
     consolidated_holdings,
     normalized_growth,
     performance_growth,
@@ -19,6 +20,28 @@ from chat_alpaca.analytics import (
     total_portfolio_value,
 )
 from chat_alpaca.models import HoldingLot, Portfolio, PortfolioTransaction
+
+
+def test_alpha_beta_regresses_daily_returns_and_annualizes_alpha() -> None:
+    index = pd.bdate_range("2025-01-02", periods=80)
+    benchmark = pd.Series([(-1) ** index * 0.01 for index in range(80)], index=index)
+    asset = 0.001 + 1.5 * benchmark
+
+    metrics = alpha_beta_from_returns(asset, benchmark)
+
+    assert metrics.observations == 80
+    assert metrics.beta == pytest.approx(1.5)
+    assert metrics.alpha == pytest.approx((1.001**252) - 1)
+
+
+def test_alpha_beta_requires_sixty_overlapping_returns() -> None:
+    index = pd.bdate_range("2025-01-02", periods=59)
+    metrics = alpha_beta_from_returns(pd.Series(0.01, index=index), pd.Series(0.005, index=index))
+
+    assert metrics.alpha is None
+    assert metrics.beta is None
+    assert metrics.observations == 59
+    assert "at least 60" in metrics.warnings[0]
 
 
 def test_buy_and_hold_series_includes_cash_and_acquisition_date() -> None:

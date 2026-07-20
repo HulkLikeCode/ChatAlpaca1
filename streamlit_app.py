@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hmac
-from datetime import date
+from datetime import date, timedelta
 from html import escape
 
 import pandas as pd
@@ -230,48 +230,97 @@ def get_prices(
         return pd.DataFrame(), str(exc)
 
 
-def authenticate_owner() -> bool:
+def get_alpha_beta_benchmark(
+    report_start: date, report_end: date
+) -> tuple[pd.DataFrame, str | None]:
+    request = HistoricalDataRequest(
+        ("SPY",),
+        report_start - timedelta(days=7),
+        report_end,
+        "benchmark_total_return",
+    )
+    try:
+        return cached_historical_data(request), None
+    except Exception as exc:
+        return pd.DataFrame(), str(exc)
+
+
+def authenticate_access() -> str | None:
+    """Authenticate this browser session as an admin or read-only user."""
     settings = get_settings()
-    with st.sidebar:
-        st.markdown("### Owner access")
-        if st.session_state.get("owner_authenticated"):
-            st.caption("Owner controls unlocked for this browser session.")
-            if st.button("Lock owner controls", width="stretch"):
+    role = st.session_state.get("access_role")
+    if st.session_state.get("owner_authenticated"):
+        role = "admin"
+        st.session_state.access_role = role
+    if role in {"admin", "user"}:
+        with st.sidebar:
+            label = "Admin" if role == "admin" else "Read-only user"
+            st.markdown("### Access")
+            st.caption(f"{label} session active.")
+            if st.button("Log out", width="stretch"):
+                st.session_state.access_role = None
                 st.session_state.owner_authenticated = False
                 st.rerun()
-            return True
-        if not settings.admin_password:
-            st.caption("Set ADMIN_PASSWORD to enable owner controls.")
-            return False
-        with st.form("owner_login", border=False):
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Unlock", width="stretch")
-        if submitted:
-            authenticated = hmac.compare_digest(password, settings.admin_password)
-            st.session_state.owner_authenticated = authenticated
-            if authenticated:
-                st.rerun()
-            st.info("That password did not match.")
-        return False
+        return role
+
+    if not settings.admin_password and not settings.user_password:
+        st.error("Set ADMIN_PASSWORD and USER_PASSWORD to enable application access.")
+        return None
+    if (
+        settings.admin_password
+        and settings.user_password
+        and hmac.compare_digest(settings.admin_password, settings.user_password)
+    ):
+        st.error("ADMIN_PASSWORD and USER_PASSWORD must be different.")
+        return None
+
+    st.markdown("### Sign in")
+    st.caption("Enter the admin or read-only user password.")
+    with st.form("access_login", border=True):
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign in", width="stretch", type="primary")
+    if not submitted:
+        return None
+    if settings.admin_password and hmac.compare_digest(password, settings.admin_password):
+        role = "admin"
+    elif settings.user_password and hmac.compare_digest(password, settings.user_password):
+        role = "user"
+    else:
+        st.error("That password did not match.")
+        return None
+    st.session_state.access_role = role
+    st.session_state.owner_authenticated = role == "admin"
+    st.rerun()
+    return None
+
+
+def render_access_status(role: str) -> None:
+    """Describe the active role without exposing credentials."""
+    with st.sidebar:
+        if role == "user":
+            st.caption("Viewing and forecasts are enabled. Permanent changes are disabled.")
 
 
 def render_header() -> None:
     settings = get_settings()
     mode = "PAPER MODE" if settings.paper else "LIVE MODE"
     st.markdown(f'<span class="mode-chip">{mode}</span>', unsafe_allow_html=True)
-    st.title("KC's Retirement Dough, Let's GO!!!")
+    st.title("Retirement Dough, Let’s Go!")
 
 
-def render_portfolio_cards(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
+def render_portfolio_cards(
+    portfolios: list[Portfolio], closes: pd.DataFrame, custom_start: date, custom_end: date
+) -> None:
     cards = []
-    for report in assemble_portfolio_card_reports(portfolios, closes):
+    for report in assemble_portfolio_card_reports(portfolios, closes, custom_start, custom_end):
         cards.append(
             "".join(
                 (
                     '<div class="portfolio-card">',
                     f'<div class="eyebrow">{escape(report.name)}</div>',
                     f'<div class="value">{report.value_label}</div>',
-                    f'<div class="detail">{report.symbol_count} symbols · '
+                    f'<div class="detail">Expected Annual Dividends: '
+                    f"{dollars(report.expected_annual_dividends)} · "
                     f"{dollars(report.cash)} cash</div>",
                     "</div>",
                 )
@@ -293,12 +342,19 @@ def render_performance_summary(
     custom_start: date,
     custom_end: date,
     key_prefix: str,
+    benchmark_closes: pd.DataFrame,
     expanded: bool = False,
 ) -> None:
     with st.expander("Portfolio value and gain/loss", expanded=expanded):
-        report = assemble_combined_performance_report(portfolios, closes, custom_start, custom_end)
+        report = assemble_combined_performance_report(
+            portfolios,
+            closes,
+            custom_start,
+            custom_end,
+            benchmark_closes,
+        )
 
-        metrics = st.columns(4)
+        metrics = st.columns(6)
         metrics[0].metric(
             report.total_label,
             dollars(report.total_value) if report.total_value is not None else "—",
@@ -306,6 +362,11 @@ def render_performance_summary(
         metrics[1].metric("All-time gain/loss", _metric_dollars(report.all_time))
         metrics[2].metric("Daily gain/loss", _metric_dollars(report.daily))
         metrics[3].metric("Custom gain/loss", _metric_dollars(report.custom))
+        metrics[4].metric(
+            "Annualized Alpha",
+            f"{report.alpha:.2%}" if report.alpha is not None else "—",
+        )
+        metrics[5].metric("Beta", f"{report.beta:.2f}" if report.beta is not None else "—")
         if closes.empty:
             for warning in report.warnings:
                 st.caption(warning)
@@ -314,6 +375,10 @@ def render_performance_summary(
         for warning in report.warnings:
             st.warning(warning)
         st.caption(report.coverage)
+        st.caption(
+            f"Alpha/Beta coverage: {report.alpha_beta_observations} overlapping SPY daily "
+            "returns; 60 are required."
+        )
 
         performance = pd.DataFrame(
             [
@@ -322,6 +387,9 @@ def render_performance_summary(
                     "All-time gain/loss": row.all_time,
                     "Daily gain/loss": row.daily,
                     "Custom gain/loss": row.custom,
+                    "Annualized Alpha": row.alpha * 100 if row.alpha is not None else None,
+                    "Beta": row.beta,
+                    "Observations": row.alpha_beta_observations,
                 }
                 for row in report.rows
             ]
@@ -337,12 +405,18 @@ def render_performance_summary(
                     "Daily gain/loss",
                     "Custom gain/loss",
                 )
+            }
+            | {
+                "Annualized Alpha": st.column_config.NumberColumn(format="%.2f%%"),
+                "Beta": st.column_config.NumberColumn(format="%.2f"),
+                "Observations": st.column_config.NumberColumn(format="%d"),
             },
             key=f"{key_prefix}_portfolio_gain_loss",
         )
         st.caption(
             "Gain/loss excludes transfers, cash adjustments, and contributed opening positions. "
-            "Daily uses the two latest market closes."
+            "Daily uses the two latest market closes. Alpha/Beta uses daily ledger-aware returns "
+            "against SPY total return over the applied range and requires 60 overlapping days."
         )
 
 
@@ -351,9 +425,12 @@ def render_consolidated_holdings(
     closes: pd.DataFrame,
     custom_start: date,
     custom_end: date,
+    benchmark_closes: pd.DataFrame,
 ) -> None:
     with st.expander("Exact holdings", expanded=False):
-        summary, detail = consolidated_holdings(portfolios, closes, custom_start, custom_end)
+        summary, detail = consolidated_holdings(
+            portfolios, closes, custom_start, custom_end, benchmark_closes
+        )
         if summary.empty:
             st.caption("No holdings yet.")
             return
@@ -374,6 +451,7 @@ def render_consolidated_holdings(
             "All-time gain/loss": "All time",
             "Daily gain/loss": "Day",
             "Custom gain/loss": "Custom",
+            "Alpha": "Annualized Alpha",
         }
         money_columns = (
             "Avg/share",
@@ -394,10 +472,14 @@ def render_consolidated_holdings(
                 "All time",
                 "Day",
                 "Custom",
+                "Annualized Alpha",
+                "Beta",
+                "Alpha/Beta observations",
                 "Shares",
                 "Portfolios",
             ]
-            summary_view = summary.rename(columns=common_renames)[summary_columns]
+            summary_view = summary.rename(columns=common_renames)[summary_columns].copy()
+            summary_view["Annualized Alpha"] *= 100
             st.dataframe(
                 summary_view,
                 hide_index=True,
@@ -405,6 +487,8 @@ def render_consolidated_holdings(
                 column_order=summary_columns,
                 column_config={
                     "Shares": st.column_config.NumberColumn(format="%.2f"),
+                    "Annualized Alpha": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Beta": st.column_config.NumberColumn(format="%.2f"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.2f")
                         for column in money_columns
@@ -421,11 +505,15 @@ def render_consolidated_holdings(
                 "All time",
                 "Day",
                 "Custom",
+                "Annualized Alpha",
+                "Beta",
+                "Alpha/Beta observations",
                 "Shares",
                 "Portfolio",
                 "Acquired",
             ]
-            detail_view = detail.rename(columns=common_renames)[detail_columns]
+            detail_view = detail.rename(columns=common_renames)[detail_columns].copy()
+            detail_view["Annualized Alpha"] *= 100
             st.dataframe(
                 detail_view,
                 hide_index=True,
@@ -433,6 +521,8 @@ def render_consolidated_holdings(
                 column_order=detail_columns,
                 column_config={
                     "Shares": st.column_config.NumberColumn(format="%.2f"),
+                    "Annualized Alpha": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Beta": st.column_config.NumberColumn(format="%.2f"),
                     "Acquired": st.column_config.DateColumn(format="M/D/YY"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.2f")
@@ -440,6 +530,12 @@ def render_consolidated_holdings(
                     },
                 },
             )
+        insufficient = summary[summary["Alpha"].isna()]
+        st.caption(
+            "Holding Alpha/Beta uses daily price returns plus symbol-assigned ledger dividends "
+            "against SPY total return. Unassigned dividends are excluded. "
+            f"{len(insufficient)} holding(s) lack the required 60 overlapping daily returns."
+        )
 
 
 def render_portfolio_income(
@@ -539,20 +635,27 @@ def render_overview(
     data_note: str | None,
     custom_start: date,
     custom_end: date,
+    benchmark_closes: pd.DataFrame,
 ) -> None:
     if not portfolios:
         st.caption("No non-blank portfolios are available for the selected scope.")
         return
     render_performance_summary(
-        portfolios, closes, custom_start, custom_end, "overview", expanded=True
+        portfolios,
+        closes,
+        custom_start,
+        custom_end,
+        "overview",
+        benchmark_closes,
+        expanded=True,
     )
     with st.expander("Portfolio values", expanded=False):
-        render_portfolio_cards(portfolios, closes)
+        render_portfolio_cards(portfolios, closes, custom_start, custom_end)
         if data_note:
             st.info(f"Live market values are unavailable, so cost basis is shown. {data_note}")
     with st.expander("Portfolio income", expanded=False):
         render_portfolio_income(portfolios, custom_start, custom_end)
-    render_consolidated_holdings(portfolios, closes, custom_start, custom_end)
+    render_consolidated_holdings(portfolios, closes, custom_start, custom_end, benchmark_closes)
     with st.expander("Cash positions", expanded=False):
         render_cash_positions(portfolios)
 
@@ -562,6 +665,7 @@ def render_compare(
     portfolio_closes: pd.DataFrame,
     custom_start: date,
     custom_end: date,
+    benchmark_closes: pd.DataFrame,
 ) -> None:
     if not portfolios:
         st.caption("No portfolios are available to compare.")
@@ -572,6 +676,7 @@ def render_compare(
         custom_start,
         custom_end,
         "compare",
+        benchmark_closes,
         expanded=True,
     )
     with st.expander("Performance comparison", expanded=False):
@@ -848,11 +953,6 @@ def render_forecast(
             f"Chance of reaching {dollars(target_value)} in {horizon_years} years",
             f"{result.target_probability:.0%}",
         )
-    st.warning(
-        "Planning illustration only—not a prediction or financial advice. Outcomes are based on "
-        "your editable return, volatility, and contribution assumptions; past performance does "
-        "not guarantee future results. The range widens substantially over longer horizons."
-    )
     render_deterministic_scenarios(scoped_portfolios, closes, owner=owner)
 
 
@@ -1323,6 +1423,8 @@ def render_transactions(
     names_by_id: dict[int, str],
     custom_start: date,
     custom_end: date,
+    *,
+    editable: bool,
 ) -> None:
     with st.expander("Transactions", expanded=True):
         st.caption(
@@ -1388,7 +1490,11 @@ def render_transactions(
                 column_config={"Total quantity": st.column_config.NumberColumn(format="%.2f")},
             )
 
-        st.caption("Select any row to edit or delete it. Click a column header to sort.")
+        st.caption(
+            "Select any row to edit or delete it. Click a column header to sort."
+            if editable
+            else "Read-only transaction history. Click a column header to sort."
+        )
         table_scope = "_".join(
             [
                 *[str(portfolio.id) for portfolio in portfolios],
@@ -1397,11 +1503,10 @@ def render_transactions(
                 custom_end.isoformat(),
             ]
         )
-        table_event = st.dataframe(
-            frame,
-            hide_index=True,
-            width="stretch",
-            column_order=[
+        table_options = {
+            "hide_index": True,
+            "width": "stretch",
+            "column_order": [
                 "Portfolio",
                 "Date",
                 "Action",
@@ -1414,19 +1519,20 @@ def render_transactions(
                 "Description",
                 "Source",
             ],
-            column_config={
+            "column_config": {
                 "Date": st.column_config.DateColumn(format="M/D/YY"),
                 "Quantity": st.column_config.NumberColumn(format="%.2f"),
                 "Price": st.column_config.NumberColumn(format="$%,.4f"),
                 "Fees": st.column_config.NumberColumn(format="$%,.2f"),
                 "Cash change": st.column_config.NumberColumn(format="$%,.2f"),
             },
-            key=f"manage_transaction_table_{table_scope}",
-            on_select="rerun",
-            selection_mode="single-row",
-        )
-        selected_rows = table_event.selection.rows
-        if selected_rows:
+            "key": f"manage_transaction_table_{table_scope}",
+        }
+        if editable:
+            table_options.update(on_select="rerun", selection_mode="single-row")
+        table_event = st.dataframe(frame, **table_options)
+        selected_rows = table_event.selection.rows if editable else []
+        if editable and selected_rows:
             selected_transaction = filtered[selected_rows[0]]
             render_transaction_editor(
                 selected_transaction, names_by_id[selected_transaction.portfolio_id]
@@ -1751,12 +1857,58 @@ def render_portfolio_admin(
     action_portfolios: list[Portfolio],
     custom_start: date,
     custom_end: date,
+    *,
+    editable: bool,
 ) -> None:
     names_by_id = {portfolio.id: portfolio.name for portfolio in action_portfolios}
-    render_transactions(reporting_portfolios, names_by_id, custom_start, custom_end)
-    render_add_transaction(action_portfolios, reporting_portfolios)
-    render_csv_section(action_portfolios, reporting_portfolios)
-    render_portfolio_actions(action_portfolios)
+    render_transactions(
+        reporting_portfolios,
+        names_by_id,
+        custom_start,
+        custom_end,
+        editable=editable,
+    )
+    if editable:
+        render_add_transaction(action_portfolios, reporting_portfolios)
+        render_csv_section(action_portfolios, reporting_portfolios)
+        render_portfolio_actions(action_portfolios)
+        return
+    with st.expander("Portfolio administration", expanded=False):
+        st.caption("Read-only portfolio settings and effective-dated benchmark history.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Portfolio": portfolio.name,
+                        "Account type": ACCOUNT_TYPE_LABELS[portfolio.account_type],
+                        "Cash": float(portfolio.cash),
+                    }
+                    for portfolio in action_portfolios
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+            column_config={"Cash": st.column_config.NumberColumn(format="$%,.2f")},
+        )
+        benchmark_rows = []
+        with session_scope() as session:
+            for portfolio in action_portfolios:
+                for configuration in benchmark_configurations(session, portfolio.id):
+                    benchmark_rows.append(
+                        {
+                            "Portfolio": portfolio.name,
+                            "Effective": configuration.effective_from,
+                            "Components": ", ".join(
+                                f"{symbol} {float(weight) * 100:g}%"
+                                for symbol, weight in configuration.weights.items()
+                            ),
+                            "Rebalancing": configuration.rebalancing_frequency.title(),
+                        }
+                    )
+        if benchmark_rows:
+            st.dataframe(pd.DataFrame(benchmark_rows), hide_index=True, width="stretch")
+        else:
+            st.caption("No benchmark configurations have been recorded.")
 
 
 def allocation_frame(
@@ -1782,10 +1934,12 @@ def allocation_frame(
     )
 
 
-def render_trade_admin(portfolios: list[Portfolio]) -> None:
+def render_trade_admin(portfolios: list[Portfolio], *, editable: bool) -> None:
     settings = get_settings()
-    with st.expander("Assigned order ticket", expanded=True):
-        if not portfolios:
+    with st.expander("Assigned order ticket", expanded=editable):
+        if not editable:
+            st.caption("Order entry is disabled for read-only users.")
+        elif not portfolios:
             st.caption("No non-blank portfolios are available for order assignment.")
         else:
             if not settings.alpaca_configured:
@@ -1849,40 +2003,43 @@ def render_trade_admin(portfolios: list[Portfolio]) -> None:
                 st.info(f"Alpaca account data is unavailable: {exc}")
         with session_scope() as session:
             allocations = list_allocations(session)
-        action_columns = st.columns([1, 1, 3])
-        if action_columns[0].button(
-            "Sync fills",
-            width="stretch",
-            disabled=not settings.alpaca_configured,
-        ):
-            try:
-                with session_scope() as session:
-                    changed = sync_allocations(session)
-                cached_historical_data.clear()
-                st.session_state.flash = f"Fill sync complete. {changed} allocation(s) updated."
-                st.rerun()
-            except Exception as exc:
-                st.info(f"Orders could not be synchronized: {exc}")
-        open_orders = [
-            item
-            for item in allocations
-            if item.status not in {"filled", "canceled", "expired", "rejected"}
-        ]
-        cancel_id = action_columns[1].selectbox(
-            "Cancel",
-            ["", *[item.alpaca_order_id for item in open_orders]],
-            label_visibility="collapsed",
-        )
-        if action_columns[2].button(
-            "Cancel selected order",
-            disabled=not cancel_id or not settings.alpaca_configured,
-        ):
-            try:
-                cancel_order(cancel_id)
-                st.session_state.flash = "Cancellation requested. Sync fills to refresh status."
-                st.rerun()
-            except Exception as exc:
-                st.info(f"Cancellation could not be requested: {exc}")
+        if editable:
+            action_columns = st.columns([1, 1, 3])
+            if action_columns[0].button(
+                "Sync fills",
+                width="stretch",
+                disabled=not settings.alpaca_configured,
+            ):
+                try:
+                    with session_scope() as session:
+                        changed = sync_allocations(session)
+                    cached_historical_data.clear()
+                    st.session_state.flash = f"Fill sync complete. {changed} allocation(s) updated."
+                    st.rerun()
+                except Exception as exc:
+                    st.info(f"Orders could not be synchronized: {exc}")
+            open_orders = [
+                item
+                for item in allocations
+                if item.status not in {"filled", "canceled", "expired", "rejected"}
+            ]
+            cancel_id = action_columns[1].selectbox(
+                "Cancel",
+                ["", *[item.alpaca_order_id for item in open_orders]],
+                label_visibility="collapsed",
+            )
+            if action_columns[2].button(
+                "Cancel selected order",
+                disabled=not cancel_id or not settings.alpaca_configured,
+            ):
+                try:
+                    cancel_order(cancel_id)
+                    st.session_state.flash = "Cancellation requested. Sync fills to refresh status."
+                    st.rerun()
+                except Exception as exc:
+                    st.info(f"Cancellation could not be requested: {exc}")
+        else:
+            st.caption("Fill synchronization and order cancellation are admin-only.")
         if allocations:
             st.dataframe(
                 allocation_frame(allocations, portfolios),
@@ -1935,19 +2092,22 @@ def render_architecture() -> None:
 
 
 def main() -> None:
+    render_header()
+    role = authenticate_access()
+    if role is None:
+        return
+    owner = role == "admin"
+    render_access_status(role)
     all_portfolios = initialize_application()
     reporting_portfolios = [
         portfolio for portfolio in all_portfolios if portfolio_has_data(portfolio)
     ]
-    owner = authenticate_owner()
-    render_header()
     selected_portfolios, master_start, master_end = render_master_controls(reporting_portfolios)
     if flash := st.session_state.pop("flash", None):
         st.info(flash)
     closes, data_note = get_prices(selected_portfolios, master_start, master_end)
-    labels = ["Overview", "Compare", "Forecast"]
-    if owner:
-        labels.extend(["Manage", "Trade", "Architecture"])
+    benchmark_closes, benchmark_note = get_alpha_beta_benchmark(master_start, master_end)
+    labels = ["Overview", "Compare", "Forecast", "Manage", "Trade", "Architecture"]
     if st.session_state.get("active_page") not in {None, *labels}:
         st.session_state.active_page = labels[0]
     tabs = st.tabs(labels, key="active_page", on_change="rerun")
@@ -1958,6 +2118,7 @@ def main() -> None:
             data_note,
             master_start,
             master_end,
+            benchmark_closes,
         )
     with tabs[1]:
         render_compare(
@@ -1965,23 +2126,24 @@ def main() -> None:
             closes,
             master_start,
             master_end,
+            benchmark_closes,
         )
     with tabs[2]:
         render_forecast(selected_portfolios, closes, owner=owner)
-    if owner:
-        with tabs[3]:
-            render_portfolio_admin(
-                selected_portfolios,
-                all_portfolios,
-                master_start,
-                master_end,
-            )
-        with tabs[4]:
-            render_trade_admin(reporting_portfolios)
-        with tabs[5]:
-            render_architecture()
-    else:
-        st.caption("Owner controls are password-protected and hidden from public viewers.")
+    with tabs[3]:
+        render_portfolio_admin(
+            selected_portfolios,
+            all_portfolios,
+            master_start,
+            master_end,
+            editable=owner,
+        )
+    with tabs[4]:
+        render_trade_admin(reporting_portfolios, editable=owner)
+    with tabs[5]:
+        render_architecture()
+    if benchmark_note:
+        st.caption(f"SPY Alpha/Beta data is unavailable: {benchmark_note}")
 
 
 if __name__ == "__main__":

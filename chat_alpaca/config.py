@@ -43,6 +43,7 @@ def _database_url(value: str) -> str:
 class Settings:
     database_url: str
     admin_password: str
+    user_password: str
     alpaca_api_key: str
     alpaca_secret_key: str
     alpaca_data_feed: str
@@ -66,6 +67,7 @@ def get_settings() -> Settings:
     return Settings(
         database_url=_database_url(_value("DATABASE_URL", "sqlite:///data/chat_alpaca.db")),
         admin_password=_value("ADMIN_PASSWORD"),
+        user_password=_value("USER_PASSWORD"),
         alpaca_api_key=_value("ALPACA_API_KEY"),
         alpaca_secret_key=_value("ALPACA_SECRET_KEY"),
         alpaca_data_feed=_value("ALPACA_DATA_FEED", "iex").lower(),

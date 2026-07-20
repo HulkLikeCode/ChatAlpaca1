@@ -8,6 +8,7 @@ from typing import Literal
 import pandas as pd
 
 from chat_alpaca.analytics import (
+    alpha_beta_from_levels,
     combined_performance_growth,
     performance_growth,
     portfolio_gain_loss,
@@ -42,13 +43,16 @@ class PerformanceRow:
     all_time: float | None
     daily: float | None
     custom: float | None
+    alpha: float | None
+    beta: float | None
+    alpha_beta_observations: int
 
 
 @dataclass(frozen=True)
 class PortfolioCardReport:
     name: str
     value_label: str
-    symbol_count: int
+    expected_annual_dividends: Decimal
     cash: Decimal
     warnings: tuple[str, ...] = ()
 
@@ -60,6 +64,9 @@ class CombinedPerformanceReport:
     all_time: float | None
     daily: float | None
     custom: float | None
+    alpha: float | None
+    beta: float | None
+    alpha_beta_observations: int
     rows: tuple[PerformanceRow, ...]
     warnings: tuple[str, ...]
     coverage: str
@@ -142,8 +149,14 @@ def _summed(values: list[float | None]) -> float | None:
 
 
 def assemble_portfolio_card_reports(
-    portfolios: list[Portfolio], closes: pd.DataFrame
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    selected_start: date,
+    selected_end: date,
 ) -> tuple[PortfolioCardReport, ...]:
+    if selected_start > selected_end:
+        raise ValueError("The portfolio card start date must be on or before the end date.")
+    inclusive_days = Decimal((selected_end - selected_start).days + 1)
     reports = []
     for portfolio in portfolios:
         if closes.empty:
@@ -161,7 +174,19 @@ def assemble_portfolio_card_reports(
             PortfolioCardReport(
                 portfolio.name,
                 value_label,
-                len({lot.symbol for lot in portfolio.holdings}),
+                money(
+                    sum(
+                        (
+                            transaction.cash_delta
+                            for transaction in portfolio.transactions
+                            if transaction.kind == "dividend"
+                            and selected_start <= transaction.transaction_date <= selected_end
+                        ),
+                        Decimal("0"),
+                    )
+                    / inclusive_days
+                    * Decimal("365.2425")
+                ),
                 Decimal(portfolio.cash),
                 warnings,
             )
@@ -174,6 +199,8 @@ def assemble_combined_performance_report(
     closes: pd.DataFrame,
     custom_start: date,
     custom_end: date,
+    benchmark_closes: pd.DataFrame | None = None,
+    benchmark_symbol: str = "SPY",
 ) -> CombinedPerformanceReport:
     """Assemble portfolio value and gain/loss without presentation-layer accounting."""
     if closes.empty:
@@ -185,6 +212,9 @@ def assemble_combined_performance_report(
             all_time=None,
             daily=None,
             custom=None,
+            alpha=None,
+            beta=None,
+            alpha_beta_observations=0,
             rows=(),
             warnings=("Cost basis plus cash is shown; gain/loss requires market data.",),
             coverage="Market-price coverage unavailable.",
@@ -202,9 +232,43 @@ def assemble_combined_performance_report(
     gain_loss = [
         portfolio_gain_loss(portfolio, closes, custom_start, custom_end) for portfolio in portfolios
     ]
+    benchmark_levels = (
+        benchmark_closes[benchmark_symbol].dropna()
+        if benchmark_closes is not None and benchmark_symbol in benchmark_closes
+        else pd.Series(dtype=float)
+    )
+    portfolio_risk = [
+        alpha_beta_from_levels(
+            performance_growth(portfolio, closes),
+            benchmark_levels,
+            custom_start,
+            custom_end,
+        )
+        if not benchmark_levels.empty
+        else None
+        for portfolio in portfolios
+    ]
     rows = tuple(
-        PerformanceRow(portfolio.name, metrics.all_time, metrics.daily, metrics.custom)
-        for portfolio, metrics in zip(portfolios, gain_loss, strict=True)
+        PerformanceRow(
+            portfolio.name,
+            metrics.all_time,
+            metrics.daily,
+            metrics.custom,
+            risk.alpha if risk else None,
+            risk.beta if risk else None,
+            risk.observations if risk else 0,
+        )
+        for portfolio, metrics, risk in zip(portfolios, gain_loss, portfolio_risk, strict=True)
+    )
+    combined_risk = (
+        alpha_beta_from_levels(
+            combined_performance_growth(portfolios, closes),
+            benchmark_levels,
+            custom_start,
+            custom_end,
+        )
+        if not benchmark_levels.empty
+        else None
     )
     warnings = sorted(
         {
@@ -220,6 +284,9 @@ def assemble_combined_performance_report(
         all_time=_summed([row.all_time for row in rows]),
         daily=_summed([row.daily for row in rows]),
         custom=_summed([row.custom for row in rows]),
+        alpha=combined_risk.alpha if combined_risk else None,
+        beta=combined_risk.beta if combined_risk else None,
+        alpha_beta_observations=combined_risk.observations if combined_risk else 0,
         rows=rows,
         warnings=tuple(warnings),
         coverage=f"Complete valuations: {complete_count} of {len(valuations)} portfolios.",

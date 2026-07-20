@@ -36,6 +36,14 @@ class ValuationResult:
     last_price_dates: dict[str, date]
 
 
+@dataclass(frozen=True)
+class AlphaBetaMetrics:
+    alpha: float | None
+    beta: float | None
+    observations: int
+    warnings: tuple[str, ...] = ()
+
+
 class IncompleteValuationError(ValueError):
     """Raised when a compatibility value API cannot return a complete valuation."""
 
@@ -315,6 +323,156 @@ def summary_metrics(series: pd.Series) -> dict[str, float]:
     }
 
 
+def alpha_beta_from_returns(
+    asset_returns: pd.Series,
+    benchmark_returns: pd.Series,
+    *,
+    minimum_observations: int = 60,
+) -> AlphaBetaMetrics:
+    """Regress daily asset returns on benchmark returns and annualize the intercept."""
+    aligned = (
+        pd.concat([asset_returns.rename("asset"), benchmark_returns.rename("benchmark")], axis=1)
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+    )
+    observations = len(aligned)
+    if observations < minimum_observations:
+        return AlphaBetaMetrics(
+            None,
+            None,
+            observations,
+            (
+                f"Alpha/Beta requires at least {minimum_observations} overlapping daily returns; "
+                f"{observations} are available.",
+            ),
+        )
+    benchmark_variance = float(aligned["benchmark"].var(ddof=1))
+    if not np.isfinite(benchmark_variance) or benchmark_variance <= 0:
+        return AlphaBetaMetrics(
+            None,
+            None,
+            observations,
+            ("Alpha/Beta is unavailable because benchmark returns have no variance.",),
+        )
+    covariance = float(aligned[["asset", "benchmark"]].cov().iloc[0, 1])
+    beta = covariance / benchmark_variance
+    daily_alpha = float((aligned["asset"] - beta * aligned["benchmark"]).mean())
+    alpha = (1.0 + daily_alpha) ** 252 - 1.0 if daily_alpha > -1.0 else daily_alpha * 252
+    return AlphaBetaMetrics(float(alpha), float(beta), observations)
+
+
+def alpha_beta_from_levels(
+    asset_levels: pd.Series,
+    benchmark_levels: pd.Series,
+    start: date,
+    end: date,
+    *,
+    minimum_observations: int = 60,
+) -> AlphaBetaMetrics:
+    """Calculate Alpha/Beta from aligned daily changes within an inclusive date range."""
+    asset_returns = asset_levels.sort_index().pct_change(fill_method=None)
+    benchmark_returns = benchmark_levels.sort_index().pct_change(fill_method=None)
+    selected_asset = asset_returns[
+        (asset_returns.index.date >= start) & (asset_returns.index.date <= end)
+    ]
+    selected_benchmark = benchmark_returns[
+        (benchmark_returns.index.date >= start) & (benchmark_returns.index.date <= end)
+    ]
+    return alpha_beta_from_returns(
+        selected_asset,
+        selected_benchmark,
+        minimum_observations=minimum_observations,
+    )
+
+
+def holding_alpha_beta(
+    portfolios: Iterable[Portfolio],
+    closes: pd.DataFrame,
+    benchmark_levels: pd.Series,
+    symbol: str,
+    start: date,
+    end: date,
+    *,
+    minimum_observations: int = 60,
+) -> AlphaBetaMetrics:
+    """Calculate symbol Alpha/Beta, adding attributable ledger dividends to price returns."""
+    if symbol not in closes:
+        return AlphaBetaMetrics(None, None, 0, (f"No price history is available for {symbol}.",))
+    portfolio_list = list(portfolios)
+    prices = closes[symbol].sort_index().dropna()
+    price_returns = prices.pct_change(fill_method=None)
+    position_transactions = sorted(
+        (
+            transaction
+            for portfolio in portfolio_list
+            for transaction in _transactions(portfolio)
+            if transaction.symbol == symbol
+            and transaction.kind in {"buy", "sell", "opening_position"}
+            and transaction.quantity is not None
+        ),
+        key=lambda item: (item.transaction_date, item.id or 0),
+    )
+    assigned_dividends: dict[date, float] = {}
+    for portfolio in portfolio_list:
+        for transaction in _transactions(portfolio):
+            if transaction.kind == "dividend" and transaction.symbol == symbol:
+                assigned_dividends[transaction.transaction_date] = assigned_dividends.get(
+                    transaction.transaction_date, 0.0
+                ) + float(transaction.cash_delta)
+
+    fallback_shares = sum(
+        float(lot.shares)
+        for portfolio in portfolio_list
+        for lot in portfolio.holdings
+        if lot.symbol == symbol
+    )
+    total_returns = price_returns.copy()
+    excluded_dividends = 0
+    for timestamp in total_returns.index:
+        dividend = assigned_dividends.get(timestamp.date(), 0.0)
+        if not dividend:
+            continue
+        prior_prices = prices[prices.index < timestamp]
+        shares = fallback_shares
+        if position_transactions:
+            shares = sum(
+                (-1.0 if transaction.kind == "sell" else 1.0) * float(transaction.quantity)
+                for transaction in position_transactions
+                if transaction.transaction_date < timestamp.date()
+            )
+        prior_value = (
+            shares * float(prior_prices.iloc[-1]) if shares and not prior_prices.empty else 0
+        )
+        if prior_value:
+            total_returns.loc[timestamp] += dividend / prior_value
+        else:
+            excluded_dividends += 1
+
+    selected = total_returns[
+        (total_returns.index.date >= start) & (total_returns.index.date <= end)
+    ]
+    benchmark_returns = benchmark_levels.sort_index().pct_change(fill_method=None)
+    selected_benchmark = benchmark_returns[
+        (benchmark_returns.index.date >= start) & (benchmark_returns.index.date <= end)
+    ]
+    result = alpha_beta_from_returns(
+        selected,
+        selected_benchmark,
+        minimum_observations=minimum_observations,
+    )
+    if not excluded_dividends:
+        return result
+    return AlphaBetaMetrics(
+        result.alpha,
+        result.beta,
+        result.observations,
+        (
+            *result.warnings,
+            f"{excluded_dividends} assigned dividend event(s) could not be attributed.",
+        ),
+    )
+
+
 def earliest_acquisition(portfolios: Iterable[Portfolio], fallback: date) -> date:
     portfolio_list = list(portfolios)
     dates = [lot.acquired_on for portfolio in portfolio_list for lot in portfolio.holdings]
@@ -424,12 +582,31 @@ def consolidated_holdings(
     closes: pd.DataFrame,
     custom_start: date,
     custom_end: date,
+    benchmark_closes: pd.DataFrame | None = None,
+    benchmark_symbol: str = "SPY",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return symbol totals and the underlying portfolio/lot detail for current holdings."""
     if custom_start > custom_end:
         raise ValueError("The custom holdings start date must be on or before the end date.")
+    portfolio_list = list(portfolios)
+    risk_metrics: dict[str, AlphaBetaMetrics] = {}
+    benchmark_levels = (
+        benchmark_closes[benchmark_symbol].dropna()
+        if benchmark_closes is not None and benchmark_symbol in benchmark_closes
+        else pd.Series(dtype=float)
+    )
+    if not benchmark_levels.empty:
+        for symbol in {lot.symbol for portfolio in portfolio_list for lot in portfolio.holdings}:
+            risk_metrics[symbol] = holding_alpha_beta(
+                portfolio_list,
+                closes,
+                benchmark_levels,
+                symbol,
+                custom_start,
+                custom_end,
+            )
     rows: list[dict[str, object]] = []
-    for portfolio in portfolios:
+    for portfolio in portfolio_list:
         for lot in sorted(portfolio.holdings, key=lambda item: (item.symbol, item.acquired_on)):
             shares = float(lot.shares)
             cost_per_share = float(lot.cost_basis)
@@ -470,6 +647,11 @@ def consolidated_holdings(
                         else None
                     ),
                     "Custom gain/loss": custom_gain_loss,
+                    "Alpha": risk_metrics.get(lot.symbol, AlphaBetaMetrics(None, None, 0)).alpha,
+                    "Beta": risk_metrics.get(lot.symbol, AlphaBetaMetrics(None, None, 0)).beta,
+                    "Alpha/Beta observations": risk_metrics.get(
+                        lot.symbol, AlphaBetaMetrics(None, None, 0)
+                    ).observations,
                 }
             )
 
@@ -489,6 +671,9 @@ def consolidated_holdings(
             ),
             "Daily gain/loss": ("Daily gain/loss", lambda values: values.sum(min_count=1)),
             "Custom gain/loss": ("Custom gain/loss", lambda values: values.sum(min_count=1)),
+            "Alpha": ("Alpha", "first"),
+            "Beta": ("Beta", "first"),
+            "Alpha/Beta observations": ("Alpha/Beta observations", "first"),
         },
     )
     grouped["Average cost / share"] = grouped["Total cost basis"].div(
@@ -506,6 +691,9 @@ def consolidated_holdings(
             "All-time gain/loss",
             "Daily gain/loss",
             "Custom gain/loss",
+            "Alpha",
+            "Beta",
+            "Alpha/Beta observations",
         ]
     ].sort_values("Symbol")
     return grouped, detail

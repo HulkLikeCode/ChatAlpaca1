@@ -2,18 +2,77 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
 from streamlit.testing.v1 import AppTest
+
+from chat_alpaca.config import get_settings
 
 SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
 
 
-def test_public_app_renders_without_credentials() -> None:
-    app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+def viewer_app() -> AppTest:
+    app = AppTest.from_file("streamlit_app.py", default_timeout=30)
+    app.session_state["access_role"] = "user"
+    return app.run()
+
+
+def test_unauthenticated_app_only_renders_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-test-password")
+    monkeypatch.setenv("USER_PASSWORD", "user-test-password")
+    get_settings.cache_clear()
+    try:
+        app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+    finally:
+        get_settings.cache_clear()
 
     assert not app.exception
-    assert app.title[0].value == "KC's Retirement Dough, Let's GO!!!"
+    assert app.title[0].value == "Retirement Dough, Let’s Go!"
+    assert [item.label for item in app.text_input] == ["Password"]
+    assert not app.tabs
+
+
+@pytest.mark.parametrize(
+    ("password", "expected_role", "has_admin_controls"),
+    [
+        ("admin-test-password", "admin", True),
+        ("user-test-password", "user", False),
+    ],
+)
+def test_password_selects_the_expected_permission_role(
+    monkeypatch: pytest.MonkeyPatch,
+    password: str,
+    expected_role: str,
+    has_admin_controls: bool,
+) -> None:
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-test-password")
+    monkeypatch.setenv("USER_PASSWORD", "user-test-password")
+    get_settings.cache_clear()
+    try:
+        app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+        app.text_input[0].set_value(password)
+        next(item for item in app.button if item.label == "Sign in").click().run()
+    finally:
+        get_settings.cache_clear()
+
+    assert app.session_state["access_role"] == expected_role
+    assert ("Target portfolio" in [item.label for item in app.selectbox]) is has_admin_controls
+    assert ("Submit assigned order" in [item.label for item in app.button]) is has_admin_controls
+
+
+def test_read_only_app_renders_all_views() -> None:
+    app = viewer_app()
+
+    assert not app.exception
+    assert app.title[0].value == "Retirement Dough, Let’s Go!"
     assert not any("portfolios · benchmarks · Alpaca orders" in item.value for item in app.markdown)
-    assert [tab.label for tab in app.tabs] == ["Overview", "Compare", "Forecast"]
+    assert [tab.label for tab in app.tabs] == [
+        "Overview",
+        "Compare",
+        "Forecast",
+        "Manage",
+        "Trade",
+        "Architecture",
+    ]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
     assert [item.label for item in app.metric].count("Selected cost basis + cash") == 2
     assert [item.label for item in app.checkbox] == ["Set a target value"]
@@ -36,18 +95,23 @@ def test_public_app_renders_without_credentials() -> None:
         item.value for item in app.markdown if item.value.startswith('<div class="portfolio-grid">')
     )
     assert portfolio_grid.count('<div class="portfolio-card">') > 1
+    assert "Expected Annual Dividends" in portfolio_grid
+    assert "symbols" not in portfolio_grid
     assert "\n" not in portfolio_grid
+    assert not app.get("file_uploader")
+    assert "Record transaction" not in [item.label for item in app.button]
+    assert "Submit assigned order" not in [item.label for item in app.button]
 
 
 def test_comparison_defaults_to_spy_benchmark() -> None:
-    app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+    app = viewer_app()
 
     benchmark_selector = next(item for item in app.multiselect if item.label == "Benchmark ETFs")
     assert benchmark_selector.value == ["SPY"]
 
 
 def test_incomplete_data_warnings_are_presented_without_credentials() -> None:
-    app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+    app = viewer_app()
 
     assert any("explicitly uses cost basis plus cash" in item.value for item in app.warning)
     assert any("Market-price coverage unavailable" in item.value for item in app.caption)
@@ -175,7 +239,7 @@ def test_add_transaction_customizes_fields_and_validates_trade_symbols() -> None
 
 
 def test_master_filters_apply_portfolios_and_dates_together() -> None:
-    app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+    app = viewer_app()
     first_portfolio_id = 1
 
     app.multiselect[0].set_value([first_portfolio_id])
@@ -194,7 +258,7 @@ def test_master_filters_apply_portfolios_and_dates_together() -> None:
 
 
 def test_exact_holdings_summary_and_detail_column_order() -> None:
-    app = AppTest.from_file("streamlit_app.py", default_timeout=30).run()
+    app = viewer_app()
     expected_summary = [
         "Symbol",
         "Avg/share",
@@ -204,6 +268,9 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "All time",
         "Day",
         "Custom",
+        "Annualized Alpha",
+        "Beta",
+        "Alpha/Beta observations",
         "Shares",
         "Portfolios",
     ]
@@ -222,6 +289,9 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "All time",
         "Day",
         "Custom",
+        "Annualized Alpha",
+        "Beta",
+        "Alpha/Beta observations",
         "Shares",
         "Portfolio",
         "Acquired",

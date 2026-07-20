@@ -9,6 +9,7 @@ from chat_alpaca.models import HoldingLot, Portfolio, PortfolioTransaction
 from chat_alpaca.reports import (
     assemble_combined_performance_report,
     assemble_comparison_report,
+    assemble_portfolio_card_reports,
     comparison_acquisition_plan,
     historical_symbol_universe,
 )
@@ -51,6 +52,27 @@ def test_universe_and_acquisition_plan_own_adjustment_and_baseline_policy() -> N
     assert plan.portfolio.symbols == ("ABC", "OLD", "SPY")
     assert plan.benchmark.start == date(2026, 1, 10)
     assert plan.benchmark.price_policy == "benchmark_total_return"
+
+
+def test_portfolio_card_annualizes_selected_range_dividends() -> None:
+    portfolio = _portfolio()
+    portfolio.transactions.append(
+        PortfolioTransaction(
+            id=2,
+            transaction_date=date(2026, 2, 10),
+            kind="dividend",
+            action="Cash Dividend",
+            symbol="ABC",
+            cash_delta=Decimal("100"),
+            source="test",
+        )
+    )
+
+    report = assemble_portfolio_card_reports(
+        [portfolio], pd.DataFrame(), date(2026, 1, 1), date(2026, 4, 10)
+    )[0]
+
+    assert report.expected_annual_dividends == Decimal("365.2425")
 
 
 def test_combined_performance_report_returns_incomplete_coverage_warning() -> None:

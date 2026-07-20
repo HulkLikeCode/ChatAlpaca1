@@ -22,7 +22,8 @@ h1 {
   font-size: clamp(1.25rem, 2.2vw, 1.65rem) !important;
   line-height: 1 !important;
   margin-top: -.2rem !important;
-  margin-bottom: .1rem !important;
+  margin-bottom: -.1rem !important;
+  color: var(--violet) !important;
 }
 [data-testid="stMarkdownContainer"]:has(.mode-chip) {height: 1.05rem;}
 [data-testid="stCaptionContainer"] {margin-top: -.2rem; margin-bottom: -.35rem;}
@@ -39,7 +40,7 @@ h1 {
   position: sticky;
   top: 3.75rem;
   z-index: 999;
-  margin: .55rem 0 .75rem;
+  margin: .2rem 0 .3rem;
   padding: .35rem .75rem .15rem;
   border: 1px solid var(--line);
   border-radius: 14px;

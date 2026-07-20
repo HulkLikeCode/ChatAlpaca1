@@ -14,12 +14,12 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Cached security metadata and dated ETF sector look-through classifications with provenance
 - Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
-- Public 1–10 year planning projections with editable scenarios, monthly contributions, percentile bands, and target probabilities
+- Read-only-user 1–10 year planning projections with editable session-only scenarios, monthly contributions, percentile bands, and target probabilities
 - Reproducible 1–10 year historical block-bootstrap forecasts with correlated monthly returns,
   explicit proxies, inflation, fees, rebalancing, downside attribution, and rolling backtests
 - Saved, reproducible deterministic stress scenarios with household, portfolio, holding, sector,
   account-type, baseline, coverage, warning, and sensitivity output
-- Password-protected portfolio editor and assigned Alpaca order ticket
+- Separate admin and read-only user passwords; only admins can mutate data, upload files, or act on brokerage orders
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
 - Combined sortable transaction management with portfolio/type/date filters, totals, and guarded edits/deletes
 - Sticky, batched portfolio and master-date controls shared by Overview, Compare, and Manage
@@ -28,6 +28,8 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Transaction-aware all-time, daily, and custom-range portfolio gain/loss excluding contributions
 - Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, and lot drilldown
 - Selected-portfolio total value in both Overview and Compare
+- Selected-range expected annual dividends on portfolio value cards
+- Portfolio and holding Alpha/Beta against SPY total return, using at least 60 overlapping daily returns
 - Market and limit orders, cancellation, fill synchronization, and an auditable internal transaction ledger
 - Automatic persistence through SQLite locally or hosted PostgreSQL in production
 - Architecture hooks for strategies, short positions, options, and separately gated live trading
@@ -52,7 +54,13 @@ The ultimate goal is a private, comprehensive manager for multiple personal port
 
 ## Safety model
 
-The dashboard is intended for private access. `ADMIN_PASSWORD` unlocks owner features for a browser session; deployment access controls must prevent unauthorized users from reaching the application. Credentials and owner controls are never exposed.
+The dashboard is intended for private access. Every browser session must authenticate with either
+`ADMIN_PASSWORD` or `USER_PASSWORD`. The admin role has full application access. The user role can
+view Overview, Compare, Forecast, Manage, Trade, and Architecture and can run session-only forecast
+and deterministic-scenario calculations, but cannot edit transactions or portfolio settings,
+upload files, save scenario runs, submit or cancel orders, synchronize fills, or otherwise change
+permanent data. Deployment access controls must still prevent unauthorized users from reaching the
+application. Credentials are never exposed or stored in the database.
 
 Paper mode is the default. Live mode requires all three of the following:
 
@@ -86,6 +94,7 @@ Set newly rotated paper credentials in `.env`:
 ```dotenv
 DATABASE_URL=sqlite:///data/chat_alpaca.db
 ADMIN_PASSWORD=choose-a-long-password
+USER_PASSWORD=choose-a-different-long-password
 ALPACA_API_KEY=your-rotated-paper-key
 ALPACA_SECRET_KEY=your-rotated-paper-secret
 ALPACA_DATA_FEED=iex
@@ -154,6 +163,14 @@ movement, dividends, interest, and awards remain part of performance. Daily gain
 two latest market closes, while custom gain/loss uses the close before the applied master start date
 through the master end date. The same range controls dividend custom totals, Compare charts and
 metrics, exact holdings, and transaction filtering.
+
+Portfolio cards annualize dividend ledger credits in the inclusive applied master range using
+`selected dividends / selected calendar days × 365.2425`; interest is excluded. Portfolio and
+holding Alpha/Beta use the applied master range and require at least 60 overlapping daily returns
+against SPY total-return data. Alpha is the compounded annualized daily regression intercept.
+Portfolio returns are ledger-aware. Holding returns add symbol-assigned dividend credits to
+split-adjusted price returns; unassigned dividends and dividend events without an attributable
+prior holding value are excluded and disclosed.
 
 The reusable Phase 4 service in `chat_alpaca.reconstruction` is the shared analytics boundary. It
 consumes canonical transactions and confirmed split-adjusted, non-dividend-adjusted repository
@@ -244,7 +261,7 @@ Before deployment:
 
 1. Create a hosted PostgreSQL database with a provider such as Supabase or Neon.
 2. Copy its connection URL into the Streamlit app's secret settings as `DATABASE_URL`.
-3. Add `ADMIN_PASSWORD`, rotated Alpaca paper credentials, and the remaining values from `.env.example` to Streamlit secrets.
+3. Add distinct `ADMIN_PASSWORD` and `USER_PASSWORD` values, rotated Alpaca paper credentials, and the remaining values from `.env.example` to Streamlit secrets.
 4. Keep the GitHub repository private and deploy `streamlit_app.py` as the entry point.
 5. Configure the host's access controls and confirm that only authorized users can reach the application before sharing it.
 
