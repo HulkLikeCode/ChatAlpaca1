@@ -25,6 +25,14 @@ def _as_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(_value(name, str(default)))
+    except ValueError:
+        return default
+    return min(max(parsed, minimum), maximum)
+
+
 def _database_url(value: str) -> str:
     """Use the PostgreSQL driver installed by this application.
 
@@ -49,6 +57,10 @@ class Settings:
     alpaca_data_feed: str
     trading_mode: str
     allow_live_trading: bool
+    realtime_stream_cap: int = 30
+    realtime_regular_seconds: int = 45
+    realtime_off_hours_seconds: int = 180
+    realtime_calls_per_minute: int = 180
 
     @property
     def alpaca_configured(self) -> bool:
@@ -64,6 +76,10 @@ def get_settings() -> Settings:
     mode = _value("TRADING_MODE", "paper").strip().lower()
     if mode not in {"paper", "live"}:
         mode = "paper"
+    regular_seconds = _bounded_int("REALTIME_REGULAR_SECONDS", 45, 30, 60)
+    off_hours_seconds = max(
+        _bounded_int("REALTIME_OFF_HOURS_SECONDS", 180, 60, 900), regular_seconds + 30
+    )
     return Settings(
         database_url=_database_url(_value("DATABASE_URL", "sqlite:///data/chat_alpaca.db")),
         admin_password=_value("ADMIN_PASSWORD"),
@@ -73,4 +89,8 @@ def get_settings() -> Settings:
         alpaca_data_feed=_value("ALPACA_DATA_FEED", "iex").lower(),
         trading_mode=mode,
         allow_live_trading=_as_bool(_value("ALLOW_LIVE_TRADING", "false")),
+        realtime_stream_cap=_bounded_int("REALTIME_STREAM_CAP", 30, 1, 30),
+        realtime_regular_seconds=regular_seconds,
+        realtime_off_hours_seconds=off_hours_seconds,
+        realtime_calls_per_minute=_bounded_int("REALTIME_CALLS_PER_MINUTE", 180, 1, 200),
     )

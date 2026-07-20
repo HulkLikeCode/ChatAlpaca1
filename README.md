@@ -39,6 +39,9 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Selected-range cumulative dividends on portfolio value cards
 - Portfolio and holding Alpha/Beta against SPY total return, using at least 60 overlapping daily returns
 - Market and limit orders, cancellation, fill synchronization, and an auditable internal transaction ledger
+- Tiered active-session monitoring for fewer than 400 held symbols, with capped IEX streaming,
+  batched snapshot fallback, reconnect gap backfill, explicit freshness, portfolio pulse, market
+  context, and symbol detail; no closed-app monitoring claim or persistent worker
 - Automatic persistence through SQLite locally or hosted PostgreSQL in production
 - Architecture hooks for strategies, short positions, options, and separately gated live trading
 - Dark black/blue/purple/white theme with no green or red status colors
@@ -106,6 +109,10 @@ USER_PASSWORD=choose-a-different-long-password
 ALPACA_API_KEY=your-rotated-paper-key
 ALPACA_SECRET_KEY=your-rotated-paper-secret
 ALPACA_DATA_FEED=iex
+REALTIME_STREAM_CAP=30
+REALTIME_REGULAR_SECONDS=45
+REALTIME_OFF_HOURS_SECONDS=180
+REALTIME_CALLS_PER_MINUTE=180
 TRADING_MODE=paper
 ALLOW_LIVE_TRADING=false
 ```

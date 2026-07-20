@@ -65,6 +65,7 @@ def test_read_only_app_renders_all_views() -> None:
     assert not any("portfolios · benchmarks · Alpaca orders" in item.value for item in app.markdown)
     assert [tab.label for tab in app.tabs] == [
         "Overview",
+        "Monitor",
         "Compare",
         "Forecast",
         "Hypothetical",
@@ -130,6 +131,7 @@ def test_phase_2_owner_manage_controls_render() -> None:
     assert not app.exception
     assert [tab.label for tab in app.tabs] == [
         "Overview",
+        "Monitor",
         "Compare",
         "Forecast",
         "Hypothetical",

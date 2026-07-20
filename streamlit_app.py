@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 from datetime import date, timedelta, timezone
 from html import escape
+from uuid import uuid4
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -69,6 +70,25 @@ from chat_alpaca.portfolio_service import (
     rename_portfolio,
     update_transaction,
 )
+from chat_alpaca.realtime import (
+    BROAD_MARKET_PROXIES,
+    OPEN_ORDER_STATUSES,
+    SECTOR_PROXIES,
+    ActiveSessionMonitor,
+    ActiveSessionRefreshScheduler,
+    ActiveSessionRegistry,
+    AlpacaWebSocketSession,
+    HistoricalGapBackfiller,
+    QuoteBook,
+    SlidingWindowRateLimiter,
+    SnapshotBatcher,
+    SubscriptionInputs,
+    alpaca_clients,
+    build_portfolio_pulse,
+    market_context_metrics,
+    market_hours_state,
+    position_risk_contributions,
+)
 from chat_alpaca.reports import (
     HistoricalDataRequest,
     acquire_historical_data,
@@ -127,6 +147,41 @@ def cached_projection(
     request: ForecastRequest,
 ) -> ProjectionResult:
     return run_forecast(request)
+
+
+@st.cache_resource(show_spinner=False)
+def active_session_registry() -> ActiveSessionRegistry:
+    return ActiveSessionRegistry()
+
+
+def _new_active_monitor() -> ActiveSessionMonitor:
+    settings = get_settings()
+    client, stream_factory = alpaca_clients(
+        settings.alpaca_api_key, settings.alpaca_secret_key, settings.alpaca_data_feed
+    )
+    book = QuoteBook()
+    snapshots = SnapshotBatcher(
+        client,
+        book,
+        feed=settings.alpaca_data_feed,
+        limiter=SlidingWindowRateLimiter(settings.realtime_calls_per_minute),
+    )
+    websocket = AlpacaWebSocketSession(
+        stream_factory,
+        book,
+        backfill=HistoricalGapBackfiller(snapshots.refresh),
+        feed=settings.alpaca_data_feed,
+    )
+    return ActiveSessionMonitor(
+        websocket,
+        snapshots,
+        ActiveSessionRefreshScheduler(
+            settings.realtime_regular_seconds,
+            settings.realtime_off_hours_seconds,
+        ),
+        book,
+        stream_cap=settings.realtime_stream_cap,
+    )
 
 
 def dollars(value: object) -> str:
@@ -273,6 +328,9 @@ def authenticate_access() -> str | None:
             st.markdown("### Access")
             st.caption(f"{label} session active.")
             if st.button("Log out", width="stretch"):
+                session_id = st.session_state.get("realtime_session_id")
+                if session_id:
+                    active_session_registry().release(session_id)
                 st.session_state.access_role = None
                 st.session_state.owner_authenticated = False
                 st.rerun()
@@ -2493,6 +2551,250 @@ def render_hypothetical_analysis(
             )
 
 
+def _latest_closes(closes: pd.DataFrame) -> dict[str, float]:
+    return {
+        symbol: float(values.iloc[-1])
+        for symbol in closes
+        if not (values := closes[symbol].dropna()).empty
+    }
+
+
+@st.fragment(run_every="30s")
+def render_active_monitoring(
+    portfolios: list[Portfolio], closes: pd.DataFrame, *, editable: bool
+) -> None:
+    settings = get_settings()
+    symbols = sorted({lot.symbol for portfolio in portfolios for lot in portfolio.holdings})
+    hours = market_hours_state()
+    st.caption(
+        f"Active browser-session monitoring · {hours.label}. "
+        "Monitoring pauses when this app session closes or the device sleeps; no closed-app alerts are claimed."
+    )
+    if not symbols:
+        if session_id := st.session_state.get("realtime_session_id"):
+            active_session_registry().release(session_id)
+        st.caption("No held symbols are available to monitor.")
+        return
+
+    previous_closes = _latest_closes(closes)
+    position_values: dict[str, float] = {}
+    selected_portfolio_symbols = {
+        lot.symbol for portfolio in portfolios for lot in portfolio.holdings
+    }
+    for portfolio in portfolios:
+        for lot in portfolio.holdings:
+            position_values[lot.symbol] = position_values.get(lot.symbol, 0.0) + float(
+                lot.shares
+            ) * previous_closes.get(lot.symbol, float(lot.cost_basis))
+    visible = set(
+        sorted(position_values, key=lambda symbol: (-abs(position_values[symbol]), symbol))[:12]
+    )
+    selected_symbol = st.selectbox("Symbol detail", symbols, key="monitor_selected_symbol")
+    with session_scope() as session:
+        allocations = list_allocations(session)
+    open_allocations = [item for item in allocations if item.status in OPEN_ORDER_STATUSES]
+    open_order_symbols = {item.symbol for item in open_allocations}
+
+    if settings.alpaca_configured:
+        session_id = st.session_state.setdefault("realtime_session_id", uuid4().hex)
+        monitor = active_session_registry().acquire(session_id, _new_active_monitor)
+        inputs = SubscriptionInputs(
+            held_symbols=frozenset(symbols),
+            open_order_symbols=frozenset(open_order_symbols),
+            selected_symbol=selected_symbol,
+            visible_symbols=frozenset(visible),
+            selected_portfolio_symbols=frozenset(selected_portfolio_symbols),
+            risk_contributions=position_risk_contributions(closes, position_values),
+            position_values=position_values,
+        )
+        try:
+            plan = monitor.refresh(inputs, previous_closes=previous_closes)
+            records = monitor.records(symbols)
+            stream_state = "connected" if monitor.websocket.connected else "connecting/reconnecting"
+            st.caption(
+                f"Alpaca {settings.alpaca_data_feed.upper()} · {stream_state} · "
+                f"{len(plan.streamed)} streamed / {len(plan.snapshot)} REST fallback. "
+                "IEX-derived values are indicative, not consolidated-market values."
+            )
+            if monitor.websocket.last_error:
+                st.caption(
+                    "The stream is reconnecting after a transient provider connection error."
+                )
+        except Exception as exc:
+            st.info(f"Active quotes are temporarily unavailable: {type(exc).__name__}.")
+            records = monitor.records(symbols)
+    else:
+        if session_id := st.session_state.get("realtime_session_id"):
+            active_session_registry().release(session_id)
+        book = QuoteBook()
+        book.seed_previous_closes(previous_closes)
+        records = book.records(symbols)
+        st.info(
+            "Configure rotated Alpaca credentials to start active-session streaming and snapshots. "
+            "Durable previous closes are shown where available."
+        )
+
+    pulse = build_portfolio_pulse(portfolios, records)
+    metrics = st.columns(4)
+    metrics[0].metric(
+        "Indicative total value",
+        dollars(pulse.indicative_total_value)
+        if pulse.indicative_total_value is not None
+        else "Unavailable",
+    )
+    metrics[1].metric(
+        "Daily change",
+        dollars(pulse.daily_change) if pulse.daily_change is not None else "Unavailable",
+    )
+    metrics[2].metric("Held symbols", len(symbols))
+    metrics[3].metric("Stale / missing", len(pulse.stale_or_missing))
+
+    holding_rows = pd.DataFrame(
+        [
+            {
+                "Portfolio": row.portfolio,
+                "Symbol": row.symbol,
+                "Price": row.price,
+                "Value": row.value,
+                "Daily change": row.daily_change,
+                "Contribution": row.contribution,
+                "Freshness": row.status.value,
+                "As of": records[row.symbol].as_of_time,
+                "Feed": records[row.symbol].feed,
+                "Provider": records[row.symbol].provider,
+                "Staleness reason": records[row.symbol].staleness_reason,
+            }
+            for row in pulse.holdings
+        ]
+    )
+    if not holding_rows.empty:
+        st.markdown("#### Largest movers and holding contribution")
+        holding_rows["Contribution"] *= 100
+        holding_rows["_absolute mover"] = pd.to_numeric(
+            holding_rows["Daily change"], errors="coerce"
+        ).abs()
+        st.dataframe(
+            holding_rows.sort_values("_absolute mover", ascending=False, na_position="last").drop(
+                columns="_absolute mover"
+            ),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%,.4f"),
+                "Value": st.column_config.NumberColumn(format="$%,.2f"),
+                "Daily change": st.column_config.NumberColumn(format="$%,.2f"),
+                "Contribution": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+    portfolio_rows = pd.DataFrame(
+        [
+            {"Portfolio": name, "Daily contribution": change}
+            for name, change in pulse.by_portfolio.items()
+        ]
+    )
+    if not portfolio_rows.empty:
+        st.dataframe(
+            portfolio_rows,
+            hide_index=True,
+            width="stretch",
+            column_config={"Daily contribution": st.column_config.NumberColumn(format="$%,.2f")},
+        )
+    if pulse.stale_or_missing:
+        st.warning("Stale or missing symbols: " + ", ".join(pulse.stale_or_missing))
+
+    quote = records[selected_symbol]
+    exposure_shares = sum(
+        float(lot.shares)
+        for portfolio in portfolios
+        for lot in portfolio.holdings
+        if lot.symbol == selected_symbol
+    )
+    state = [item.status for item in allocations if item.symbol == selected_symbol]
+    st.markdown("#### Symbol detail")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Symbol": selected_symbol,
+                    "Latest trade": quote.latest_trade,
+                    "Bid": quote.bid,
+                    "Ask": quote.ask,
+                    "Midpoint": quote.midpoint,
+                    "Spread": quote.spread,
+                    "Quote time": quote.quote_time,
+                    "Trade time": quote.trade_time,
+                    "Receipt time": quote.receipt_time,
+                    "As of": quote.as_of_time,
+                    "Feed": quote.feed,
+                    "Freshness": quote.status.value,
+                    "Exposure shares": exposure_shares,
+                    "Exposure value": exposure_shares * quote.price if quote.price else None,
+                    "Order state": ", ".join(state) if state else "none",
+                }
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+
+    order_columns = st.columns(2)
+    with order_columns[0]:
+        st.markdown("#### Open orders")
+        if open_allocations:
+            st.dataframe(
+                allocation_frame(open_allocations, portfolios), hide_index=True, width="stretch"
+            )
+        else:
+            st.caption("No open assigned orders.")
+    with order_columns[1]:
+        st.markdown("#### Recent fills")
+        recent_fills = [item for item in allocations if float(item.filled_qty) > 0][:20]
+        if recent_fills:
+            st.dataframe(
+                allocation_frame(recent_fills, portfolios), hide_index=True, width="stretch"
+            )
+        else:
+            st.caption("No recent assigned fills.")
+
+    st.markdown("#### Market context")
+    context_request = HistoricalDataRequest(
+        tuple(dict.fromkeys((*BROAD_MARKET_PROXIES, *SECTOR_PROXIES))),
+        date.today() - timedelta(days=400),
+        date.today(),
+        "benchmark_total_return",
+    )
+    try:
+        context = market_context_metrics(cached_historical_data(context_request))
+    except Exception:
+        context = pd.DataFrame()
+    if context.empty:
+        st.caption("Market-context history is unavailable.")
+    else:
+        percentage_columns = (
+            "Daily return",
+            "1M return",
+            "3M return",
+            "12M return",
+            "Drawdown",
+            "Realized volatility",
+            "Cross-proxy dispersion",
+        )
+        context = context.copy()
+        context[list(percentage_columns)] *= 100
+        st.dataframe(
+            context,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                name: st.column_config.NumberColumn(format="%.2f%%") for name in percentage_columns
+            },
+        )
+        st.caption(
+            "Components are disclosed individually: returns, 50-day trend, drawdown, 21-day "
+            "realized volatility, SPY correlation regime, and cross-proxy dispersion. No composite market score is used."
+        )
+
+
 def main() -> None:
     role = authenticate_access()
     if role is None:
@@ -2510,6 +2812,7 @@ def main() -> None:
     benchmark_closes, benchmark_note = get_alpha_beta_benchmark(master_start, master_end)
     labels = [
         "Overview",
+        "Monitor",
         "Compare",
         "Forecast",
         "Hypothetical",
@@ -2530,6 +2833,8 @@ def main() -> None:
             benchmark_closes,
         )
     with tabs[1]:
+        render_active_monitoring(selected_portfolios, closes, editable=owner)
+    with tabs[2]:
         render_compare(
             selected_portfolios,
             closes,
@@ -2537,16 +2842,16 @@ def main() -> None:
             master_end,
             benchmark_closes,
         )
-    with tabs[2]:
-        render_forecast(selected_portfolios, closes, owner=owner)
     with tabs[3]:
+        render_forecast(selected_portfolios, closes, owner=owner)
+    with tabs[4]:
         render_hypothetical_analysis(
             selected_portfolios,
             closes,
             benchmark_closes,
             editable=owner,
         )
-    with tabs[4]:
+    with tabs[5]:
         render_portfolio_admin(
             selected_portfolios,
             all_portfolios,
@@ -2554,9 +2859,9 @@ def main() -> None:
             master_end,
             editable=owner,
         )
-    with tabs[5]:
-        render_trade_admin(reporting_portfolios, editable=owner)
     with tabs[6]:
+        render_trade_admin(reporting_portfolios, editable=owner)
+    with tabs[7]:
         render_architecture()
     if benchmark_note:
         st.caption(f"SPY Alpha/Beta data is unavailable: {benchmark_note}")

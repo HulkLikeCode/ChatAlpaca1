@@ -169,6 +169,26 @@ Use a tiered active-session design:
 
 Persistent monitoring while the app is closed is out of scope for now. Streamlit is not a guaranteed persistent worker; interfaces should allow a future separate worker without requiring one in this phase.
 
+## Phase 12 tiered active-session monitoring
+
+`chat_alpaca.realtime` is the reusable monitoring boundary. It owns the 30-symbol Basic-plan
+stream cap, ordered subscription planning, one WebSocket lifecycle per active browser-session
+lease, bounded reconnect backoff, explicit disconnected-interval reconciliation, batched REST
+snapshots, a shared sliding-window request limiter, market-hours-aware refresh cadence, duplicate
+event rejection, and typed quote freshness/provenance. Selected or newly visible symbols receive an
+immediate snapshot even when subscription changes are still connecting.
+
+Intraday state is deliberately session-scoped and never updates holdings or accounting balances.
+Durable split-adjusted closes provide previous-close fallback through the existing historical-data
+repository. Abandoned leases are reaped on active reruns and explicit logout stops the connection;
+there is no persistent background worker and no uninterrupted closed-app or sleeping-device claim.
+
+The Monitor view presents an indicative IEX portfolio pulse, holding and portfolio daily
+contribution, largest movers, stale/missing symbols, assigned open orders and recent fills, symbol
+quote/trade detail, and controlled broad-market and sector proxy components. Returns, trend,
+drawdown, realized volatility, correlation regime, and dispersion remain individually disclosed;
+Phase 12 does not create a proprietary composite market score.
+
 ## Benchmarks and hypothetical trades
 
 Each internal portfolio should have a configurable benchmark blend, rather than only one benchmark symbol. Hypothetical trades remain separate from order submission unless the user explicitly transfers a proposal into an order.

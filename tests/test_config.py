@@ -33,3 +33,21 @@ def test_settings_load_separate_admin_and_user_passwords(
         assert settings.user_password == "user-secret"
     finally:
         get_settings.cache_clear()
+
+
+def test_realtime_settings_are_clamped_to_safe_entitlement_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REALTIME_STREAM_CAP", "100")
+    monkeypatch.setenv("REALTIME_REGULAR_SECONDS", "2")
+    monkeypatch.setenv("REALTIME_OFF_HOURS_SECONDS", "10")
+    monkeypatch.setenv("REALTIME_CALLS_PER_MINUTE", "999")
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        assert settings.realtime_stream_cap == 30
+        assert settings.realtime_regular_seconds == 30
+        assert settings.realtime_off_hours_seconds == 60
+        assert settings.realtime_calls_per_minute == 200
+    finally:
+        get_settings.cache_clear()
