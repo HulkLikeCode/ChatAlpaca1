@@ -101,7 +101,8 @@ def test_read_only_app_renders_all_views() -> None:
         item.value for item in app.markdown if item.value.startswith('<div class="portfolio-grid">')
     )
     assert portfolio_grid.count('<div class="portfolio-card">') > 1
-    assert "Cum. Dividends" in portfolio_grid
+    assert "TDT Div" in portfolio_grid
+    assert portfolio_grid.index("Cash:") < portfolio_grid.index("TDT Div:")
     assert "symbols" not in portfolio_grid
     assert "\n" not in portfolio_grid
     assert not app.get("file_uploader")

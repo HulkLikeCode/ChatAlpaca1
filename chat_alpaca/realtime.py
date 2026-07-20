@@ -26,6 +26,23 @@ LOGGER = logging.getLogger(__name__)
 STREAM_SYMBOL_CAP = 30
 BROAD_MARKET_PROXIES = ("SPY", "QQQ", "DIA", "IWM")
 SECTOR_PROXIES = ("XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU")
+MARKET_CONTEXT_NAMES = {
+    "SPY": "S&P 500",
+    "QQQ": "Nasdaq 100",
+    "DIA": "Dow 30",
+    "IWM": "Russell 2000",
+    "XLC": "Comm Svcs",
+    "XLY": "Cons Discret",
+    "XLP": "Cons Staples",
+    "XLE": "Energy",
+    "XLF": "Financials",
+    "XLV": "Health Care",
+    "XLI": "Industrials",
+    "XLB": "Materials",
+    "XLRE": "Real Estate",
+    "XLK": "Technology",
+    "XLU": "Utilities",
+}
 OPEN_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "replaced"}
 
 
@@ -144,8 +161,12 @@ def classify_quote(
             status=FreshnessStatus.STALE,
             staleness_reason="provider timestamp is missing",
         )
-    age = max(0.0, (observed - as_of).total_seconds())
     hours = market_hours_state(observed)
+    freshness_time = as_of
+    receipt_time = _aware(quote.receipt_time)
+    if quote.source == "snapshot" and not hours.is_regular_hours and receipt_time is not None:
+        freshness_time = receipt_time
+    age = max(0.0, (observed - freshness_time).total_seconds())
     if quote.symbol in stream_set and quote.source == "stream" and age <= stale_seconds:
         return replace(quote, status=FreshnessStatus.STREAMING, staleness_reason=None)
     if age <= recent_seconds or (not hours.is_regular_hours and age <= stale_seconds * 4):
@@ -712,6 +733,7 @@ class ActiveSessionMonitor:
         self.stream_cap = stream_cap
         self.plan = SubscriptionPlan((), (), {})
         self._selected_or_visible: set[str] = set()
+        self._initialized = False
 
     def refresh(
         self,
@@ -720,8 +742,10 @@ class ActiveSessionMonitor:
         previous_closes: Mapping[str, float] | None = None,
         now: datetime | None = None,
     ) -> SubscriptionPlan:
+        observed = _aware(now or datetime.now(timezone.utc))
         plan = prioritize_subscriptions(inputs, cap=self.stream_cap)
         self.quote_book.seed_previous_closes(previous_closes or {})
+        held = {normalize_symbol(symbol) for symbol in inputs.held_symbols}
         selected_or_visible = {
             *({normalize_symbol(inputs.selected_symbol)} if inputs.selected_symbol else set()),
             *(normalize_symbol(symbol) for symbol in inputs.visible_symbols),
@@ -730,9 +754,26 @@ class ActiveSessionMonitor:
         self._selected_or_visible = selected_or_visible
         self.websocket.start(plan.streamed)
         self.websocket.update_subscriptions(plan.streamed)
-        due = set(self.scheduler.due(plan.snapshot, now=now)) | newly_urgent
+        refresh_universe = set(plan.snapshot)
+        current = self.quote_book.records(held, streamed_symbols=plan.streamed, now=observed)
+        if not self._initialized or not market_hours_state(observed).is_regular_hours:
+            refresh_universe.update(held)
+        else:
+            refresh_universe.update(
+                symbol
+                for symbol in plan.streamed
+                if symbol in held
+                and current[symbol].status
+                in {
+                    FreshnessStatus.STALE,
+                    FreshnessStatus.PREVIOUS_CLOSE,
+                    FreshnessStatus.UNAVAILABLE,
+                }
+            )
+        due = set(self.scheduler.due(refresh_universe, now=observed)) | newly_urgent
         if due:
             self.snapshots.refresh(due)
+        self._initialized = True
         self.plan = plan
         return plan
 
@@ -837,6 +878,7 @@ def market_context_metrics(closes: pd.DataFrame) -> pd.DataFrame:
         peak = series.cummax()
         row: dict[str, object] = {
             "Symbol": symbol,
+            "Name": MARKET_CONTEXT_NAMES.get(symbol, symbol[:13]),
             "Daily return": returns.iloc[-1] if len(returns) else np.nan,
             "1M return": series.iloc[-1] / series.iloc[-min(22, len(series))] - 1
             if len(series) > 1

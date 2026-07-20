@@ -158,6 +158,25 @@ def test_stale_previous_close_and_streaming_classification() -> None:
     assert streaming.status == FreshnessStatus.STREAMING
 
 
+def test_off_hours_snapshot_uses_receipt_freshness_and_retains_market_as_of() -> None:
+    now = datetime(2026, 7, 20, 23, tzinfo=UTC)
+    market_time = datetime(2026, 7, 20, 19, 59, tzinfo=UTC)
+    refreshed = classify_quote(
+        QuoteRecord(
+            "AAPL",
+            latest_trade=200,
+            trade_time=market_time,
+            receipt_time=now,
+            as_of_time=market_time,
+            source="snapshot",
+        ),
+        now=now,
+    )
+
+    assert refreshed.status == FreshnessStatus.RECENTLY_REFRESHED
+    assert refreshed.as_of_time == market_time
+
+
 def test_mixed_stream_and_snapshot_values_build_one_indicative_pulse() -> None:
     portfolio = SimpleNamespace(
         name="Primary",
@@ -278,6 +297,39 @@ def test_monitor_refreshes_nonstreamed_holdings_and_newly_selected_symbol() -> N
     assert refreshed == [("AAPL", "MSFT"), ("MSFT",)]
 
 
+def test_all_streamed_holdings_receive_an_initial_snapshot_seed() -> None:
+    refreshed: list[tuple[str, ...]] = []
+    websocket = SimpleNamespace(
+        start=lambda symbols: None,
+        update_subscriptions=lambda symbols: None,
+        stop=lambda: None,
+    )
+    snapshots = SimpleNamespace(
+        refresh=lambda symbols: refreshed.append(tuple(sorted(symbols))) or ()
+    )
+    monitor = ActiveSessionMonitor(
+        websocket,
+        snapshots,
+        ActiveSessionRefreshScheduler(),
+        QuoteBook(),
+        stream_cap=2,
+    )
+
+    plan = monitor.refresh(
+        SubscriptionInputs(
+            held_symbols=frozenset({"AAPL", "MSFT"}),
+            position_values={"AAPL": 2, "MSFT": 1},
+            broad_market_proxies=(),
+            sector_proxies=(),
+        ),
+        now=datetime(2026, 7, 20, 14, tzinfo=UTC),
+    )
+
+    assert plan.snapshot == ()
+    assert set(plan.streamed) == {"AAPL", "MSFT"}
+    assert refreshed == [("AAPL", "MSFT")]
+
+
 def test_market_hours_regular_closed_and_holiday() -> None:
     regular = market_hours_state(datetime(2026, 7, 20, 14, tzinfo=UTC))
     after_hours = market_hours_state(datetime(2026, 7, 20, 22, tzinfo=UTC))
@@ -373,6 +425,8 @@ def test_market_context_discloses_components_without_a_score() -> None:
     result = market_context_metrics(closes)
 
     assert "Trend" in result
+    assert list(result.columns[:2]) == ["Symbol", "Name"]
+    assert result["Name"].str.len().max() <= 13
     assert "Drawdown" in result
     assert "Realized volatility" in result
     assert "Correlation regime" in result

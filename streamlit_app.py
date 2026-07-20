@@ -385,9 +385,8 @@ def render_portfolio_cards(
                     '<div class="portfolio-card">',
                     f'<div class="eyebrow">{escape(report.name)}</div>',
                     f'<div class="value">{report.value_label}</div>',
-                    f'<div class="detail">Cum. Dividends: '
-                    f"{dollars(report.cumulative_dividends)} · "
-                    f"{dollars(report.cash)} cash</div>",
+                    f'<div class="detail">Cash: {dollars(report.cash)} · '
+                    f"TDT Div: {dollars(report.cumulative_dividends)}</div>",
                     "</div>",
                 )
             )
@@ -2589,7 +2588,10 @@ def render_active_monitoring(
     visible = set(
         sorted(position_values, key=lambda symbol: (-abs(position_values[symbol]), symbol))[:12]
     )
-    selected_symbol = st.selectbox("Symbol detail", symbols, key="monitor_selected_symbol")
+    selected_symbol = st.session_state.get("monitor_selected_symbol", symbols[0])
+    if selected_symbol not in symbols:
+        selected_symbol = symbols[0]
+        st.session_state.monitor_selected_symbol = selected_symbol
     with session_scope() as session:
         allocations = list_allocations(session)
     open_allocations = [item for item in allocations if item.status in OPEN_ORDER_STATUSES]
@@ -2610,10 +2612,16 @@ def render_active_monitoring(
         try:
             plan = monitor.refresh(inputs, previous_closes=previous_closes)
             records = monitor.records(symbols)
-            stream_state = "connected" if monitor.websocket.connected else "connecting/reconnecting"
+            stream_state = (
+                "stream session active"
+                if monitor.websocket.connected
+                else "stream session starting/reconnecting"
+            )
             st.caption(
                 f"Alpaca {settings.alpaca_data_feed.upper()} · {stream_state} · "
-                f"{len(plan.streamed)} streamed / {len(plan.snapshot)} REST fallback. "
+                f"{len(plan.streamed)} stream-priority / "
+                f"{len(plan.snapshot)} scheduled REST fallback. "
+                "Initial and stale stream symbols use snapshot reconciliation. "
                 "IEX-derived values are indicative, not consolidated-market values."
             )
             if monitor.websocket.last_error:
@@ -2711,31 +2719,35 @@ def render_active_monitoring(
     )
     state = [item.status for item in allocations if item.symbol == selected_symbol]
     st.markdown("#### Symbol detail")
-    st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "Symbol": selected_symbol,
-                    "Latest trade": quote.latest_trade,
-                    "Bid": quote.bid,
-                    "Ask": quote.ask,
-                    "Midpoint": quote.midpoint,
-                    "Spread": quote.spread,
-                    "Quote time": quote.quote_time,
-                    "Trade time": quote.trade_time,
-                    "Receipt time": quote.receipt_time,
-                    "As of": quote.as_of_time,
-                    "Feed": quote.feed,
-                    "Freshness": quote.status.value,
-                    "Exposure shares": exposure_shares,
-                    "Exposure value": exposure_shares * quote.price if quote.price else None,
-                    "Order state": ", ".join(state) if state else "none",
-                }
-            ]
-        ),
-        hide_index=True,
-        width="stretch",
-    )
+    detail_columns = st.columns([1, 4], vertical_alignment="center")
+    with detail_columns[0]:
+        st.selectbox("Symbol", symbols, key="monitor_selected_symbol")
+    with detail_columns[1]:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Symbol": selected_symbol,
+                        "Latest trade": quote.latest_trade,
+                        "Bid": quote.bid,
+                        "Ask": quote.ask,
+                        "Midpoint": quote.midpoint,
+                        "Spread": quote.spread,
+                        "Quote time": quote.quote_time,
+                        "Trade time": quote.trade_time,
+                        "Receipt time": quote.receipt_time,
+                        "As of": quote.as_of_time,
+                        "Feed": quote.feed,
+                        "Freshness": quote.status.value,
+                        "Exposure shares": exposure_shares,
+                        "Exposure value": exposure_shares * quote.price if quote.price else None,
+                        "Order state": ", ".join(state) if state else "none",
+                    }
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
 
     order_columns = st.columns(2)
     with order_columns[0]:

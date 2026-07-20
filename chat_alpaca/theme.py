@@ -16,6 +16,14 @@ THEME_CSS = """
     #05060a;
   color: var(--ink);
 }
+header[data-testid="stHeader"] {
+  opacity: 0;
+  transition: opacity .18s ease-in-out;
+}
+header[data-testid="stHeader"]:hover,
+header[data-testid="stHeader"]:focus-within {
+  opacity: 1;
+}
 .block-container {max-width: 1380px; padding-top: .7rem; padding-bottom: 3rem;}
 h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
 [data-testid="stCaptionContainer"] {margin-top: -.2rem; margin-bottom: -.35rem;}
