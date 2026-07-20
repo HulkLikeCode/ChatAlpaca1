@@ -12,6 +12,7 @@ from chat_alpaca.analytics import (
     consolidated_holdings,
 )
 from chat_alpaca.bootstrap import initialize_application
+from chat_alpaca.classification import resolve_security_metadata
 from chat_alpaca.commands import (
     TransactionCommand,
     build_transaction_draft,
@@ -63,6 +64,14 @@ from chat_alpaca.reports import (
     assemble_portfolio_card_reports,
     comparison_acquisition_plan,
     portfolio_acquisition_request,
+)
+from chat_alpaca.scenarios import (
+    DatasetReference,
+    ScenarioAssumptions,
+    ScenarioType,
+    run_deterministic_scenario,
+    save_scenario_run,
+    sensitivity_grid,
 )
 from chat_alpaca.theme import PLOT_COLORS, THEME_CSS
 from chat_alpaca.trading import (
@@ -674,7 +683,9 @@ def _apply_forecast_preset() -> None:
     st.session_state.forecast_annual_volatility = annual_volatility * 100
 
 
-def render_forecast(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
+def render_forecast(
+    portfolios: list[Portfolio], closes: pd.DataFrame, *, owner: bool = False
+) -> None:
     """Render public, assumption-driven long-term portfolio planning scenarios."""
     if not portfolios:
         st.caption("No portfolios are available for a projection.")
@@ -842,6 +853,242 @@ def render_forecast(portfolios: list[Portfolio], closes: pd.DataFrame) -> None:
         "your editable return, volatility, and contribution assumptions; past performance does "
         "not guarantee future results. The range widens substantially over longer horizons."
     )
+    render_deterministic_scenarios(scoped_portfolios, closes, owner=owner)
+
+
+SCENARIO_LABELS = {
+    ScenarioType.BROAD_MARKET_DECLINE: "Immediate broad-market decline",
+    ScenarioType.HOLDING_DECLINE: "Holding-specific decline",
+    ScenarioType.SECTOR_DECLINE: "Sector decline",
+    ScenarioType.DIVIDEND_REDUCTION: "Dividend reduction",
+    ScenarioType.CONTRIBUTION_INTERRUPTION: "Contribution interruption",
+    ScenarioType.INFLATION_INCREASE: "Inflation increase",
+    ScenarioType.LOW_RETURN_PERIOD: "Low-return period",
+    ScenarioType.LOST_DECADE: "Lost decade",
+    ScenarioType.RETIREMENT_DATE_DECLINE: "Retirement-date decline",
+    ScenarioType.HISTORICAL_REPLAY: "Historical replay",
+}
+
+
+def render_deterministic_scenarios(
+    portfolios: list[Portfolio], closes: pd.DataFrame, *, owner: bool
+) -> None:
+    """Render the focused Phase 7 scenario view; calculations remain in the service module."""
+    with st.expander("Deterministic scenario analysis", expanded=False):
+        st.caption(
+            "One fixed set of assumptions is applied reproducibly. This view does not run "
+            "bootstrap or Monte Carlo models."
+        )
+        selected_type = st.selectbox(
+            "Deterministic scenario",
+            list(SCENARIO_LABELS),
+            format_func=lambda value: SCENARIO_LABELS[value],
+            key="deterministic_scenario_type",
+        )
+        symbols = sorted({lot.symbol for portfolio in portfolios for lot in portfolio.holdings})
+        shock_label = (
+            "Dividend reduction (%)"
+            if selected_type == ScenarioType.DIVIDEND_REDUCTION
+            else "Market decline (%)"
+        )
+        market_decline = (
+            -st.number_input(
+                shock_label,
+                min_value=0.0,
+                max_value=100.0,
+                value=20.0,
+                step=1.0,
+                key="scenario_market_decline",
+            )
+            / 100
+        )
+        inflation_increase = (
+            st.number_input(
+                "Additional inflation (%)",
+                min_value=0.0,
+                max_value=25.0,
+                value=2.0,
+                step=0.25,
+                key="scenario_inflation_increase",
+            )
+            / 100
+            if selected_type == ScenarioType.INFLATION_INCREASE
+            else 0.02
+        )
+        low_return = (
+            st.number_input(
+                "Low-period annual return (%)",
+                min_value=-99.0,
+                max_value=25.0,
+                value=1.0,
+                step=0.25,
+                key="scenario_low_return",
+            )
+            / 100
+            if selected_type in {ScenarioType.LOW_RETURN_PERIOD, ScenarioType.LOST_DECADE}
+            else 0.01
+        )
+        interruption_months = (
+            int(
+                st.number_input(
+                    "Contribution interruption (months)",
+                    min_value=0,
+                    max_value=480,
+                    value=12,
+                    step=1,
+                    key="scenario_interruption_months",
+                )
+            )
+            if selected_type == ScenarioType.CONTRIBUTION_INTERRUPTION
+            else 12
+        )
+        holding_symbol = (
+            st.selectbox("Holding", symbols, key="scenario_holding")
+            if selected_type == ScenarioType.HOLDING_DECLINE and symbols
+            else None
+        )
+        sector = None
+        sectors: dict[str, str] = {}
+        with session_scope() as session:
+            for symbol in symbols:
+                metadata = resolve_security_metadata(session, symbol)
+                sectors[symbol] = metadata.sector or "Unclassified"
+        available_sectors = sorted(set(sectors.values()))
+        if selected_type == ScenarioType.SECTOR_DECLINE:
+            sector = st.selectbox("Sector", available_sectors, key="scenario_sector")
+        assumptions = ScenarioAssumptions(
+            selected_type,
+            market_decline=market_decline,
+            holding_symbol=holding_symbol,
+            holding_decline=market_decline,
+            sector=sector,
+            sector_decline=market_decline,
+            dividend_reduction=abs(market_decline),
+            contribution_amount=float(st.session_state.get("forecast_monthly_contribution", 0)),
+            interruption_months=interruption_months,
+            inflation_increase=inflation_increase,
+            expected_return=float(st.session_state.get("forecast_annual_return", 7)) / 100,
+            low_return=low_return,
+            horizon_years=int(st.session_state.get("forecast_horizon", 10)),
+            retirement_date=date.today().replace(
+                year=date.today().year + min(5, int(st.session_state.get("forecast_horizon", 10)))
+            ),
+        )
+        dataset_references = [
+            DatasetReference(dataset_id, "historical_replay")
+            for dataset_id in closes.attrs.get("dataset_ids", ())
+        ]
+        try:
+            result = run_deterministic_scenario(
+                portfolios,
+                closes,
+                assumptions,
+                sectors=sectors,
+                historical_prices=(
+                    closes if selected_type == ScenarioType.HISTORICAL_REPLAY else None
+                ),
+                dataset_references=dataset_references,
+            )
+        except ValueError as exc:
+            st.warning(str(exc))
+            return
+        metrics = st.columns(3)
+        metrics[0].metric("Baseline", dollars(result.baseline_value))
+        metrics[1].metric("Scenario", dollars(result.scenario_value))
+        metrics[2].metric("Household impact", dollars(result.total_household_impact))
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"Portfolio": name, "Impact": impact}
+                    for name, impact in result.impact_by_portfolio.items()
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+            column_config={"Impact": st.column_config.NumberColumn(format="$%,.2f")},
+        )
+        detail = pd.DataFrame(
+            [
+                {"Dimension": "Holding", "Name": name, "Impact": impact}
+                for name, impact in result.impact_by_holding.items()
+            ]
+            + [
+                {"Dimension": "Sector", "Name": name, "Impact": impact}
+                for name, impact in result.impact_by_sector.items()
+            ]
+            + [
+                {"Dimension": "Account type", "Name": name, "Impact": impact}
+                for name, impact in result.account_type_effects.items()
+            ]
+        )
+        st.dataframe(
+            detail,
+            hide_index=True,
+            width="stretch",
+            column_config={"Impact": st.column_config.NumberColumn(format="$%,.2f")},
+        )
+        st.markdown("#### Largest loss contributors")
+        st.dataframe(
+            pd.DataFrame(result.largest_loss_contributors, columns=["Contributor", "Impact"]),
+            hide_index=True,
+            width="stretch",
+            column_config={"Impact": st.column_config.NumberColumn(format="$%,.2f")},
+        )
+        st.markdown("#### Assumptions")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"Assumption": name.replace("_", " ").title(), "Value": str(value)}
+                    for name, value in result.assumptions.items()
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+        st.markdown("#### Sensitivity")
+        sensitivity_values: dict[str, list[object]]
+        if selected_type == ScenarioType.HISTORICAL_REPLAY:
+            sensitivity_values = {}
+        elif selected_type == ScenarioType.INFLATION_INCREASE:
+            sensitivity_values = {"inflation": [0.02, 0.03, 0.04]}
+        elif selected_type == ScenarioType.CONTRIBUTION_INTERRUPTION:
+            contribution = assumptions.contribution_amount
+            sensitivity_values = {"contribution_amount": [0.0, contribution, contribution * 1.25]}
+        elif selected_type in {ScenarioType.LOW_RETURN_PERIOD, ScenarioType.LOST_DECADE}:
+            sensitivity_values = {"expected_return": [0.04, 0.07, 0.10]}
+        else:
+            sensitivity_values = {"market_decline": [-0.10, -0.20, -0.30]}
+        if sensitivity_values:
+            sensitivity = sensitivity_grid(
+                portfolios,
+                closes,
+                assumptions,
+                sensitivity_values,
+                sectors=sectors,
+                historical_prices=(
+                    closes if selected_type == ScenarioType.HISTORICAL_REPLAY else None
+                ),
+                dataset_references=dataset_references,
+            )
+            st.dataframe(sensitivity, hide_index=True, width="stretch")
+        else:
+            st.caption("Historical replay uses its fixed available prior-period observations.")
+        st.caption(
+            f"Coverage: {result.coverage['priced_holdings']} priced lots. "
+            f"Model {result.model_version}; validation status is unvalidated unless an explicit "
+            "model review records otherwise."
+        )
+        for warning in result.warnings:
+            st.warning(warning)
+        if owner and st.button("Save scenario run", key="save_deterministic_scenario"):
+            with session_scope() as session:
+                saved = save_scenario_run(
+                    session,
+                    portfolios,
+                    result,
+                    dataset_references=dataset_references,
+                )
+            st.info(f"Saved forecast run #{saved.id}.")
 
 
 def transaction_frame(
@@ -1720,7 +1967,7 @@ def main() -> None:
             master_end,
         )
     with tabs[2]:
-        render_forecast(selected_portfolios, closes)
+        render_forecast(selected_portfolios, closes, owner=owner)
     if owner:
         with tabs[3]:
             render_portfolio_admin(

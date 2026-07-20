@@ -15,6 +15,8 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
 - Public 1–10 year planning projections with editable scenarios, monthly contributions, percentile bands, and target probabilities
+- Saved, reproducible deterministic stress scenarios with household, portfolio, holding, sector,
+  account-type, baseline, coverage, warning, and sensitivity output
 - Password-protected portfolio editor and assigned Alpaca order ticket
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
 - Combined sortable transaction management with portfolio/type/date filters, totals, and guarded edits/deletes
@@ -115,8 +117,9 @@ alembic downgrade -1
 ```
 
 The first revision is the safely adoptable Phase 2 baseline. Phase 3 adds the historical market-data
-tables, and Phase 6 adds account classifications, effective-dated benchmark components, security
-metadata, and ETF sector snapshots. Back up the database before downgrading. Set `DATABASE_URL` to select
+tables, Phase 6 adds account classifications, effective-dated benchmark components, security
+metadata, and ETF sector snapshots, and Phase 7 adds saved forecast summaries, exact dataset
+references, and model-validation evidence. Back up the database before downgrading. Set `DATABASE_URL` to select
 the SQLite or PostgreSQL target; PostgreSQL URLs are normalized to the installed psycopg 3 driver.
 
 ## Portfolio transactions
@@ -165,6 +168,14 @@ warnings, and `chat_alpaca.forecasting` constructs explicit forecast requests. W
 are unavailable, a planning scenario may retain the existing cost-basis-plus-cash workflow only
 with that fallback and its coverage disclosed. Application database migration, seeding, and initial
 portfolio loading are coordinated by `chat_alpaca.bootstrap.initialize_application` outside the UI.
+
+Phase 7 adds deterministic scenario analysis in `chat_alpaca.scenarios`. It supports broad-market,
+holding, sector, dividend, contribution, inflation, low-return, lost-decade, retirement-date, and
+historical-replay stresses plus tabular sensitivity grids. Runs persist the model/version, exact
+ledger hash and dataset references, assumptions, coverage, proxy disclosure, validation state, and
+summary outputs. Deterministic scenarios generate no raw paths. Automated test success is retained
+as validation evidence but cannot by itself label a model validated. Bootstrap and Monte Carlo
+forecasting remain deferred.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
 two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or

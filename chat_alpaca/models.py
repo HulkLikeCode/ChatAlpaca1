@@ -52,6 +52,88 @@ class Portfolio(Base):
     )
 
 
+class ForecastRun(Base):
+    """A reproducible saved forecast summary; raw simulated paths never belong here."""
+
+    __tablename__ = "forecast_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'completed', 'failed')", name="ck_forecast_run_status"
+        ),
+        CheckConstraint(
+            "validation_status IN ('unvalidated', 'in_review', 'validated', 'rejected')",
+            name="ck_forecast_run_validation_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    model_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
+    )
+    portfolio_scope: Mapped[str] = mapped_column(Text, nullable=False)
+    ledger_state_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    assumptions: Mapped[str] = mapped_column(Text, nullable=False)
+    data_coverage: Mapped[str] = mapped_column(Text, nullable=False)
+    proxy_use: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="completed")
+    validation_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unvalidated"
+    )
+    summary_outputs: Mapped[str] = mapped_column(Text, nullable=False)
+    scenario_bands: Mapped[str | None] = mapped_column(Text)
+    dataset_references: Mapped[list[ForecastRunDataset]] = relationship(
+        back_populates="forecast_run", cascade="all, delete-orphan"
+    )
+
+
+class ForecastRunDataset(Base):
+    """The exact persisted market dataset used by a forecast run."""
+
+    __tablename__ = "forecast_run_datasets"
+    __table_args__ = (
+        UniqueConstraint("forecast_run_id", "dataset_id", name="uq_forecast_run_dataset"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    forecast_run_id: Mapped[int] = mapped_column(
+        ForeignKey("forecast_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("market_datasets.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    purpose: Mapped[str] = mapped_column(String(48), nullable=False)
+    forecast_run: Mapped[ForecastRun] = relationship(back_populates="dataset_references")
+    dataset: Mapped[MarketDataset] = relationship()
+
+
+class ModelValidation(Base):
+    """Governance evidence for a model version, independent from execution success."""
+
+    __tablename__ = "model_validations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('unvalidated', 'in_review', 'validated', 'rejected')",
+            name="ck_model_validation_status",
+        ),
+        UniqueConstraint("model_type", "model_version", name="uq_model_validation_version"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    model_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="unvalidated")
+    automated_tests_passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    limitations: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    reviewer: Mapped[str | None] = mapped_column(String(120))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class HoldingLot(Base):
     __tablename__ = "holding_lots"
 

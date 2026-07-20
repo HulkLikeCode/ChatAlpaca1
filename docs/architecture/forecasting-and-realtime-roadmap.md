@@ -51,6 +51,22 @@ The retirement model will account for Traditional IRA, Roth IRA, and taxable-acc
 
 Each saved forecast run must retain model type and version, assumptions, data coverage, data sources, adjustment methods, simulation count, random seed, creation timestamp, and validation status.
 
+## Phase 7 deterministic scenarios
+
+`chat_alpaca.scenarios` is the reusable Phase 7 boundary. It applies fixed, explicit assumptions to
+ledger-derived holdings and cash and refuses scenarios when required current or replay prices are
+missing. Results retain household, internal-portfolio, holding, sector, and account-type effects,
+largest loss contributors, assumptions, coverage, proxy warnings, and baseline comparisons.
+
+Saved deterministic runs contain summary outputs and deterministic baseline/scenario bands only;
+there is no raw path storage. Market inputs are linked to immutable `market_datasets`, and a
+canonical SHA-256 hash identifies the exact scoped transaction-ledger state. The generic validation
+record and interface are intentionally usable by later stochastic models. Passing automated tests
+may move a model into review, but only an explicit reviewed governance decision can label it
+validated.
+
+Historical block bootstrap and correlated parametric Monte Carlo remain outside Phase 7.
+
 ## Real-time monitoring
 
 The current roadmap targets fewer than 400 distinct held symbols, with an expected stock-to-ETF ratio near 6:1. Favor broad monitoring across held symbols over exact continuous streaming for a small subset.

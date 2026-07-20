@@ -409,6 +409,10 @@ class SqlHistoricalDataRepository:
                 warnings.extend(json.loads(dataset.validation_warnings))
             except (json.JSONDecodeError, TypeError):
                 warnings.append(f"Dataset {dataset.id} has unreadable stored validation warnings.")
+        frame.attrs["dataset_ids"] = tuple(sorted(chosen_datasets))
+        frame.attrs["source"] = _collapsed(sources) or "none"
+        frame.attrs["feed"] = _collapsed(feeds)
+        frame.attrs["warnings"] = tuple(dict.fromkeys(warnings))
         complete = not missing_symbols and not missing_ranges
         usability = (
             "complete for the requested calculation"

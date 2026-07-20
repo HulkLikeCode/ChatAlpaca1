@@ -16,7 +16,7 @@ from chat_alpaca.db import get_engine
 from chat_alpaca.models import Base
 
 BASELINE_REVISION = "20260719_0001"
-CURRENT_REVISION = "20260719_0003"
+CURRENT_REVISION = "20260719_0004"
 ALEMBIC_TABLE = "alembic_version"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_TABLES = {

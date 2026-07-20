@@ -44,6 +44,9 @@ EXPECTED_TABLES = {
     "portfolio_benchmark_components",
     "security_metadata",
     "etf_sector_weights",
+    "forecast_runs",
+    "forecast_run_datasets",
+    "model_validations",
 }
 
 
