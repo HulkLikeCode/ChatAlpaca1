@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 from functools import lru_cache
 
 import pandas as pd
 from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
 
 from chat_alpaca.config import Settings, get_settings
+from chat_alpaca.db import session_scope
+from chat_alpaca.historical_data import (
+    AlpacaHistoricalProvider,
+    HistoricalCoverageResult,
+    HistoricalDataService,
+    HistoricalRequest,
+    PriceAdjustment,
+    SqlHistoricalDataRepository,
+)
+from chat_alpaca.migrations import upgrade_database
 from chat_alpaca.portfolio_service import normalize_symbol
 
 
@@ -53,34 +61,36 @@ def get_daily_closes(
     normalized = sorted({normalize_symbol(symbol) for symbol in symbols})
     if not normalized:
         return pd.DataFrame()
-    request = StockBarsRequest(
-        symbol_or_symbols=normalized,
-        timeframe=TimeFrame.Day,
-        start=datetime.combine(start, time.min, tzinfo=timezone.utc),
-        end=(
-            datetime.combine(end, time.max, tzinfo=timezone.utc)
-            if end
-            else datetime.now(timezone.utc)
-        ),
-        adjustment=adjustment,
-        feed=_feed(get_settings()),
+    result = get_historical_daily_bars(
+        normalized,
+        start,
+        end,
+        adjustment={
+            Adjustment.RAW: PriceAdjustment.RAW,
+            Adjustment.SPLIT: PriceAdjustment.SPLIT,
+            Adjustment.DIVIDEND: PriceAdjustment.DIVIDEND,
+            Adjustment.ALL: PriceAdjustment.TOTAL_RETURN,
+        }[adjustment],
     )
-    frame = _client().get_stock_bars(request).df
-    if frame.empty:
-        return pd.DataFrame(columns=normalized)
-    if isinstance(frame.index, pd.MultiIndex):
-        closes = frame["close"].unstack(level="symbol")
-    else:
-        closes = frame[["close"]]
-        closes.columns = normalized[:1]
-    closes.index = pd.to_datetime(closes.index, utc=True).tz_convert(None).normalize()
-    closes = closes.sort_index()
-    closes.attrs["last_price_dates"] = {
-        symbol: series.dropna().index[-1].date()
-        for symbol, series in closes.items()
-        if not series.dropna().empty
-    }
-    return closes.ffill()
+    return result.data
+
+
+def get_historical_daily_bars(
+    symbols: list[str],
+    start: date,
+    end: date | None = None,
+    *,
+    adjustment: PriceAdjustment = PriceAdjustment.SPLIT,
+    refresh: bool = True,
+) -> HistoricalCoverageResult:
+    """Return durable closes plus typed provenance and coverage diagnostics."""
+    requested_end = end or datetime.now(timezone.utc).date()
+    request = HistoricalRequest(tuple(symbols), start, requested_end, adjustment)
+    upgrade_database()
+    with session_scope() as session:
+        repository = SqlHistoricalDataRepository(session)
+        provider = AlpacaHistoricalProvider(client=_client(), settings=get_settings())
+        return HistoricalDataService(repository, provider).get(request, refresh=refresh)
 
 
 def get_benchmark_daily_closes(

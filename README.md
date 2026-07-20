@@ -6,6 +6,7 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 
 - Up to 20 portfolios with an uncapped number of tracked symbols
 - Transaction-backed cash, FIFO lots, cost basis, and market value
+- Durable, provider-neutral daily market-data cache with typed coverage and provenance
 - Seeded `KCs Traditional IRA`, `KCs Roth IRA`, and `KC and Papa` portfolios
 - Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
@@ -29,6 +30,13 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 The dashboard uses an individual Alpaca Trading API account on the free Basic subscription. For US stocks and ETFs, the plan provides IEX real-time market data, historical data since 2016 with the most recent 15 minutes unavailable through the historical API, and 200 historical API calls per minute. See Alpaca's [Trading API subscription documentation](https://docs.alpaca.markets/us/docs/about-market-data-api#trading-api-subscriptions) for current plan details.
 
 Development will continually expand historical analysis and forecasting capabilities, using as much Alpaca API data as is reasonable within the account's data entitlement, coverage, and rate-limit constraints. For critical historical-market-data gaps, manually maintained Stooq uploads may be used as an occasional contingency source.
+
+Historical portfolio accounting uses split-adjusted, non-dividend-adjusted prices because dividends
+are explicit ledger transactions. Benchmark total-return comparisons may request dividend-adjusted
+data. Raw, split-adjusted, dividend-adjusted, and total-return datasets remain separate, and missing
+daily observations remain missing. Alpaca responses and occasional CSV imports are stored with
+source, feed, coverage, retrieval time, adjustment, quality, priority, warnings, and credential-free
+request metadata; imports additionally retain a SHA-256 file hash.
 
 A future state may add an Alpaca paper account that mirrors portfolios currently held at Schwab and Fidelity, streamlining real-time updates. Until then, Schwab and Fidelity CSV transaction imports are available as occasional reconciliation patches rather than the preferred operating model.
 
@@ -102,8 +110,8 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-The current baseline is the first revision, so rolling it back drops all application tables and
-their data. Back up the database before running `alembic downgrade -1`. Set `DATABASE_URL` to select
+The first revision is the safely adoptable Phase 2 baseline. Phase 3 adds the historical market-data
+tables in a second revision. Back up the database before downgrading. Set `DATABASE_URL` to select
 the SQLite or PostgreSQL target; PostgreSQL URLs are normalized to the installed psycopg 3 driver.
 
 ## Portfolio transactions
@@ -178,7 +186,10 @@ The production database must use TLS according to the database provider's connec
 .venv/bin/python -m pytest -q
 ```
 
-Tests cover seeded statement rebuilding, duplicate-safe imports, FIFO sales, cash ledger entries, uncapped holdings, analytics, idempotent order-fill allocation, and a credential-free Streamlit render.
+Tests cover seeded statement rebuilding, duplicate-safe imports, FIFO sales, cash ledger entries,
+uncapped holdings, analytics, historical-data provenance and precedence, adjustment separation,
+incremental refresh, CSV validation, proxy records, idempotent order-fill allocation, and a
+credential-free Streamlit render.
 
 ## Deliberately deferred
 

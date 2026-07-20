@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -160,3 +170,146 @@ class OrderAllocation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
     )
+
+
+class Instrument(Base):
+    """A provider-neutral, canonical market instrument."""
+
+    __tablename__ = "instruments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    canonical_symbol: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    asset_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    exchange: Mapped[str | None] = mapped_column(String(32))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    base_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
+    aliases: Mapped[list[SymbolAlias]] = relationship(
+        back_populates="instrument", cascade="all, delete-orphan"
+    )
+
+
+class SymbolAlias(Base):
+    __tablename__ = "symbol_aliases"
+    __table_args__ = (
+        UniqueConstraint("alias", "effective_from", name="uq_symbol_alias_effective_from"),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_from IS NULL OR effective_to >= effective_from",
+            name="ck_symbol_alias_dates",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    alias: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    effective_from: Mapped[date | None] = mapped_column(Date)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    instrument: Mapped[Instrument] = relationship(back_populates="aliases")
+
+
+class MarketDataset(Base):
+    """Immutable provenance for one acquired or imported market-data payload."""
+
+    __tablename__ = "market_datasets"
+    __table_args__ = (
+        UniqueConstraint("imported_file_hash", name="uq_market_dataset_file_hash"),
+        CheckConstraint(
+            "coverage_end IS NULL OR coverage_start IS NULL OR coverage_end >= coverage_start",
+            name="ck_market_dataset_coverage_dates",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(48), nullable=False)
+    feed: Mapped[str | None] = mapped_column(String(32))
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    adjustment_method: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    coverage_start: Mapped[date | None] = mapped_column(Date)
+    coverage_end: Mapped[date | None] = mapped_column(Date)
+    quality_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    validation_warnings: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    override_priority: Mapped[int] = mapped_column(nullable=False, default=0, index=True)
+    imported_file_hash: Mapped[str | None] = mapped_column(String(64))
+    request_metadata: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    bars: Mapped[list[DailyBar]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan"
+    )
+
+
+class DailyBar(Base):
+    __tablename__ = "daily_bars"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_id", "instrument_id", "bar_date", name="uq_daily_bar_dataset_instrument_date"
+        ),
+        CheckConstraint(
+            "open > 0 AND high > 0 AND low > 0 AND close > 0", name="ck_daily_bar_prices"
+        ),
+        CheckConstraint("high >= open AND high >= close AND high >= low", name="ck_daily_bar_high"),
+        CheckConstraint("low <= open AND low <= close AND low <= high", name="ck_daily_bar_low"),
+        CheckConstraint("volume IS NULL OR volume >= 0", name="ck_daily_bar_volume"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    bar_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    open: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    volume: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    trade_count: Mapped[int | None] = mapped_column()
+    vwap: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("market_datasets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dataset: Mapped[MarketDataset] = relationship(back_populates="bars")
+    instrument: Mapped[Instrument] = relationship()
+
+
+class ProxyAssignment(Base):
+    __tablename__ = "proxy_assignments"
+    __table_args__ = (
+        CheckConstraint(
+            "(proxy_instrument_id IS NOT NULL AND proxy_series IS NULL) OR "
+            "(proxy_instrument_id IS NULL AND proxy_series IS NOT NULL)",
+            name="ck_proxy_assignment_target",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="ck_proxy_assignment_dates",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="ck_proxy_assignment_confidence",
+        ),
+        CheckConstraint(
+            "assignment_source IN ('manual', 'automatic')",
+            name="ck_proxy_assignment_source",
+        ),
+        UniqueConstraint(
+            "target_instrument_id", "effective_from", name="uq_proxy_assignment_effective_from"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    target_instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    proxy_instrument_id: Mapped[int | None] = mapped_column(
+        ForeignKey("instruments.id", ondelete="RESTRICT"), index=True
+    )
+    proxy_series: Mapped[str | None] = mapped_column(String(80))
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    data_sufficiency_rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    assignment_source: Mapped[str] = mapped_column(String(12), nullable=False)
+    target_instrument: Mapped[Instrument] = relationship(foreign_keys=[target_instrument_id])
+    proxy_instrument: Mapped[Instrument | None] = relationship(foreign_keys=[proxy_instrument_id])

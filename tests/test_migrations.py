@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from chat_alpaca.bootstrap import bootstrap_database
 from chat_alpaca.migrations import (
     BASELINE_REVISION,
+    CURRENT_REVISION,
     PROJECT_ROOT,
     SchemaAdoptionError,
     upgrade_database,
@@ -35,6 +36,11 @@ EXPECTED_TABLES = {
     "portfolio_transactions",
     "portfolios",
     "transaction_overrides",
+    "instruments",
+    "symbol_aliases",
+    "market_datasets",
+    "daily_bars",
+    "proxy_assignments",
 }
 
 
@@ -49,7 +55,7 @@ def test_empty_sqlite_database_upgrades_to_current_schema(tmp_path) -> None:
     upgrade_database(engine)
 
     assert set(inspect(engine).get_table_names()) == EXPECTED_TABLES
-    assert _revision(engine) == BASELINE_REVISION
+    assert _revision(engine) == CURRENT_REVISION
 
 
 def test_populated_pre_alembic_database_is_adopted_without_data_loss(tmp_path) -> None:
@@ -93,7 +99,21 @@ def test_populated_pre_alembic_database_is_adopted_without_data_loss(tmp_path) -
             [PHASE_1_MIGRATION_KEY, PHASE_1_DATE_CORRECTION_KEY]
         )
         assert all(marker.applied_at == applied_at.replace(tzinfo=None) for marker in markers)
-    assert _revision(engine) == BASELINE_REVISION
+    assert _revision(engine) == CURRENT_REVISION
+
+
+def test_phase_two_legacy_schema_is_adopted_then_upgraded(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'phase-two-legacy.db'}")
+    with engine.begin() as connection:
+        config = Config(PROJECT_ROOT / "alembic.ini")
+        config.attributes["connection"] = connection
+        command.upgrade(config, BASELINE_REVISION)
+        connection.execute(text("DROP TABLE alembic_version"))
+
+    upgrade_database(engine)
+
+    assert set(inspect(engine).get_table_names()) == EXPECTED_TABLES
+    assert _revision(engine) == CURRENT_REVISION
 
 
 def test_migration_execution_is_repeatable(tmp_path) -> None:
@@ -105,7 +125,7 @@ def test_migration_execution_is_repeatable(tmp_path) -> None:
     with engine.connect() as connection:
         versions = connection.scalar(text("SELECT count(*) FROM alembic_version"))
     assert versions == 1
-    assert _revision(engine) == BASELINE_REVISION
+    assert _revision(engine) == CURRENT_REVISION
 
 
 def test_incompatible_existing_schema_is_rejected_without_stamping(tmp_path) -> None:
@@ -134,7 +154,7 @@ def test_application_bootstrap_migrates_before_seeding(tmp_path, monkeypatch) ->
 
     bootstrap_database(engine)
 
-    assert observed == [(EXPECTED_TABLES, BASELINE_REVISION)]
+    assert observed == [(EXPECTED_TABLES, CURRENT_REVISION)]
 
 
 def test_application_bootstrap_seeds_after_schema_upgrade(tmp_path) -> None:
@@ -187,3 +207,4 @@ def test_baseline_generates_postgresql_compatible_sql() -> None:
     assert "CREATE TABLE portfolio_transactions" in sql
     assert "SERIAL NOT NULL" in sql
     assert f"'{BASELINE_REVISION}'" in sql
+    assert f"'{CURRENT_REVISION}'" in sql

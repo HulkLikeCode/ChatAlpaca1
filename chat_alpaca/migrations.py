@@ -16,8 +16,18 @@ from chat_alpaca.db import get_engine
 from chat_alpaca.models import Base
 
 BASELINE_REVISION = "20260719_0001"
+CURRENT_REVISION = "20260719_0002"
 ALEMBIC_TABLE = "alembic_version"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BASELINE_TABLES = {
+    "data_migrations",
+    "holding_lots",
+    "ledger_entries",
+    "order_allocations",
+    "portfolio_transactions",
+    "portfolios",
+    "transaction_overrides",
+}
 
 
 class SchemaAdoptionError(RuntimeError):
@@ -129,11 +139,17 @@ def _validate_constraints(connection: Connection, table: Table) -> list[str]:
     return issues
 
 
-def validate_schema_for_adoption(connection: Connection) -> None:
+def validate_schema_for_adoption(connection: Connection) -> str:
     """Validate structure only; never inspect application row values."""
     inspector = inspect(connection)
     actual_tables = set(inspector.get_table_names()) - {ALEMBIC_TABLE}
-    expected_tables = set(Base.metadata.tables)
+    current_tables = set(Base.metadata.tables)
+    if actual_tables == BASELINE_TABLES:
+        expected_tables = BASELINE_TABLES
+        adoption_revision = BASELINE_REVISION
+    else:
+        expected_tables = current_tables
+        adoption_revision = CURRENT_REVISION
     issues: list[str] = []
     missing = sorted(expected_tables - actual_tables)
     unexpected = sorted(actual_tables - expected_tables)
@@ -148,10 +164,12 @@ def validate_schema_for_adoption(connection: Connection) -> None:
     if issues:
         details = "\n- ".join(issues)
         raise SchemaAdoptionError(
-            "The existing database does not match the Phase 2 baseline and was not stamped. "
+            "The existing database does not match the Phase 2 baseline or current schema and "
+            "was not stamped. "
             "Back up the database, then reconcile its schema before retrying. Differences:\n"
             f"- {details}"
         )
+    return adoption_revision
 
 
 def upgrade_database(engine: Engine | None = None) -> None:
@@ -163,8 +181,8 @@ def upgrade_database(engine: Engine | None = None) -> None:
         current_revision = MigrationContext.configure(connection).get_current_revision()
         application_tables = tables - {ALEMBIC_TABLE}
         if current_revision is None and application_tables:
-            validate_schema_for_adoption(connection)
-            command.stamp(config, BASELINE_REVISION)
+            adoption_revision = validate_schema_for_adoption(connection)
+            command.stamp(config, adoption_revision)
         command.upgrade(config, "head")
 
 
