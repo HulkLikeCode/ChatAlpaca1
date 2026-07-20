@@ -17,6 +17,8 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Read-only-user 1–10 year planning projections with editable session-only scenarios, monthly contributions, percentile bands, and target probabilities
 - Reproducible 1–10 year historical block-bootstrap forecasts with correlated monthly returns,
   explicit proxies, inflation, fees, rebalancing, downside attribution, and rolling backtests
+- Reproducible correlated parametric forecasts using multivariate normal or Student's t returns,
+  shrunk and owner-blended parameters, matrix validation, sensitivity analysis, and backtests
 - Saved, reproducible deterministic stress scenarios with household, portfolio, holding, sector,
   account-type, baseline, coverage, warning, and sensitivity output
 - Separate admin and read-only user passwords; only admins can mutate data, upload files, or act on brokerage orders
@@ -210,8 +212,25 @@ downside-band coverage, and valid, invalid, and insufficient windows. Passing co
 makes a model eligible for review, never automatically validated. Saved runs retain model/version,
 seed, simulation count, block length, data period, immutable dataset references, proxies,
 assumptions, backtest summaries, percentile bands, and summarized terminal distributions. Raw
-simulated paths and terminal samples are not persisted. Parametric Monte Carlo and full retirement
-tax modeling remain deferred.
+simulated paths and terminal samples are not persisted.
+
+Phase 9 adds correlated parametric Monte Carlo in `chat_alpaca.parametric_forecasting` alongside,
+not in place of, the bootstrap model. Multivariate normal and variance-normalized multivariate
+Student's t returns share the bootstrap model's core output contract. Expected returns use
+annualized compounded log-return estimates with cross-sectional shrinkage rather than unquestioned
+raw arithmetic means. Covariance estimates use diagonal shrinkage, and every external or override
+correlation matrix is checked for labels, dimensions, finite values, symmetry, unit diagonal,
+bounded entries, and positive semidefiniteness.
+
+Historical estimates can be blended with owner-entered or CSV-imported published capital-market
+assumptions; no paid data source is required. Explicit user overrides take precedence for the fields
+they set and retain their source disclosure. Optional mean-parameter uncertainty, expected-return,
+volatility, and correlation sensitivities, normal-versus-fat-tail downside comparison, rolling
+backtests, and like-for-like bootstrap comparison are supported. Saved runs retain distribution,
+degrees of freedom, seed, model version, parameter sources and estimates, shrinkage and covariance
+methods, exact datasets, proxies, assumptions, validation result, output bands, and summarized
+terminal results. Raw paths and terminal samples remain excluded. Full retirement tax modeling
+remains deferred.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
 two decimals, weighted-average cost, total basis, market value, and all-time/daily/custom gain or

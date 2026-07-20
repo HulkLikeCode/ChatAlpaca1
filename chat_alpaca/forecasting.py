@@ -46,6 +46,63 @@ from chat_alpaca.bootstrap_forecasting import (
     save_bootstrap_run as save_bootstrap_run,
 )
 from chat_alpaca.models import Portfolio
+from chat_alpaca.parametric_forecasting import (
+    PARAMETRIC_MODEL_TYPE as PARAMETRIC_MODEL_TYPE,
+)
+from chat_alpaca.parametric_forecasting import (
+    PARAMETRIC_MODEL_VERSION as PARAMETRIC_MODEL_VERSION,
+)
+from chat_alpaca.parametric_forecasting import (
+    CapitalMarketAssumption as CapitalMarketAssumption,
+)
+from chat_alpaca.parametric_forecasting import (
+    ParameterEstimate as ParameterEstimate,
+)
+from chat_alpaca.parametric_forecasting import (
+    ParametricAssumptions as ParametricAssumptions,
+)
+from chat_alpaca.parametric_forecasting import (
+    ParametricRequest as ParametricRequest,
+)
+from chat_alpaca.parametric_forecasting import (
+    ParametricResult as ParametricResult,
+)
+from chat_alpaca.parametric_forecasting import (
+    build_parametric_request as build_parametric_request,
+)
+from chat_alpaca.parametric_forecasting import (
+    calibration_comparison_table as calibration_comparison_table,
+)
+from chat_alpaca.parametric_forecasting import (
+    estimate_parameters as estimate_parameters,
+)
+from chat_alpaca.parametric_forecasting import (
+    import_external_assumptions as import_external_assumptions,
+)
+from chat_alpaca.parametric_forecasting import (
+    model_comparison_table as model_comparison_table,
+)
+from chat_alpaca.parametric_forecasting import (
+    normal_vs_fat_tail_comparison as normal_vs_fat_tail_comparison,
+)
+from chat_alpaca.parametric_forecasting import (
+    parametric_sensitivity as parametric_sensitivity,
+)
+from chat_alpaca.parametric_forecasting import (
+    rolling_parametric_backtest as rolling_parametric_backtest,
+)
+from chat_alpaca.parametric_forecasting import (
+    run_parametric_forecast as run_parametric_forecast,
+)
+from chat_alpaca.parametric_forecasting import (
+    save_parametric_run as save_parametric_run,
+)
+from chat_alpaca.parametric_forecasting import (
+    validate_correlation_matrix as validate_correlation_matrix,
+)
+from chat_alpaca.parametric_forecasting import (
+    validate_covariance_matrix as validate_covariance_matrix,
+)
 from chat_alpaca.portfolio_service import money, portfolio_cost
 
 PERCENTILES = (5, 25, 50, 75, 95)

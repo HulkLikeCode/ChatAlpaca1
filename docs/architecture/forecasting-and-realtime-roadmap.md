@@ -93,7 +93,40 @@ Phase 7 forecast-run and immutable dataset-reference records and saves reproduci
 coverage, proxy use, percentile bands, summarized terminal output, and optional backtest summaries.
 Raw simulated paths and terminal samples are excluded by default.
 
-Correlated parametric Monte Carlo and full retirement tax modeling remain deferred after Phase 8.
+## Phase 9 correlated parametric Monte Carlo
+
+`chat_alpaca.parametric_forecasting` implements a second stochastic model alongside the historical
+block bootstrap. It uses correlated monthly simple returns drawn from either a multivariate normal
+distribution or a variance-normalized multivariate Student's t distribution with explicit degrees
+of freedom. Both models expose compatible percentile bands, terminal summaries, target and loss
+probabilities, benchmark comparison, downside percentiles, and holding-level downside attribution,
+so their results can be shown in one comparison table without ranking either model universally.
+
+Historical expected returns are annualized from mean log returns and shrunk toward the
+cross-sectional median. They are not raw historical arithmetic means. Historical covariance uses
+diagonal shrinkage before conversion to marginal volatilities and correlation. Owner-entered or
+CSV-imported published capital-market assumptions can be blended with historical return and
+volatility estimates using explicit weights, while field-level user overrides take precedence.
+Every non-historical assumption retains source, publication, and as-of disclosure. A paid data
+source is neither required nor assumed.
+
+External and override correlation matrices are explicitly checked for symbol labels and order,
+dimensions, finite values, symmetry, unit diagonal, correlation bounds, and positive
+semidefiniteness. Invalid matrices are rejected rather than silently repaired. Optional uncertainty
+in expected-return estimates is propagated by simulation-level mean draws. Sensitivity tables vary
+expected returns, volatility, and the strength of off-diagonal correlations; a separate comparison
+shows normal and fat-tailed downside results.
+
+Rolling-origin expanding-window backtests use the same interval coverage, median bias, downside
+coverage, and valid/invalid/insufficient-window contract as Phase 8. Calibration results compare
+models without claiming universal superiority, and criteria success yields only eligibility for
+review. Generic Phase 7 forecast persistence already accommodates Phase 9 without a schema change:
+saved runs include model/version, distribution, degrees of freedom, seed, assumptions, parameter
+sources and estimates, shrinkage and covariance methods, dataset references, proxies, coverage,
+validation evidence, percentile bands, and summarized output. Raw paths and terminal samples are
+not saved.
+
+Full retirement tax modeling remains deferred after Phase 9.
 
 ## Real-time monitoring
 
