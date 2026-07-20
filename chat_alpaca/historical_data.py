@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import math
+import re
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -137,6 +138,17 @@ def _json_default(value: object) -> str:
 
 
 _SENSITIVE_FRAGMENTS = ("api_key", "apikey", "secret", "password", "authorization", "token")
+_NO_BARS_WARNING = re.compile(
+    r"^Alpaca returned no (?:raw|split|dividend|all) daily bars for ([A-Z0-9.\-/]+)\.$"
+)
+
+
+def _warning_applies_to_symbols(warning: object, symbols: Iterable[str]) -> bool:
+    """Keep dataset warnings relevant to the symbols in the current coverage request."""
+    if not isinstance(warning, str):
+        return True
+    match = _NO_BARS_WARNING.fullmatch(warning)
+    return match is None or match.group(1) in set(symbols)
 
 
 def sanitize_request_metadata(
@@ -415,7 +427,12 @@ class SqlHistoricalDataRepository:
         feeds = [dataset.feed for dataset in chosen_datasets.values()]
         for dataset in chosen_datasets.values():
             try:
-                warnings.extend(json.loads(dataset.validation_warnings))
+                stored_warnings = json.loads(dataset.validation_warnings)
+                warnings.extend(
+                    warning
+                    for warning in stored_warnings
+                    if _warning_applies_to_symbols(warning, request.symbols)
+                )
             except (json.JSONDecodeError, TypeError):
                 warnings.append(f"Dataset {dataset.id} has unreadable stored validation warnings.")
         frame.attrs["dataset_ids"] = tuple(sorted(chosen_datasets))

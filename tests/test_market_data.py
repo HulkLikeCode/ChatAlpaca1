@@ -50,7 +50,7 @@ def test_spaxx_uses_disclosed_fixed_nav_without_stock_bar_request(monkeypatch) -
     def historical(symbols, start, end, *, adjustment):
         requests.append(symbols)
         frame = pd.DataFrame({"AAPL": [200.0]}, index=pd.to_datetime(["2026-07-17"]))
-        frame.attrs["warnings"] = ()
+        frame.attrs["warnings"] = ("Alpaca returned no split daily bars for SPAXX.",)
         frame.attrs["last_price_dates"] = {"AAPL": date(2026, 7, 17)}
         return SimpleNamespace(data=frame)
 
@@ -61,4 +61,5 @@ def test_spaxx_uses_disclosed_fixed_nav_without_stock_bar_request(monkeypatch) -
     assert requests == [["AAPL"]]
     assert closes["SPAXX"].dropna().eq(1.0).all()
     assert closes.attrs["cash_equivalent_conventions"] == {"SPAXX": 1.0}
+    assert "Alpaca returned no split daily bars for SPAXX." not in closes.attrs["warnings"]
     assert any("fixed $1.00 NAV" in warning for warning in closes.attrs["warnings"])

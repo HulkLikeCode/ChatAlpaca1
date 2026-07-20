@@ -9,6 +9,7 @@ from chat_alpaca.market_calendar import market_session_index
 
 # Explicit conventions only. Do not infer stable NAV from a five-letter mutual-fund symbol.
 CASH_EQUIVALENT_NAV = {"SPAXX": 1.0}
+ALPACA_ADJUSTMENTS = ("raw", "split", "dividend", "all")
 
 
 def split_cash_equivalent_symbols(
@@ -36,7 +37,14 @@ def add_cash_equivalent_closes(
     result = closes.reindex(index)
     for symbol in requested:
         result[symbol] = CASH_EQUIVALENT_NAV[symbol]
-    warnings = list(attrs.get("warnings", ()))
+    obsolete_warnings = {
+        f"Alpaca returned no {adjustment} daily bars for {symbol}."
+        for symbol in requested
+        for adjustment in ALPACA_ADJUSTMENTS
+    }
+    warnings = [
+        warning for warning in attrs.get("warnings", ()) if warning not in obsolete_warnings
+    ]
     warnings.append(
         "SPAXX is a cash-equivalent money-market holding outside Alpaca stock-bar coverage; "
         "it is valued at its disclosed fixed $1.00 NAV convention. Ledger distributions remain "

@@ -45,6 +45,7 @@ def _dataset(
     priority: int = 100,
     source: str = "alpaca_historical",
     metadata: dict[str, object] | None = None,
+    warnings: tuple[str, ...] = (),
 ) -> ProviderDataset:
     return ProviderDataset(
         provider="alpaca",
@@ -55,6 +56,7 @@ def _dataset(
         retrieved_at=datetime.now(timezone.utc),
         bars=bars,
         request_metadata=metadata or {},
+        warnings=warnings,
         override_priority=priority,
     )
 
@@ -241,6 +243,26 @@ def test_exchange_holidays_are_not_missing_coverage(
     assert result.usable
     assert result.missing_date_ranges == {}
     assert not any("Missing daily observations" in warning for warning in result.warnings)
+
+
+def test_dataset_warning_for_unrequested_symbol_is_not_replayed(session) -> None:
+    repository = SqlHistoricalDataRepository(session)
+    repository.persist(
+        _dataset(
+            (_bar("AAPL", date(2026, 7, 17)),),
+            warnings=("Alpaca returned no split daily bars for SPAXX.",),
+        )
+    )
+
+    result = repository.coverage(HistoricalRequest(("AAPL",), date(2026, 7, 17), date(2026, 7, 17)))
+
+    assert result.usable
+    assert "Alpaca returned no split daily bars for SPAXX." not in result.warnings
+
+    requested = repository.coverage(
+        HistoricalRequest(("AAPL", "SPAXX"), date(2026, 7, 17), date(2026, 7, 17))
+    )
+    assert "Alpaca returned no split daily bars for SPAXX." in requested.warnings
 
 
 def test_incremental_refresh_does_not_refetch_covered_peer_symbols(session) -> None:
