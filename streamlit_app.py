@@ -451,6 +451,13 @@ def _render_metric(
             st.metric(label, value)
 
 
+def _render_warning(message: str, *, subdued: bool = False) -> None:
+    if subdued or message.startswith("Historical data note:"):
+        st.caption(message)
+    else:
+        st.warning(message)
+
+
 def _style_stale_values(
     frame: pd.DataFrame,
     stale_rows: pd.Series,
@@ -623,10 +630,7 @@ def render_performance_summary(
         if data_note:
             st.info(f"Live market values are unavailable, so cost basis is shown. {data_note}")
         for warning in report.warnings:
-            if closes.empty:
-                st.caption(warning)
-            else:
-                st.warning(warning)
+            _render_warning(warning, subdued=closes.empty)
         performance = pd.DataFrame(
             [
                 {
@@ -993,7 +997,7 @@ def render_compare(
             benchmark_symbols,
         )
         for warning in report.warnings:
-            st.warning(warning)
+            _render_warning(warning)
         st.caption(report.coverage)
         if not report.series:
             st.info("The selected series do not share usable data in this date range.")
@@ -1135,7 +1139,7 @@ def render_forecast(
     st.caption(f"Starting value for {scope}: {dollars(request.current_value)}.")
     st.caption(request.coverage)
     for warning in request.warnings:
-        st.warning(warning)
+        _render_warning(warning)
     result = cached_projection(request)
     dates = pd.date_range(
         pd.Timestamp.today().normalize() + pd.offsets.MonthEnd(1),
@@ -1512,7 +1516,7 @@ def render_deterministic_scenarios(
             "model review records otherwise."
         )
         for warning in result.warnings:
-            st.warning(warning)
+            _render_warning(warning)
         if owner and st.button("Save scenario run", key="save_deterministic_scenario"):
             with session_scope() as session:
                 saved = save_scenario_run(
@@ -2749,7 +2753,7 @@ def render_hypothetical_analysis(
             width="stretch",
         )
         for warning in result.warnings:
-            st.warning(warning)
+            _render_warning(warning)
         if editable:
             scenario_name = st.text_input("Saved scenario name", key="hypo_scenario_name")
             creator = st.text_input("Scenario creator", value="owner", key="hypo_creator")

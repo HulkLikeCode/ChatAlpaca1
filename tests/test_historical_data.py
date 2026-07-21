@@ -209,9 +209,10 @@ def test_equal_source_revisions_are_consolidated_without_conflict_warning(sessio
     assert result.data.loc[pd.Timestamp(day), "ABC"] == 10
     assert result.data.loc[pd.Timestamp(day), "XYZ"] == 20
     assert not any(item.startswith("Conflicting") for item in result.warnings)
-    revisions = [item for item in result.warnings if "newest retrieval" in item]
+    revisions = [item for item in result.warnings if item.startswith("Historical data note:")]
     assert len(revisions) == 1
-    assert "2 revised split closes across 2 symbols" in revisions[0]
+    assert "updated 2 split-adjusted closing prices across 2 symbols" in revisions[0]
+    assert "newest IEX values are in use" in revisions[0]
 
 
 def test_partial_symbol_coverage_and_missing_dates_are_explicit(session) -> None:

@@ -401,7 +401,7 @@ class SqlHistoricalDataRepository:
                     f"{dataset.override_priority}."
                 )
 
-        for (provider, source, feed, priority), revised in sorted(
+        for (provider, source, feed, _priority), revised in sorted(
             revisions.items(), key=lambda item: repr(item[0])
         ):
             symbols = {symbol for symbol, _ in revised}
@@ -410,10 +410,10 @@ class SqlHistoricalDataRepository:
                 str(next(iter(dates))) if len(dates) == 1 else f"{min(dates)} through {max(dates)}"
             )
             warnings.append(
-                f"Selected the newest retrieval for {len(revised)} revised "
-                f"{request.adjustment.value} closes across {len(symbols)} symbols on "
-                f"{date_label} from {provider}/{source}"
-                f"{f' ({feed})' if feed else ''} at priority {priority}."
+                f"Historical data note: {provider.title()} updated {len(revised)} "
+                f"{request.adjustment.value}-adjusted closing prices across "
+                f"{len(symbols)} symbols on {date_label}; the newest "
+                f"{feed.upper() if feed else source} values are in use."
             )
 
         by_symbol: dict[str, dict[date, tuple[DailyBar, MarketDataset]]] = {
