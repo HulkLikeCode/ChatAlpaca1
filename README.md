@@ -182,10 +182,13 @@ metrics, exact holdings, and transaction filtering.
 
 During an active authenticated session, complete per-portfolio IEX quote moves may overlay the
 latest confirmed close for indicative gain/loss. Fresh and complete stale quote moves refresh the
-display every 30 seconds; stale-derived amounts use muted pink, while portfolios with no calculable
-quote move retain confirmed-close values. Combined metrics may therefore contain fresh, stale, and
-fallback portfolio rows, with compact coverage disclosing that mix. Custom gain/loss receives the
-overlay only when the applied master end date is today; a historical end date remains fixed.
+display every 30 seconds; stale-derived amounts use muted blue, while portfolios with no calculable
+quote move retain confirmed-close values. Muted blue is limited to stale real-time amounts during
+regular market hours; after-hours, weekend, and holiday values use the normal theme colors.
+Extended-hours trades continue to compare with the previous completed session close. Combined
+metrics may therefore contain fresh, stale, and fallback portfolio rows, with compact coverage
+disclosing that mix. Custom gain/loss receives the overlay only when the applied master end date is
+today; a historical end date remains fixed.
 Missing quote moves remain unavailable rather than zero. Overview keeps its zero-decimal portfolio
 value cards directly below the gain/loss metrics and summarizes valuation, Alpha/Beta, quote, and
 custom-end coverage in one compact status strip.

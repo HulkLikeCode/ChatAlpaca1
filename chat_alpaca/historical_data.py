@@ -370,6 +370,7 @@ class SqlHistoricalDataRepository:
         rows = self.session.execute(self._candidate_query(request)).all()
         selected: dict[tuple[str, date], tuple[DailyBar, MarketDataset]] = {}
         warnings: list[str] = []
+        revisions: dict[tuple[str, str, str | None, int], set[tuple[str, date]]] = {}
         for bar, instrument, dataset in rows:
             key = (instrument.canonical_symbol, bar.bar_date)
             existing = selected.get(key)
@@ -378,12 +379,42 @@ class SqlHistoricalDataRepository:
                 continue
             chosen_bar, chosen_dataset = existing
             if bar.close != chosen_bar.close:
+                chosen_provenance = (
+                    chosen_dataset.provider,
+                    chosen_dataset.source,
+                    chosen_dataset.feed,
+                    chosen_dataset.override_priority,
+                )
+                candidate_provenance = (
+                    dataset.provider,
+                    dataset.source,
+                    dataset.feed,
+                    dataset.override_priority,
+                )
+                if chosen_provenance == candidate_provenance:
+                    revisions.setdefault(chosen_provenance, set()).add(key)
+                    continue
                 warnings.append(
                     f"Conflicting {request.adjustment.value} close for {key[0]} on {key[1]}; "
                     f"selected {chosen_dataset.source} priority "
                     f"{chosen_dataset.override_priority} over {dataset.source} priority "
                     f"{dataset.override_priority}."
                 )
+
+        for (provider, source, feed, priority), revised in sorted(
+            revisions.items(), key=lambda item: repr(item[0])
+        ):
+            symbols = {symbol for symbol, _ in revised}
+            dates = {bar_date for _, bar_date in revised}
+            date_label = (
+                str(next(iter(dates))) if len(dates) == 1 else f"{min(dates)} through {max(dates)}"
+            )
+            warnings.append(
+                f"Selected the newest retrieval for {len(revised)} revised "
+                f"{request.adjustment.value} closes across {len(symbols)} symbols on "
+                f"{date_label} from {provider}/{source}"
+                f"{f' ({feed})' if feed else ''} at priority {priority}."
+            )
 
         by_symbol: dict[str, dict[date, tuple[DailyBar, MarketDataset]]] = {
             symbol: {} for symbol in request.symbols

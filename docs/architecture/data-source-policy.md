@@ -31,9 +31,11 @@ split-adjusted, dividend-adjusted, and total-return datasets are stored and quer
 
 Historical datasets are immutable acquisition records. Resolution selects the greatest explicit
 override priority and then the newest retrieval and dataset identifiers as deterministic tie
-breakers. A conflicting lower-priority observation remains stored and produces a coverage warning;
-it never silently overwrites the selected observation. Missing observations remain null rather than
-being forward-filled or converted to zero.
+breakers. Revisions from the same provider, source, feed, and priority are summarized as one
+diagnostic and resolve to the newest retrieval. A conflicting observation from different provenance
+remains stored and produces a coverage warning; it never silently overwrites the selected
+observation. Missing observations remain null rather than being forward-filled or converted to
+zero.
 
 Daily coverage is measured against completed regular US-equity exchange sessions, not generic
 Monday-through-Friday dates. Full-day exchange holidays and the current unfinished session are not

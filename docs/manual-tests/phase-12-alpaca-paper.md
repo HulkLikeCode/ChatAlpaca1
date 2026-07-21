@@ -30,7 +30,7 @@ freshness checks once outside regular hours.
    timestamps, feed, and as-of time with the Alpaca paper dashboard. Confirm timestamps use the
    compact daylight-aware format `7/20 3:42 PM ET`.
 2. Confirm streaming and recently refreshed mover rows display `Fresh`; delayed, previous-close,
-   and unavailable rows display `Stale`. Confirm stale/missing symbols use the light-pink themed
+   and unavailable rows display `Stale`. Confirm stale/missing symbols use the muted-blue themed
    alert and retain a diagnostic reason.
 3. Confirm Portfolio pulse includes indicative total value, daily change, holding and portfolio
    contribution, one combined largest-mover row per symbol, and stale/missing symbols without

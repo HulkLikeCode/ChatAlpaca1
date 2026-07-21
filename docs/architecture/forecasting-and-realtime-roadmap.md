@@ -184,11 +184,13 @@ repository. Abandoned leases are reaped on active reruns and explicit logout sto
 there is no persistent background worker and no uninterrupted closed-app or sleeping-device claim.
 Complete per-portfolio indicative quote changes may be overlaid on ledger-derived close-based
 all-time and daily gain/loss without waiting for every selected portfolio to become fresh. A
-complete stale quote move may remain visible with the stale-value treatment; portfolios without a
-calculable quote move retain their confirmed-close values. Mixed aggregates disclose available,
-fresh, and fallback portfolio coverage. Custom gain/loss receives the overlay only when its selected
-end date is the current day. This presentation overlay never mutates the ledger or durable
-historical datasets.
+complete stale quote move may remain visible; muted blue applies only during regular market hours.
+After-hours values may continue to reflect extended-hours trades against the previous completed
+session close, while weekends and holidays retain the most recent completed session without stale
+coloring. Portfolios without a calculable quote move retain their confirmed-close values. Mixed
+aggregates disclose available, fresh, and fallback portfolio coverage. Custom gain/loss receives the
+overlay only when its selected end date is the current day. This presentation overlay never mutates
+the ledger or durable historical datasets.
 
 The Monitor view presents an indicative IEX portfolio pulse, holding and portfolio daily
 contribution, symbol-consolidated largest movers, stale/missing symbols, assigned open orders and

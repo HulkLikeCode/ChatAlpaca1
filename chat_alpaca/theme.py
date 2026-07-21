@@ -1,4 +1,4 @@
-STALE_VALUE_COLOR = "#D6A6BA"
+STALE_VALUE_COLOR = "#86A7D8"
 
 
 THEME_CSS = """
@@ -36,9 +36,22 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
   background: linear-gradient(145deg, rgba(15,22,42,.96), rgba(8,11,22,.96));
   border: 1px solid var(--line);
   border-radius: 14px;
-  padding: .9rem 1rem;
+  padding: .72rem .85rem;
+  min-height: 104px;
 }
-[data-testid="stMetricValue"] {font-size: 1.55rem; color: var(--ink);}
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] p {
+  color: var(--violet) !important;
+  font-size: .72rem !important;
+  font-weight: 800 !important;
+  letter-spacing: .06em;
+  line-height: 1.15;
+}
+[data-testid="stMetricValue"] {
+  color: var(--ink);
+  font-size: 1.55rem;
+  font-weight: 760;
+  line-height: 1.15;
+}
 [data-testid="stMetricDelta"] {color: var(--cyan) !important;}
 [class*="st-key-stale_metric_"] [data-testid="stMetricValue"] {
   color: var(--stale) !important;
@@ -68,15 +81,14 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
   gap: .75rem;
 }
 .portfolio-card {
-  background: linear-gradient(145deg, rgba(17,25,47,.95), rgba(8,11,22,.95));
+  background: linear-gradient(145deg, rgba(15,22,42,.96), rgba(8,11,22,.96));
   border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 1rem 1.1rem;
-  min-height: 126px;
-  box-shadow: 0 14px 40px rgba(0,0,0,.24);
+  border-radius: 14px;
+  padding: .72rem .85rem;
+  min-height: 104px;
 }
-.portfolio-card .eyebrow {color: var(--violet); font-size: .72rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;}
-.portfolio-card .value {font-size: clamp(1.3rem, 2.2vw, 1.75rem); font-weight: 760; margin-top: .35rem; white-space: nowrap;}
+.portfolio-card .eyebrow {color: var(--violet); font-size: .72rem; font-weight: 800; letter-spacing: .06em; line-height: 1.15;}
+.portfolio-card .value {color: var(--ink); font-size: 1.55rem; font-weight: 760; line-height: 1.15; margin-top: .35rem; white-space: nowrap;}
 .portfolio-card .detail {color: var(--muted); font-size: .82rem; margin-top: .25rem;}
 .performance-status {
   display: flex;
@@ -107,10 +119,10 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
 .stale-symbol-alert {
   margin: .35rem 0 .75rem;
   padding: .75rem 1rem;
-  border: 1px solid rgba(255, 181, 205, .58);
+  border: 1px solid rgba(134, 167, 216, .58);
   border-radius: 12px;
-  background: rgba(255, 190, 210, .16);
-  color: #ffdbe7;
+  background: rgba(78, 116, 174, .16);
+  color: #b9cbea;
 }
 hr {border-color: var(--line);}
 </style>

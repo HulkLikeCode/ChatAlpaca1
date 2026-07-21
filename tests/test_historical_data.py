@@ -190,6 +190,30 @@ def test_precedence_is_deterministic_and_conflicts_warn(session) -> None:
     assert session.scalar(select(func.count()).select_from(DailyBar)) == 2
 
 
+def test_equal_source_revisions_are_consolidated_without_conflict_warning(session) -> None:
+    repository = SqlHistoricalDataRepository(session)
+    day = date(2026, 7, 20)
+    older = _dataset((_bar("ABC", day, "9"), _bar("XYZ", day, "19")))
+    newer = _dataset((_bar("ABC", day, "10"), _bar("XYZ", day, "20")))
+    older = ProviderDataset(
+        **{**older.__dict__, "retrieved_at": datetime(2026, 7, 20, 20, tzinfo=timezone.utc)}
+    )
+    newer = ProviderDataset(
+        **{**newer.__dict__, "retrieved_at": datetime(2026, 7, 20, 21, tzinfo=timezone.utc)}
+    )
+    repository.persist(older)
+    repository.persist(newer)
+
+    result = repository.coverage(HistoricalRequest(("ABC", "XYZ"), day, day))
+
+    assert result.data.loc[pd.Timestamp(day), "ABC"] == 10
+    assert result.data.loc[pd.Timestamp(day), "XYZ"] == 20
+    assert not any(item.startswith("Conflicting") for item in result.warnings)
+    revisions = [item for item in result.warnings if "newest retrieval" in item]
+    assert len(revisions) == 1
+    assert "2 revised split closes across 2 symbols" in revisions[0]
+
+
 def test_partial_symbol_coverage_and_missing_dates_are_explicit(session) -> None:
     repository = SqlHistoricalDataRepository(session)
     repository.persist(

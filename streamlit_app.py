@@ -141,7 +141,7 @@ SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
 EDITABLE_KINDS = (*MANUAL_KINDS, "opening_position")
 TRADE_KINDS = {"buy", "sell"}
 SYMBOL_CASH_KINDS = {"dividend", "fee", "tax"}
-STALE_VALUE_COLOR = "#D6A6BA"
+STALE_VALUE_COLOR = "#86A7D8"
 MASTER_DEFAULT_START = date(2026, 5, 15)
 CSV_TEMPLATE = """Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount
 7/15/2026,Buy,AAPL,Apple Inc,10,$210.00,$0.00,"($2,100.00)"
@@ -206,7 +206,7 @@ def _new_active_monitor() -> ActiveSessionMonitor:
 
 
 def dollars(value: object) -> str:
-    return f"${float(value):,.2f}"
+    return f"${float(value):,.0f}"
 
 
 def whole_dollars(value: object) -> str:
@@ -505,6 +505,7 @@ def render_performance_summary(
     data_note: str | None = None,
 ) -> None:
     with st.expander("Portfolio value and gain/loss", expanded=expanded):
+        regular_market_hours = market_hours_state().is_regular_hours
         report = assemble_combined_performance_report(
             portfolios,
             closes,
@@ -541,7 +542,8 @@ def render_performance_summary(
             dollars(report.total_value) if report.total_value is not None else "—",
             key=f"{key_prefix}_selected_totals",
             stale=bool(
-                pulse is not None
+                regular_market_hours
+                and pulse is not None
                 and pulse.indicative_total_value is not None
                 and not overlay_is_fresh
             ),
@@ -551,14 +553,24 @@ def render_performance_summary(
             "All-time gain/loss",
             _metric_dollars(report.all_time),
             key=f"{key_prefix}_all_time",
-            stale=bool(pulse is not None and available_count > 0 and not overlay_is_fresh),
+            stale=bool(
+                regular_market_hours
+                and pulse is not None
+                and available_count > 0
+                and not overlay_is_fresh
+            ),
         )
         _render_metric(
             metrics[2],
             "Daily gain/loss",
             _metric_dollars(report.daily),
             key=f"{key_prefix}_daily",
-            stale=pulse is not None and not overlay_is_fresh and report.daily is not None,
+            stale=bool(
+                regular_market_hours
+                and pulse is not None
+                and not overlay_is_fresh
+                and report.daily is not None
+            ),
         )
         _render_metric(
             metrics[3],
@@ -566,7 +578,8 @@ def render_performance_summary(
             _metric_dollars(report.custom),
             key=f"{key_prefix}_custom",
             stale=bool(
-                pulse is not None
+                regular_market_hours
+                and pulse is not None
                 and custom_end == date.today()
                 and available_count > 0
                 and not overlay_is_fresh
@@ -625,7 +638,9 @@ def render_performance_summary(
                     "Annualized Alpha": row.alpha * 100 if row.alpha is not None else None,
                     "Beta": row.beta,
                     "Observations": row.alpha_beta_observations,
-                    "_stale": pulse is not None and row.portfolio not in fresh_portfolios,
+                    "_stale": regular_market_hours
+                    and pulse is not None
+                    and row.portfolio not in fresh_portfolios,
                 }
                 for row in report.rows
             ]
@@ -637,7 +652,7 @@ def render_performance_summary(
                 stale_performance_rows,
                 ("All-time gain/loss", "Daily gain/loss", "Custom gain/loss"),
             )
-            if pulse is not None
+            if regular_market_hours and pulse is not None
             else performance
         )
         st.dataframe(
@@ -740,6 +755,8 @@ def render_consolidated_holdings(
                         column: st.column_config.NumberColumn(format="$%,.0f")
                         for column in money_columns
                     },
+                    "Avg/share": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Current": st.column_config.NumberColumn(format="$%,.2f"),
                 },
             )
         else:
@@ -775,6 +792,8 @@ def render_consolidated_holdings(
                         column: st.column_config.NumberColumn(format="$%,.0f")
                         for column in money_columns
                     },
+                    "Avg/share": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Current": st.column_config.NumberColumn(format="$%,.2f"),
                 },
             )
         insufficient = summary[summary["Alpha"].isna()]
@@ -836,7 +855,7 @@ def render_portfolio_income(
                 y=values["Cash received"],
                 name=income_type,
                 marker_color=income_colors[index],
-                hovertemplate="%{x|%b %Y}<br>$%{y:,.2f}<extra>" + income_type + "</extra>",
+                hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>" + income_type + "</extra>",
             )
         )
     figure.update_layout(
@@ -860,7 +879,7 @@ def render_portfolio_income(
         sources,
         hide_index=True,
         width="stretch",
-        column_config={"Cash received": st.column_config.NumberColumn(format="$%,.2f")},
+        column_config={"Cash received": st.column_config.NumberColumn(format="$%,.0f")},
     )
 
 
@@ -1698,7 +1717,7 @@ sells positive, and blank quantity/price/fees cells are allowed for cash-only ac
         column_config={
             "Date": st.column_config.DateColumn(format="M/D/YY"),
             "Quantity": st.column_config.NumberColumn(format="%.2f"),
-            "Price": st.column_config.NumberColumn(format="$%,.4f"),
+            "Price": st.column_config.NumberColumn(format="$%,.2f"),
             "Fees": st.column_config.NumberColumn(format="$%,.2f"),
             "Cash change": st.column_config.NumberColumn(format="$%,.2f"),
         },
@@ -1804,7 +1823,7 @@ def render_transactions(
             "column_config": {
                 "Date": st.column_config.DateColumn(format="M/D/YY"),
                 "Quantity": st.column_config.NumberColumn(format="%.2f"),
-                "Price": st.column_config.NumberColumn(format="$%,.4f"),
+                "Price": st.column_config.NumberColumn(format="$%,.2f"),
                 "Fees": st.column_config.NumberColumn(format="$%,.2f"),
                 "Cash change": st.column_config.NumberColumn(format="$%,.2f"),
             },
@@ -2180,7 +2199,7 @@ def render_portfolio_admin(
             ),
             hide_index=True,
             width="stretch",
-            column_config={"Cash": st.column_config.NumberColumn(format="$%,.2f")},
+            column_config={"Cash": st.column_config.NumberColumn(format="$%,.0f")},
         )
         benchmark_rows = []
         with session_scope() as session:
@@ -2879,14 +2898,20 @@ def render_active_monitoring(
         if pulse.indicative_total_value is not None
         else "Unavailable",
         key="monitor_selected_totals",
-        stale=bool(pulse.stale_or_missing and pulse.indicative_total_value is not None),
+        stale=bool(
+            hours.is_regular_hours
+            and pulse.stale_or_missing
+            and pulse.indicative_total_value is not None
+        ),
     )
     _render_metric(
         metrics[1],
         "Daily change",
         dollars(pulse.daily_change) if pulse.daily_change is not None else "Unavailable",
         key="monitor_daily_change",
-        stale=bool(pulse.stale_or_missing and pulse.daily_change is not None),
+        stale=bool(
+            hours.is_regular_hours and pulse.stale_or_missing and pulse.daily_change is not None
+        ),
     )
     metrics[2].metric("Held symbols", len(symbols))
     metrics[3].metric("Stale / missing", len(pulse.stale_or_missing))
@@ -2904,7 +2929,8 @@ def render_active_monitoring(
                 "Feed": records[row.symbol].feed,
                 "Provider": records[row.symbol].provider,
                 "Staleness reason": records[row.symbol].staleness_reason,
-                "_stale": row.status
+                "_stale": hours.is_regular_hours
+                and row.status
                 not in {FreshnessStatus.STREAMING, FreshnessStatus.RECENTLY_REFRESHED},
             }
             for row in pulse.holdings
@@ -2920,17 +2946,21 @@ def render_active_monitoring(
             "_absolute mover", ascending=False, na_position="last"
         ).drop(columns="_absolute mover")
         stale_holding_rows = holding_rows.pop("_stale")
-        styled_holdings = _style_stale_values(
-            holding_rows,
-            stale_holding_rows,
-            ("Price", "Value", "Daily change", "Contribution"),
+        styled_holdings = (
+            _style_stale_values(
+                holding_rows,
+                stale_holding_rows,
+                ("Price", "Value", "Daily change", "Contribution"),
+            )
+            if hours.is_regular_hours
+            else holding_rows
         )
         st.dataframe(
             styled_holdings,
             hide_index=True,
             width="stretch",
             column_config={
-                "Price": st.column_config.NumberColumn(format="$%,.0f"),
+                "Price": st.column_config.NumberColumn(format="$%,.2f"),
                 "Value": st.column_config.NumberColumn(format="$%,.0f"),
                 "Daily change": st.column_config.NumberColumn(format="$%,.0f"),
                 "Contribution": st.column_config.NumberColumn(format="%.0f%%"),
@@ -2941,7 +2971,8 @@ def render_active_monitoring(
             {
                 "Portfolio": name,
                 "Daily contribution": change,
-                "_stale": any(
+                "_stale": hours.is_regular_hours
+                and any(
                     records[lot.symbol].status
                     not in {FreshnessStatus.STREAMING, FreshnessStatus.RECENTLY_REFRESHED}
                     for portfolio in portfolios
@@ -2955,17 +2986,23 @@ def render_active_monitoring(
     if not portfolio_rows.empty:
         stale_portfolio_rows = portfolio_rows.pop("_stale")
         st.dataframe(
-            _style_stale_values(portfolio_rows, stale_portfolio_rows, ("Daily contribution",)),
+            (
+                _style_stale_values(portfolio_rows, stale_portfolio_rows, ("Daily contribution",))
+                if hours.is_regular_hours
+                else portfolio_rows
+            ),
             hide_index=True,
             width="stretch",
             column_config={"Daily contribution": st.column_config.NumberColumn(format="$%,.0f")},
         )
-    if pulse.stale_or_missing:
+    if pulse.stale_or_missing and hours.is_regular_hours:
         stale_symbols = escape(", ".join(pulse.stale_or_missing))
         st.markdown(
             f'<div class="stale-symbol-alert">Stale or missing symbols: {stale_symbols}</div>',
             unsafe_allow_html=True,
         )
+    elif pulse.stale_or_missing:
+        st.caption("Stale or missing symbols: " + ", ".join(pulse.stale_or_missing))
 
     quote = records[selected_symbol]
     exposure_shares = sum(
@@ -3001,7 +3038,7 @@ def render_active_monitoring(
                 }
             ]
         )
-        st.dataframe(
+        styled_symbol_detail = (
             _style_stale_values(
                 symbol_detail,
                 pd.Series(
@@ -3014,21 +3051,22 @@ def render_active_monitoring(
                     ]
                 ),
                 ("Latest trade", "Bid", "Ask", "Midpoint", "Spread", "Exposure value"),
-            ),
+            )
+            if hours.is_regular_hours
+            else symbol_detail
+        )
+        st.dataframe(
+            styled_symbol_detail,
             hide_index=True,
             width="stretch",
             column_config={
                 column: st.column_config.NumberColumn(format="$%,.2f")
-                for column in (
-                    "Latest trade",
-                    "Bid",
-                    "Ask",
-                    "Midpoint",
-                    "Spread",
-                    "Exposure value",
-                )
+                for column in ("Latest trade", "Bid", "Ask", "Midpoint", "Spread")
             }
-            | {"Exposure shares": st.column_config.NumberColumn(format="%.2f")},
+            | {
+                "Exposure shares": st.column_config.NumberColumn(format="%.2f"),
+                "Exposure value": st.column_config.NumberColumn(format="$%,.0f"),
+            },
         )
 
     order_columns = st.columns(2)

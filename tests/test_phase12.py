@@ -134,6 +134,26 @@ def test_duplicate_and_out_of_order_stream_events_are_ignored() -> None:
     assert merged.midpoint == 400
 
 
+def test_historical_seed_does_not_replace_snapshot_previous_close() -> None:
+    book = QuoteBook()
+    receipt = datetime(2026, 7, 20, 21, tzinfo=UTC)
+    assert book.merge(
+        QuoteRecord(
+            "AAPL",
+            latest_trade=200,
+            previous_close=195,
+            receipt_time=receipt,
+            as_of_time=receipt,
+            source="snapshot",
+        ),
+        "snapshot",
+    )
+
+    book.seed_previous_closes({"AAPL": 199.5})
+
+    assert book.records(["AAPL"], now=receipt)["AAPL"].previous_close == 195
+
+
 def test_stale_previous_close_and_streaming_classification() -> None:
     now = datetime(2026, 7, 20, 15, tzinfo=UTC)
     stale = classify_quote(

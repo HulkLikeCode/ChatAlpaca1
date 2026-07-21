@@ -310,7 +310,8 @@ class QuoteBook:
             for raw_symbol, close in closes.items():
                 symbol = normalize_symbol(raw_symbol)
                 existing = self._quotes.get(symbol, QuoteRecord(symbol))
-                self._quotes[symbol] = replace(existing, previous_close=float(close))
+                if existing.previous_close is None:
+                    self._quotes[symbol] = replace(existing, previous_close=float(close))
 
     def records(
         self,

@@ -7,6 +7,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from chat_alpaca.config import get_settings
+from chat_alpaca.theme import THEME_CSS
 
 SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
 
@@ -87,6 +88,9 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
     ]
     assert any("KCs Traditional IRA" in text.value for text in app.markdown)
     assert [item.label for item in app.metric].count("Selected Totals") == 1
+    currency_metrics = [str(item.value) for item in app.metric if str(item.value).startswith("$")]
+    assert currency_metrics
+    assert all("." not in value for value in currency_metrics)
     assert not app.checkbox
     assert any(item.label.startswith("Portfolios · Applied:") for item in app.multiselect)
     portfolio_selector = next(
@@ -130,6 +134,14 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
     assert not app.get("file_uploader")
     assert "Record transaction" not in [item.label for item in app.button]
     assert "Submit assigned order" not in [item.label for item in app.button]
+
+
+def test_metric_and_portfolio_cards_share_compact_theme_dimensions() -> None:
+    assert '[data-testid="stMetricLabel"]' in THEME_CSS
+    assert "color: var(--violet) !important" in THEME_CSS
+    assert THEME_CSS.count("min-height: 104px") == 2
+    assert THEME_CSS.count("padding: .72rem .85rem") == 2
+    assert ".portfolio-card .value {color: var(--ink); font-size: 1.55rem" in THEME_CSS
 
 
 def test_comparison_defaults_to_spy_benchmark() -> None:
