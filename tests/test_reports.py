@@ -74,6 +74,7 @@ def test_portfolio_card_sums_selected_range_dividends() -> None:
     )[0]
 
     assert report.cumulative_dividends == Decimal("100")
+    assert report.value_label == "Cost basis $10"
 
 
 def test_combined_performance_report_returns_incomplete_coverage_warning() -> None:
@@ -132,6 +133,29 @@ def test_intraday_overlay_preserves_confirmed_daily_value_when_quote_move_is_mis
     assert partial.daily == report.daily
     assert partial.all_time == report.all_time
     assert partial.custom == report.custom
+
+
+def test_intraday_overlay_combines_fresh_and_confirmed_close_portfolio_rows() -> None:
+    portfolio = _portfolio()
+    second = _portfolio()
+    second.id = 2
+    second.name = "Fallback"
+    second.transactions[0].id = 2
+    closes = pd.DataFrame(
+        {"ABC": [10.0, 12.0], "OLD": [10.0, 10.0]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-03"]),
+    )
+    report = assemble_combined_performance_report(
+        [portfolio, second], closes, date(2026, 1, 3), date(2026, 1, 3)
+    )
+
+    hybrid = overlay_intraday_performance(
+        report, {"Example": 5.0, "Fallback": None}, include_custom=True
+    )
+
+    assert hybrid.rows[0].daily == 5.0
+    assert hybrid.rows[1].daily == report.rows[1].daily
+    assert hybrid.daily == hybrid.rows[0].daily + hybrid.rows[1].daily
 
 
 def test_comparison_report_assembles_series_metrics_and_missing_warning() -> None:

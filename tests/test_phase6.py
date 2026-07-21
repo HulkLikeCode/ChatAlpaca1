@@ -14,6 +14,7 @@ from chat_alpaca.classification import (
     resolve_security_metadata,
     save_etf_sector_snapshot,
     save_manual_metadata_override,
+    security_symbol_labels,
 )
 from chat_alpaca.models import HoldingLot, Portfolio
 from chat_alpaca.portfolio_configuration import (
@@ -51,6 +52,25 @@ def test_unknown_account_behavior_and_owner_edit(session: Session) -> None:
     assert portfolio.account_type == "taxable"
     with pytest.raises(ValueError, match="Account type"):
         set_account_type(session, portfolio.id, "brokerage")
+
+
+def test_security_symbol_labels_use_newest_cached_name(session: Session) -> None:
+    cache_security_metadata(
+        session,
+        "abc",
+        security_name="Older Name",
+        source="test",
+        retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    cache_security_metadata(
+        session,
+        "ABC",
+        security_name="Current Name",
+        source="test",
+        retrieved_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    assert security_symbol_labels(session)["ABC"] == "Current Name"
 
 
 def test_benchmark_weight_validation() -> None:

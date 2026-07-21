@@ -9,6 +9,9 @@ font = "sans serif"
 [server]
 headless = true
 
+[runner]
+magicEnabled = false
+
 [browser]
 gatherUsageStats = false
 

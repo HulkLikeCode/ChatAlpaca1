@@ -8,11 +8,11 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Transaction-backed cash, FIFO lots, cost basis, and market value
 - Durable, provider-neutral daily market-data cache with typed coverage and provenance
 - Typed ledger reconstruction for daily values, positions, flows, returns, benchmarks, and coverage
-- Seeded `KCs Traditional IRA`, `KCs Roth IRA`, and `KC and Papa` portfolios
 - Owner-editable Traditional IRA, Roth IRA, taxable, and unknown account classifications
 - Effective-dated per-portfolio benchmark blends with explicit rebalancing assumptions
 - Cached security metadata and dated ETF sector look-through classifications with provenance
-- Buy-and-hold comparisons against SPY, QQQ, DIA, IWM, and arbitrary stock or ETF symbols
+- Described, searchable buy-and-hold benchmark comparisons against SPY, QQQ, IWM, DIA, VTI, VT,
+  EFA, EEM, AGG, BND, TLT, IEF, SHY, and LQD, plus arbitrary stock or ETF symbols
 - Growth-of-$100 chart plus return, volatility, and drawdown statistics
 - Read-only-user 1–10 year planning projections with editable session-only scenarios, monthly contributions, percentile bands, and target probabilities
 - Reproducible 1–10 year historical block-bootstrap forecasts with correlated monthly returns,
@@ -180,13 +180,15 @@ two latest market closes, while custom gain/loss uses the close before the appli
 through the master end date. The same range controls dividend custom totals, Compare charts and
 metrics, exact holdings, and transaction filtering.
 
-During an active authenticated session, complete IEX quotes may overlay the latest confirmed close
-for indicative portfolio value and gain/loss. All-time and daily figures then refresh every 30
-seconds. Custom gain/loss receives the same overlay only when the applied master end date is today;
-a historical end date remains fixed. If the live overlay is incomplete, confirmed-close daily
-gain/loss remains visible instead of mixing live and stale portfolio rows. Muted pink numeric text
-identifies displayed quote-driven amounts that rely on stale or previous-close data. Missing quote
-moves remain unavailable rather than zero.
+During an active authenticated session, complete per-portfolio IEX quote moves may overlay the
+latest confirmed close for indicative gain/loss. Fresh and complete stale quote moves refresh the
+display every 30 seconds; stale-derived amounts use muted pink, while portfolios with no calculable
+quote move retain confirmed-close values. Combined metrics may therefore contain fresh, stale, and
+fallback portfolio rows, with compact coverage disclosing that mix. Custom gain/loss receives the
+overlay only when the applied master end date is today; a historical end date remains fixed.
+Missing quote moves remain unavailable rather than zero. Overview keeps its zero-decimal portfolio
+value cards directly below the gain/loss metrics and summarizes valuation, Alpha/Beta, quote, and
+custom-end coverage in one compact status strip.
 
 Portfolio cards show cumulative dividend ledger credits in the inclusive applied master range;
 interest is excluded. Portfolio and

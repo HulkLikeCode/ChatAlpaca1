@@ -73,6 +73,25 @@ def _instrument(session: Session, symbol: str, *, asset_type: str = "unknown") -
     return instrument
 
 
+def security_symbol_labels(session: Session) -> dict[str, str]:
+    """Return active cached symbols with their newest available security names."""
+    rows = session.execute(
+        select(Instrument.canonical_symbol, SecurityMetadata.security_name)
+        .outerjoin(SecurityMetadata, SecurityMetadata.instrument_id == Instrument.id)
+        .where(Instrument.is_active.is_(True))
+        .order_by(
+            Instrument.canonical_symbol,
+            SecurityMetadata.manual_override.desc(),
+            SecurityMetadata.retrieved_at.desc(),
+        )
+    )
+    labels: dict[str, str] = {}
+    for symbol, security_name in rows:
+        if symbol not in labels:
+            labels[symbol] = security_name or symbol
+    return labels
+
+
 def _confidence(value: object | None) -> Decimal | None:
     if value is None:
         return None

@@ -206,6 +206,7 @@ def test_mixed_stream_and_snapshot_values_build_one_indicative_pulse() -> None:
 
     assert pulse.indicative_total_value == 900
     assert pulse.daily_change == 20
+    assert pulse.portfolio_freshness == {"Primary": True}
     assert not pulse.stale_or_missing
 
 
@@ -238,6 +239,7 @@ def test_pulse_combines_the_same_symbol_across_portfolios() -> None:
     assert pulse.holdings[0].value == 1_000
     assert pulse.holdings[0].daily_change == 25
     assert pulse.by_portfolio == {"First": 10, "Second": 15}
+    assert pulse.portfolio_freshness == {"First": True, "Second": True}
 
 
 def test_previous_close_values_do_not_claim_a_zero_daily_move() -> None:
@@ -253,6 +255,63 @@ def test_previous_close_values_do_not_claim_a_zero_daily_move() -> None:
 
     assert pulse.indicative_total_value == 390
     assert pulse.daily_change is None
+    assert pulse.portfolio_freshness == {"Primary": False}
+
+
+def test_portfolio_freshness_is_independent_across_selected_portfolios() -> None:
+    portfolios = [
+        SimpleNamespace(
+            name="Fresh",
+            cash=0,
+            holdings=[SimpleNamespace(symbol="AAPL", shares=1)],
+        ),
+        SimpleNamespace(
+            name="Fallback",
+            cash=0,
+            holdings=[SimpleNamespace(symbol="MSFT", shares=1)],
+        ),
+    ]
+    quotes = {
+        "AAPL": QuoteRecord(
+            "AAPL",
+            latest_trade=200,
+            previous_close=195,
+            status=FreshnessStatus.STREAMING,
+        ),
+        "MSFT": QuoteRecord(
+            "MSFT",
+            previous_close=400,
+            status=FreshnessStatus.PREVIOUS_CLOSE,
+        ),
+    }
+
+    pulse = build_portfolio_pulse(portfolios, quotes)
+
+    assert pulse.by_portfolio == {"Fresh": 5, "Fallback": None}
+    assert pulse.portfolio_freshness == {"Fresh": True, "Fallback": False}
+
+
+def test_complete_stale_quote_keeps_daily_move_without_claiming_freshness() -> None:
+    portfolio = SimpleNamespace(
+        name="After close",
+        cash=0,
+        holdings=[SimpleNamespace(symbol="AAPL", shares=2)],
+    )
+    pulse = build_portfolio_pulse(
+        [portfolio],
+        {
+            "AAPL": QuoteRecord(
+                "AAPL",
+                latest_trade=200,
+                previous_close=195,
+                status=FreshnessStatus.STALE,
+            )
+        },
+    )
+
+    assert pulse.by_portfolio == {"After close": 10}
+    assert pulse.daily_change == 10
+    assert pulse.portfolio_freshness == {"After close": False}
 
 
 def test_rate_limiter_and_market_aware_refresh_cadence() -> None:

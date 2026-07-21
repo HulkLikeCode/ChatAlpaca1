@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -121,8 +122,11 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
     assert portfolio_grid.count('<div class="portfolio-card">') > 1
     assert "CDT Div" in portfolio_grid
     assert portfolio_grid.index("Cash:") < portfolio_grid.index("CDT Div:")
+    assert ".00" not in portfolio_grid
     assert "symbols" not in portfolio_grid
     assert "\n" not in portfolio_grid
+    assert "Portfolio values" not in [item.label for item in app.expander]
+    assert any("performance-status" in item.value for item in app.markdown)
     assert not app.get("file_uploader")
     assert "Record transaction" not in [item.label for item in app.button]
     assert "Submit assigned order" not in [item.label for item in app.button]
@@ -133,6 +137,36 @@ def test_comparison_defaults_to_spy_benchmark() -> None:
 
     benchmark_selector = next(item for item in app.multiselect if item.label == "Benchmark ETFs")
     assert benchmark_selector.value == ["SPY"]
+    assert benchmark_selector.options == [
+        "SPY — S&P 500 large-cap U.S. equity benchmark ETF",
+        "QQQ — Nasdaq-100 large growth and technology-heavy benchmark ETF",
+        "IWM — Russell 2000 small-cap U.S. equity benchmark ETF",
+        "DIA — Dow Jones Industrial Average blue-chip U.S. equity benchmark ETF",
+        "VTI — Total U.S. stock market benchmark ETF",
+        "VT — Vanguard total world stock market benchmark ETF",
+        "EFA — Developed markets ex-U.S. equity benchmark ETF",
+        "EEM — Emerging markets equity benchmark ETF",
+        "AGG — U.S. aggregate bond market benchmark ETF",
+        "BND — Total U.S. bond market benchmark ETF",
+        "TLT — Long-term U.S. Treasury bond benchmark ETF",
+        "IEF — Intermediate-term U.S. Treasury bond benchmark ETF",
+        "SHY — Short-term U.S. Treasury bond benchmark ETF",
+        "LQD — Investment-grade U.S. corporate bond benchmark ETF",
+    ]
+    extras = next(item for item in app.multiselect if item.label == "Additional stocks or ETFs")
+    assert extras.proto.accept_new_options
+    assert extras.proto.placeholder == "Start typing a ticker or security name"
+
+
+def test_portfolio_income_chart_uses_two_purple_series() -> None:
+    app = viewer_app("Overview")
+
+    income_chart = json.loads(app.get("plotly_chart")[0].proto.spec)
+
+    assert [trace["marker"]["color"] for trace in income_chart["data"]] == [
+        "#9B72FF",
+        "#D0B7FF",
+    ]
 
 
 def test_monitor_consolidates_movers_and_simplifies_freshness() -> None:

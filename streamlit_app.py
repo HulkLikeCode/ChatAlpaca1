@@ -17,6 +17,7 @@ from chat_alpaca.bootstrap import initialize_application
 from chat_alpaca.classification import (
     resolve_etf_sector_snapshot,
     resolve_security_metadata,
+    security_symbol_labels,
 )
 from chat_alpaca.commands import (
     TransactionCommand,
@@ -119,7 +120,22 @@ from chat_alpaca.trading import (
     sync_allocations,
 )
 
-BENCHMARKS = ("SPY", "QQQ", "DIA", "IWM")
+BENCHMARKS = {
+    "SPY": "S&P 500 large-cap U.S. equity benchmark ETF",
+    "QQQ": "Nasdaq-100 large growth and technology-heavy benchmark ETF",
+    "IWM": "Russell 2000 small-cap U.S. equity benchmark ETF",
+    "DIA": "Dow Jones Industrial Average blue-chip U.S. equity benchmark ETF",
+    "VTI": "Total U.S. stock market benchmark ETF",
+    "VT": "Vanguard total world stock market benchmark ETF",
+    "EFA": "Developed markets ex-U.S. equity benchmark ETF",
+    "EEM": "Emerging markets equity benchmark ETF",
+    "AGG": "U.S. aggregate bond market benchmark ETF",
+    "BND": "Total U.S. bond market benchmark ETF",
+    "TLT": "Long-term U.S. Treasury bond benchmark ETF",
+    "IEF": "Intermediate-term U.S. Treasury bond benchmark ETF",
+    "SHY": "Short-term U.S. Treasury bond benchmark ETF",
+    "LQD": "Investment-grade U.S. corporate bond benchmark ETF",
+}
 ALL_PORTFOLIOS_OPTION = "__all_portfolios__"
 SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
 EDITABLE_KINDS = (*MANUAL_KINDS, "opening_position")
@@ -134,7 +150,7 @@ CSV_TEMPLATE = """Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amou
 """
 
 st.set_page_config(
-    page_title="ChatAlpaca · Portfolio Command Center",
+    page_title="Let’s Go Blue!",
     page_icon=str(Path(__file__).with_name("assets") / "favicon.png"),
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -191,6 +207,10 @@ def _new_active_monitor() -> ActiveSessionMonitor:
 
 def dollars(value: object) -> str:
     return f"${float(value):,.2f}"
+
+
+def whole_dollars(value: object) -> str:
+    return f"${float(value):,.0f}"
 
 
 def freshness_label(status: FreshnessStatus) -> str:
@@ -398,8 +418,8 @@ def render_portfolio_cards(
                     '<div class="portfolio-card">',
                     f'<div class="eyebrow">{escape(report.name)}</div>',
                     f'<div class="value">{report.value_label}</div>',
-                    f'<div class="detail">Cash: {dollars(report.cash)} · '
-                    f"CDT Div: {dollars(report.cumulative_dividends)}</div>",
+                    f'<div class="detail">Cash: {whole_dollars(report.cash)} · '
+                    f"CDT Div: {whole_dollars(report.cumulative_dividends)}</div>",
                     "</div>",
                 )
             )
@@ -481,6 +501,8 @@ def render_performance_summary(
     key_prefix: str,
     benchmark_closes: pd.DataFrame,
     expanded: bool = False,
+    show_portfolio_cards: bool = False,
+    data_note: str | None = None,
 ) -> None:
     with st.expander("Portfolio value and gain/loss", expanded=expanded):
         report = assemble_combined_performance_report(
@@ -491,12 +513,20 @@ def render_performance_summary(
             benchmark_closes,
         )
         pulse = _indicative_performance_pulse(portfolios, closes)
-        overlay_is_fresh = bool(
-            pulse is not None
-            and not pulse.stale_or_missing
-            and all(change is not None for change in pulse.by_portfolio.values())
+        fresh_portfolios = (
+            {name for name, fresh in pulse.portfolio_freshness.items() if fresh}
+            if pulse is not None
+            else set()
         )
-        if pulse is not None and overlay_is_fresh:
+        available_portfolios = (
+            {name for name, change in pulse.by_portfolio.items() if change is not None}
+            if pulse is not None
+            else set()
+        )
+        live_count = len(fresh_portfolios)
+        available_count = len(available_portfolios)
+        overlay_is_fresh = bool(pulse is not None and live_count == len(portfolios))
+        if pulse is not None:
             report = overlay_intraday_performance(
                 report,
                 dict(pulse.by_portfolio),
@@ -510,12 +540,18 @@ def render_performance_summary(
             report.total_label,
             dollars(report.total_value) if report.total_value is not None else "—",
             key=f"{key_prefix}_selected_totals",
+            stale=bool(
+                pulse is not None
+                and pulse.indicative_total_value is not None
+                and not overlay_is_fresh
+            ),
         )
         _render_metric(
             metrics[1],
             "All-time gain/loss",
             _metric_dollars(report.all_time),
             key=f"{key_prefix}_all_time",
+            stale=bool(pulse is not None and available_count > 0 and not overlay_is_fresh),
         )
         _render_metric(
             metrics[2],
@@ -529,36 +565,55 @@ def render_performance_summary(
             "Custom gain/loss",
             _metric_dollars(report.custom),
             key=f"{key_prefix}_custom",
+            stale=bool(
+                pulse is not None
+                and custom_end == date.today()
+                and available_count > 0
+                and not overlay_is_fresh
+            ),
         )
         metrics[4].metric(
             "Annualized Alpha",
             f"{report.alpha:.2%}" if report.alpha is not None else "—",
         )
         metrics[5].metric("Beta", f"{report.beta:.2f}" if report.beta is not None else "—")
-        for warning in report.warnings:
-            st.caption(warning) if closes.empty else st.warning(warning)
-        st.caption(report.coverage)
-        if not closes.empty:
-            st.caption(
-                f"Alpha/Beta coverage: {report.alpha_beta_observations} overlapping SPY daily "
-                "returns; 60 are required."
-            )
-        if pulse is not None:
-            custom_note = (
-                "Custom gain/loss includes the indicative intraday move."
-                if overlay_is_fresh and custom_end == date.today()
-                else "Custom gain/loss remains fixed at its historical end date."
-            )
-            coverage_note = (
-                "All selected portfolios have complete quote moves."
-                if overlay_is_fresh
-                else "The live overlay is incomplete, so confirmed-close values remain in view; "
-                "light-pink amounts are not real time."
-            )
-            st.caption(
-                f"IEX quote overlay refreshes every 30 seconds. {custom_note} {coverage_note}"
-            )
+        if show_portfolio_cards:
+            render_portfolio_cards(portfolios, closes, custom_start, custom_end)
 
+        status_parts = [report.coverage.removesuffix(".")]
+        if closes.empty:
+            status_parts.append("Alpha/Beta unavailable")
+        else:
+            status_parts.append(
+                f"Alpha/Beta {report.alpha_beta_observations}/60 overlapping SPY returns"
+            )
+        if pulse is None:
+            status_parts.append("Live quotes unavailable")
+        elif overlay_is_fresh:
+            status_parts.append(f"Live daily {live_count}/{len(portfolios)} · 30s refresh")
+        else:
+            quote_status = (
+                f"Daily quotes {available_count}/{len(portfolios)} · "
+                f"fresh {live_count}/{len(portfolios)}"
+            )
+            if available_count < len(portfolios):
+                quote_status += f" · {len(portfolios) - available_count} confirmed-close fallback"
+            status_parts.append(quote_status + " · 30s refresh")
+        if custom_end != date.today():
+            status_parts.append(f"Custom fixed at {custom_end:%-m/%-d/%y}")
+        st.markdown(
+            '<div class="performance-status">'
+            + "".join(f"<span>{escape(item)}</span>" for item in status_parts)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        if data_note:
+            st.info(f"Live market values are unavailable, so cost basis is shown. {data_note}")
+        for warning in report.warnings:
+            if closes.empty:
+                st.caption(warning)
+            else:
+                st.warning(warning)
         performance = pd.DataFrame(
             [
                 {
@@ -570,12 +625,23 @@ def render_performance_summary(
                     "Annualized Alpha": row.alpha * 100 if row.alpha is not None else None,
                     "Beta": row.beta,
                     "Observations": row.alpha_beta_observations,
+                    "_stale": pulse is not None and row.portfolio not in fresh_portfolios,
                 }
                 for row in report.rows
             ]
         )
+        stale_performance_rows = performance.pop("_stale")
+        performance_display = (
+            _style_stale_values(
+                performance,
+                stale_performance_rows,
+                ("All-time gain/loss", "Daily gain/loss", "Custom gain/loss"),
+            )
+            if pulse is not None
+            else performance
+        )
         st.dataframe(
-            performance,
+            performance_display,
             hide_index=True,
             width="stretch",
             column_config={
@@ -761,6 +827,7 @@ def render_portfolio_income(
     income = pd.DataFrame(rows)
     monthly = income.groupby(["Month", "Income type"], as_index=False)["Cash received"].sum()
     figure = go.Figure()
+    income_colors = (PLOT_COLORS[2], PLOT_COLORS[3])
     for index, income_type in enumerate(("Dividend", "Interest")):
         values = monthly[monthly["Income type"] == income_type]
         figure.add_trace(
@@ -768,7 +835,7 @@ def render_portfolio_income(
                 x=values["Month"],
                 y=values["Cash received"],
                 name=income_type,
-                marker_color=PLOT_COLORS[index % len(PLOT_COLORS)],
+                marker_color=income_colors[index],
                 hovertemplate="%{x|%b %Y}<br>$%{y:,.2f}<extra>" + income_type + "</extra>",
             )
         )
@@ -816,11 +883,9 @@ def render_overview(
         "overview",
         benchmark_closes,
         expanded=True,
+        show_portfolio_cards=True,
+        data_note=data_note,
     )
-    with st.expander("Portfolio values", expanded=False):
-        render_portfolio_cards(portfolios, closes, custom_start, custom_end)
-        if data_note:
-            st.info(f"Live market values are unavailable, so cost basis is shown. {data_note}")
     with st.expander("Portfolio income", expanded=False):
         render_portfolio_income(portfolios, custom_start, custom_end)
     render_consolidated_holdings(portfolios, closes, custom_start, custom_end, benchmark_closes)
@@ -850,22 +915,38 @@ def render_compare(
         with controls[0]:
             selected_benchmarks = st.multiselect(
                 "Benchmark ETFs",
-                BENCHMARKS,
+                tuple(BENCHMARKS),
                 default=["SPY"],
+                format_func=lambda symbol: f"{symbol} — {BENCHMARKS[symbol]}",
                 key="compare_benchmarks",
             )
+        with session_scope() as session:
+            symbol_labels = security_symbol_labels(session)
+        for portfolio in portfolios:
+            for lot in portfolio.holdings:
+                symbol_labels.setdefault(lot.symbol, lot.symbol)
         with controls[1]:
-            extra_text = st.text_input(
+            extra_choices = st.multiselect(
                 "Additional stocks or ETFs",
-                placeholder="AAPL, MSFT, VTI",
+                tuple(sorted(symbol_labels)),
                 key="compare_extras",
-                help="Enter one or more symbols, separated by commas.",
+                format_func=lambda symbol: (
+                    f"{symbol} — {symbol_labels[symbol]}"
+                    if symbol_labels.get(symbol) not in {None, symbol}
+                    else symbol
+                ),
+                placeholder="Start typing a ticker or security name",
+                help="Choose a suggestion or enter a new stock or ETF ticker.",
+                accept_new_options=True,
+                filter_mode="fuzzy",
             )
-        extras = tuple(
-            dict.fromkeys(
-                symbol.strip().upper() for symbol in extra_text.split(",") if symbol.strip()
-            )
-        )
+        extras: list[str] = []
+        for choice in extra_choices:
+            try:
+                extras.append(validate_transaction_symbol(str(choice)))
+            except ValueError as exc:
+                st.warning(str(exc))
+        extras = list(dict.fromkeys(extras))
         benchmark_symbols = tuple(dict.fromkeys([*selected_benchmarks, *extras]))
         acquisition = comparison_acquisition_plan(
             portfolios, custom_start, custom_end, benchmark_symbols
@@ -2936,6 +3017,18 @@ def render_active_monitoring(
             ),
             hide_index=True,
             width="stretch",
+            column_config={
+                column: st.column_config.NumberColumn(format="$%,.2f")
+                for column in (
+                    "Latest trade",
+                    "Bid",
+                    "Ask",
+                    "Midpoint",
+                    "Spread",
+                    "Exposure value",
+                )
+            }
+            | {"Exposure shares": st.column_config.NumberColumn(format="%.2f")},
         )
 
     order_columns = st.columns(2)

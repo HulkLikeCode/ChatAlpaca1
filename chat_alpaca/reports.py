@@ -160,12 +160,12 @@ def assemble_portfolio_card_reports(
     reports = []
     for portfolio in portfolios:
         if closes.empty:
-            value_label = f"Cost basis ${float(portfolio_cost(portfolio)):,.2f}"
+            value_label = f"Cost basis ${float(portfolio_cost(portfolio)):,.0f}"
             warnings: tuple[str, ...] = ()
         else:
             valuation = portfolio_valuation(portfolio, closes)
             value_label = (
-                f"${float(valuation.total_calculated_value):,.2f}"
+                f"${float(valuation.total_calculated_value):,.0f}"
                 if valuation.is_complete
                 else "Incomplete valuation"
             )

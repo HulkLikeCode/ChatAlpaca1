@@ -78,6 +78,20 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
 .portfolio-card .eyebrow {color: var(--violet); font-size: .72rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;}
 .portfolio-card .value {font-size: clamp(1.3rem, 2.2vw, 1.75rem); font-weight: 760; margin-top: .35rem; white-space: nowrap;}
 .portfolio-card .detail {color: var(--muted); font-size: .82rem; margin-top: .25rem;}
+.performance-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .28rem .75rem;
+  margin: .35rem 0 .45rem;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.25;
+}
+.performance-status span + span::before {
+  content: "·";
+  margin-right: .75rem;
+  color: rgba(143, 155, 183, .58);
+}
 .stButton > button, .stDownloadButton > button {
   border-radius: 10px;
   border: 1px solid rgba(105,126,255,.45);

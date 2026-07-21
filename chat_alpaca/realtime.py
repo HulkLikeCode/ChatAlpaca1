@@ -803,6 +803,7 @@ class PortfolioPulse:
     daily_change: float | None
     holdings: tuple[PulseHolding, ...]
     by_portfolio: Mapping[str, float | None]
+    portfolio_freshness: Mapping[str, bool]
     stale_or_missing: tuple[str, ...]
 
 
@@ -812,17 +813,20 @@ def build_portfolio_pulse(
     portfolio_list = list(portfolios)
     shares_by_symbol: dict[str, float] = {}
     portfolio_changes: dict[str, float | None] = {}
+    portfolio_freshness: dict[str, bool] = {}
     cash_total = 0.0
     for portfolio in portfolio_list:
         name = str(getattr(portfolio, "name"))
         cash_total += float(getattr(portfolio, "cash"))
         changes: list[float] = []
+        statuses: list[FreshnessStatus] = []
         holdings = list(getattr(portfolio, "holdings"))
         for lot in holdings:
             symbol = normalize_symbol(getattr(lot, "symbol"))
             shares = float(getattr(lot, "shares"))
             shares_by_symbol[symbol] = shares_by_symbol.get(symbol, 0.0) + shares
             quote = quotes.get(symbol, QuoteRecord(symbol))
+            statuses.append(quote.status)
             intraday_price = quote.latest_trade or quote.midpoint
             change = (
                 shares * (intraday_price - quote.previous_close)
@@ -833,6 +837,14 @@ def build_portfolio_pulse(
                 changes.append(change)
         portfolio_changes[name] = (
             sum(changes) if holdings and len(changes) == len(holdings) else None
+        )
+        portfolio_freshness[name] = bool(
+            holdings
+            and len(changes) == len(holdings)
+            and all(
+                status in {FreshnessStatus.STREAMING, FreshnessStatus.RECENTLY_REFRESHED}
+                for status in statuses
+            )
         )
     rows = []
     for symbol, shares in sorted(shares_by_symbol.items()):
@@ -890,6 +902,7 @@ def build_portfolio_pulse(
         total_change,
         changed_rows,
         portfolio_changes,
+        portfolio_freshness,
         stale,
     )
 
