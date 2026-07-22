@@ -1,8 +1,10 @@
 # Final calculation-audit acceptance record
 
-> Final closure accepted on `audit-final-closure`. All 127 inventory rows have a supported
-> terminal status, and no substantive financial calculation remains unresolved. This record does
-> not authorize merging the branch or activating live trading.
+> Final closure was accepted and merged into `main` through
+> [pull request #8](https://github.com/HulkLikeCode/ChatAlpaca1/pull/8) at
+> `bf9cafe85ffa19c444751132dea8a18b00e8bb71`. All 127 inventory rows have a supported terminal
+> status, and no substantive financial calculation remains unresolved. This record does not
+> authorize activating live trading.
 
 ## Baseline and closure commits
 
@@ -14,12 +16,20 @@
   `2ed312de9f326d67220150a687af75537ca0055c`
 - Final implementation and audit reconciliation:
   `c827924a526bf13dbc9355560b7dd57cc95d3907`
-- Acceptance record: the commit containing this file on `audit-final-closure`
+- Acceptance record:
+  `d3402b521c2d8d4fb35ec27529f2138f76d1d9c2`
+- Final closure: [pull request #8](https://github.com/HulkLikeCode/ChatAlpaca1/pull/8), merged at
+  `bf9cafe85ffa19c444751132dea8a18b00e8bb71`
 
 The baseline was fetched from `origin`; local `main` was fast-forwarded and verified byte-for-byte
 against `origin/main` before closure work began. The worktree was clean. The baseline contained 127
 audit rows, 115 rows marked `Implemented and tested`, the expected model versions, no Phase 3
 database migration, and 383 passing tests.
+
+Post-merge verification confirmed the pull request head and all three closure commits as ancestors
+of current `main`: `2ed312de9f326d67220150a687af75537ca0055c`,
+`c827924a526bf13dbc9355560b7dd57cc95d3907`, and
+`d3402b521c2d8d4fb35ec27529f2138f76d1d9c2`.
 
 ## Accepted-phase references
 
@@ -111,11 +121,16 @@ Final local verification on July 22, 2026 passed:
 - `.venv/bin/pytest -q`: 396 passed
 - `git diff --check`: passed
 
+Post-merge administrative verification on July 22, 2026 repeated the four checks above at merge
+commit `bf9cafe85ffa19c444751132dea8a18b00e8bb71` with the same passing results. The narrow forecast
+presentation smoke check also passed for explicit-date month zero, December-to-January rollover,
+leap-day handling, exact month-12 annual labels, and calendar-label independence from percentile
+values and simulation metadata.
+
 Pytest emitted one non-failing third-party deprecation warning from `websockets.legacy`. No new
 financial manual calculation was required: the MON-009 production formula was unchanged, and the
 FORECAST-005 presentation contract is deterministic and covered with explicit dates. The Phase 3
-browser tests were not repeated. A normal post-deployment presentation smoke check of the forecast
-year labels remains prudent but is not an acceptance blocker.
+browser tests were not repeated.
 
 No Alpaca request was made. No order was submitted, canceled, or synchronized. Provider account and
 order rows were accepted only as documented non-calculation passthrough/workflow records, not as an
@@ -132,9 +147,9 @@ independent reconciliation of external brokerage values.
   requires a separate operational review.
 - The existing third-party `websockets.legacy` deprecation warning remains.
 
-Final calculation-audit acceptance is recommended for this closure branch. The transaction ledger
-remains the accounting source of truth. Accepted Phase 1–3 calculations, credentials, live-trading
-gates, order controls, and the database schema were unchanged; no migration was added.
+Final calculation-audit closure was accepted and merged through pull request #8. The transaction
+ledger remains the accounting source of truth. Accepted Phase 1–3 calculations, credentials,
+live-trading gates, order controls, and the database schema were unchanged; no migration was added.
 
 ChatAlpaca1 is a personal planning and monitoring application. Its output is not tax, legal, or
 investment advice.
