@@ -336,6 +336,9 @@ def run_block_bootstrap(request: BootstrapRequest) -> BootstrapResult:
     }
     limitations = (
         "Observed history is sampled without an imposed expected-return assumption.",
+        "Circular monthly block bootstrap samples jointly aligned contiguous 3-, 6-, or "
+        "12-month blocks and wraps from the end of observed history to its beginning; this "
+        "retained mechanic preserves within-block order and cross-asset row dependence.",
         "Historical blocks may not represent future regimes or unprecedented events.",
         "Taxes, withdrawals, and full retirement-account tax treatment are not modeled.",
         "Nominal and real loss compare terminal value with contributed capital; real values use the configured constant inflation rate.",

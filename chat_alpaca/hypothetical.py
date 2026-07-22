@@ -143,7 +143,7 @@ class AnalysisSnapshot:
     forecast_target_probability: float | None
     downside_percentiles: Mapping[str, float]
     deterministic_stress_losses: Mapping[str, float]
-    retirement_success_probability: float | None
+    depletion_probability: float | None
 
 
 @dataclass(frozen=True)
@@ -334,7 +334,7 @@ def _retirement_probability(
         active = values > 0
         values[active] *= np.exp(drift + diffusion * rng.standard_normal(int(active.sum())))
         values = np.maximum(values - spending, 0)
-    return float(np.mean(values > 0))
+    return float(np.mean(values <= 0))
 
 
 def _snapshot(

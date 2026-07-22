@@ -410,10 +410,15 @@ def estimate_parameters(
             override.annual_volatility if override else None,
             request.assumptions,
         )
-        annual_returns.append(annual_return + request.assumptions.expected_return_shift)
+        final_annual_return = annual_return + request.assumptions.expected_return_shift
+        if final_annual_return <= -1:
+            raise ValueError(
+                f"Final annual return for {symbol} must be greater than -100% after shifts."
+            )
+        annual_returns.append(final_annual_return)
         annual_volatilities.append(annual_volatility * request.assumptions.volatility_multiplier)
         disclosures[symbol] = {
-            "historical_method": "annualized mean log return, cross-sectionally shrunk",
+            "historical_method": "cross-sectional median shrinkage",
             "return_weights": return_weights,
             "volatility_weights": volatility_weights,
             "external": asdict(ext) if ext else None,
@@ -458,8 +463,8 @@ def estimate_parameters(
         correlation,
         len(returns),
         disclosures,
-        f"geometric log-return cross-sectional shrinkage ({alpha:.3f})",
-        f"sample covariance diagonal shrinkage ({covariance_alpha:.3f})",
+        f"cross-sectional median shrinkage ({alpha:.3f})",
+        f"fixed diagonal covariance shrinkage ({covariance_alpha:.3f})",
     )
     return estimate, returns, proxies, warnings
 

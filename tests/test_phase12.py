@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pandas as pd
+import pytest
 
 from chat_alpaca.portfolio_service import list_portfolios, seed_database
 from chat_alpaca.realtime import (
@@ -228,6 +229,40 @@ def test_mixed_stream_and_snapshot_values_build_one_indicative_pulse() -> None:
     assert pulse.daily_change == 20
     assert pulse.portfolio_freshness == {"Primary": True}
     assert not pulse.stale_or_missing
+
+
+def test_cash_only_pulse_has_a_dollar_for_dollar_total() -> None:
+    portfolio = SimpleNamespace(name="Cash", cash=125.50, holdings=[])
+
+    pulse = build_portfolio_pulse([portfolio], {})
+
+    assert pulse.indicative_total_value == 125.50
+    assert pulse.daily_change is None
+
+
+@pytest.mark.parametrize(
+    ("change", "available"),
+    [(0.009, False), (-0.009, False), (0.01, True), (-0.01, True)],
+)
+def test_pulse_share_of_net_daily_pl_threshold(change: float, available: bool) -> None:
+    portfolio = SimpleNamespace(
+        name="Threshold",
+        cash=0,
+        holdings=[SimpleNamespace(symbol="AAA", shares=1)],
+    )
+    pulse = build_portfolio_pulse(
+        [portfolio],
+        {
+            "AAA": QuoteRecord(
+                "AAA",
+                latest_trade=100 + change,
+                previous_close=100,
+                status=FreshnessStatus.STREAMING,
+            )
+        },
+    )
+
+    assert (pulse.holdings[0].contribution is not None) is available
 
 
 def test_pulse_combines_the_same_symbol_across_portfolios() -> None:

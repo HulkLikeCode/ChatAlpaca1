@@ -480,6 +480,7 @@ def sensitivity_grid(
         "spending",
         "retirement_date",
         "expected_return",
+        "low_return",
     }
     unknown = set(variations) - allowed
     if unknown:
@@ -490,6 +491,11 @@ def sensitivity_grid(
     outputs = []
     for values in rows:
         replacements = dict(values)
+        if "expected_return" in replacements and assumptions.scenario_type in {
+            ScenarioType.LOW_RETURN_PERIOD,
+            ScenarioType.LOST_DECADE,
+        }:
+            replacements["low_return"] = replacements.pop("expected_return")
         if "market_decline" in replacements:
             if assumptions.scenario_type == ScenarioType.HOLDING_DECLINE:
                 replacements["holding_decline"] = replacements["market_decline"]

@@ -77,6 +77,19 @@ def test_normalization_and_metrics() -> None:
     assert metrics["Max drawdown"] == 0.0
 
 
+def test_comparison_metrics_are_unavailable_with_insufficient_history() -> None:
+    metrics = summary_metrics(
+        pd.Series([100.0], index=pd.to_datetime(["2026-01-02"]), name="Short")
+    )
+
+    assert metrics == {
+        "Total return": None,
+        "Annualized return": None,
+        "Volatility": None,
+        "Max drawdown": None,
+    }
+
+
 def test_transaction_aware_values_and_gain_loss_exclude_external_cash_flows() -> None:
     portfolio = Portfolio(id=1, name="Transaction portfolio", cash=Decimal("85"))
     portfolio.holdings = [

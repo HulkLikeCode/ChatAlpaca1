@@ -99,7 +99,7 @@ def test_reconstructs_flows_income_expenses_returns_and_rebasing() -> None:
     daily = result.portfolios[1].daily
 
     assert daily.portfolio_value.tolist() == [100, 100, 112, 117, 117, 97]
-    assert daily.external_cash_flows.tolist() == [100, 0, 0, 0, 0, -20]
+    assert daily.external_cash_flows.tolist() == [100, 0, 0, 3, 0, -20]
     assert daily.dividends.loc["2026-01-06"] == 5
     assert daily.interest.loc["2026-01-06"] == 2
     assert daily.fees.loc["2026-01-07"] == -1
@@ -110,7 +110,7 @@ def test_reconstructs_flows_income_expenses_returns_and_rebasing() -> None:
     assert daily.income_return.loc["2026-01-06"] == pytest.approx(0.07)
     assert daily.price_return.loc["2026-01-06"] == pytest.approx(0.05)
     assert daily.total_return.loc["2026-01-09"] == pytest.approx(0)
-    assert result.gain_loss == pytest.approx(17)
+    assert result.gain_loss == pytest.approx(14)
     assert result.xirr is not None
 
 

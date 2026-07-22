@@ -50,7 +50,9 @@ def calculated_trade_cash(kind: str, quantity: float, price: float, fees: float)
 
 def build_transaction_draft(command: TransactionCommand) -> TransactionDraft:
     """Validate UI input and construct the ledger service command."""
-    position_kind = command.kind in POSITION_KINDS
+    position_kind = command.kind in POSITION_KINDS or (
+        command.kind == "award" and command.quantity > 0
+    )
     parsed_quantity = shares(command.quantity) if position_kind else None
     parsed_price = money(command.price) if position_kind else None
     parsed_fees = money(command.fees) if command.fees else None
@@ -66,7 +68,7 @@ def build_transaction_draft(command: TransactionCommand) -> TransactionDraft:
         parsed_cash_delta = money(command.cash_delta)
 
     normalized_symbol = normalize_symbol(command.symbol) if command.symbol.strip() else None
-    if command.kind in {"buy", "sell", "opening_position"} and normalized_symbol is None:
+    if position_kind and normalized_symbol is None:
         raise ValueError(f"A symbol is required for {transaction_kind_label(command.kind)}.")
 
     return TransactionDraft(

@@ -158,7 +158,7 @@ def test_multiple_trades_before_after_cash_weights_sectors_risk_and_forecast(ses
     assert result.after.forecast_target_probability is not None
     assert set(result.after.downside_percentiles) == {"P5", "P25"}
     assert result.after.deterministic_stress_losses["Technology"] < 0
-    assert result.after.retirement_success_probability is not None
+    assert result.after.depletion_probability is not None
     assert result.after.effective_number_of_holdings > result.before.effective_number_of_holdings
     assert "AAA" in result.after.benchmark_relative_exposure
 

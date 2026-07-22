@@ -287,7 +287,8 @@ def _validate_transaction(draft: TransactionDraft) -> None:
         raise ValueError("Transaction date cannot be in the future.")
     if draft.kind not in {*MANUAL_KINDS, "opening_position"}:
         raise ValueError(f"Unsupported transaction category: {draft.kind}")
-    if draft.kind in POSITION_KINDS:
+    is_position_award = draft.kind == "award" and draft.quantity is not None
+    if draft.kind in POSITION_KINDS or is_position_award:
         if draft.symbol is None:
             raise ValueError("Position transactions require a symbol.")
         if draft.quantity is None or draft.quantity <= 0:
@@ -300,6 +301,10 @@ def _validate_transaction(draft: TransactionDraft) -> None:
             raise ValueError("Sell transactions must increase cash.")
         if draft.kind == "opening_position" and draft.cash_delta != 0:
             raise ValueError("Opening positions must be cash-neutral.")
+        if is_position_award and (draft.price is None or draft.price <= 0):
+            raise ValueError(
+                "A quantity award requires an explicitly recorded positive fair value in Price."
+            )
 
 
 def seed_database(session: Session) -> None:
@@ -660,12 +665,14 @@ def replay_portfolio(session: Session, portfolio_id: int) -> None:
         draft = _draft_from_transaction(transaction)
         _validate_transaction(draft)
         portfolio.cash = Decimal(portfolio.cash) + draft.cash_delta
-        if draft.kind in {"buy", "opening_position"}:
+        if draft.kind in {"buy", "opening_position"} or (
+            draft.kind == "award" and draft.quantity is not None
+        ):
             assert draft.symbol is not None and draft.quantity is not None
             assert draft.price is not None
             cost_basis = (
                 draft.price
-                if draft.kind == "opening_position"
+                if draft.kind in {"opening_position", "award"}
                 else abs(draft.cash_delta / draft.quantity)
             )
             portfolio.holdings.append(
@@ -717,7 +724,9 @@ def replay_integrity_diagnostic(session: Session, portfolio_id: int) -> ReplayIn
         draft = _draft_from_transaction(transaction)
         _validate_transaction(draft)
         expected.cash = Decimal(expected.cash) + draft.cash_delta
-        if draft.kind in {"buy", "opening_position"}:
+        if draft.kind in {"buy", "opening_position"} or (
+            draft.kind == "award" and draft.quantity is not None
+        ):
             assert draft.symbol is not None and draft.quantity is not None
             assert draft.price is not None
             expected.holdings.append(
@@ -727,7 +736,7 @@ def replay_integrity_diagnostic(session: Session, portfolio_id: int) -> ReplayIn
                     acquired_on=draft.transaction_date,
                     cost_basis=(
                         draft.price
-                        if draft.kind == "opening_position"
+                        if draft.kind in {"opening_position", "award"}
                         else abs(draft.cash_delta / draft.quantity)
                     ),
                 )

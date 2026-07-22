@@ -137,8 +137,8 @@ def test_parameter_blending_uses_shrunk_history_and_external_assumptions() -> No
         < max(historical.annual_returns[0], 0.12)
     )
     assert blended.parameter_sources["AAA"]["external"]["source"] == "CMA 2026"
-    assert "geometric" in blended.shrinkage_method
-    assert "diagonal" in blended.covariance_method
+    assert blended.shrinkage_method.startswith("cross-sectional median shrinkage")
+    assert blended.covariance_method.startswith("fixed diagonal covariance shrinkage")
 
 
 def test_user_overrides_take_precedence_and_are_disclosed() -> None:

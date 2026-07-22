@@ -32,10 +32,11 @@ from chat_alpaca.parametric_forecasting import (
     estimate_parameters,
 )
 from chat_alpaca.reconstruction import ReconstructionResult
+from chat_alpaca.rmd_tables import RMD_TABLE_VERSION, lifetime_divisor
 from chat_alpaca.scenarios import DatasetReference, ledger_state_hash
 
 RETIREMENT_MODEL_TYPE = "long_horizon_retirement"
-RETIREMENT_MODEL_VERSION = "1.0.0"
+RETIREMENT_MODEL_VERSION = "1.1.0"
 ACCOUNT_TYPES = ("traditional_ira", "roth_ira", "taxable", "unknown")
 
 
@@ -51,6 +52,9 @@ class RetirementProfile:
     contribution_amount: float = 0.0
     contribution_frequency: Literal["monthly", "annual"] = "monthly"
     target_estate_value: float | None = None
+    owner_date_of_birth: date | None = None
+    spouse_date_of_birth: date | None = None
+    spouse_is_sole_beneficiary: bool = False
 
     def __post_init__(self) -> None:
         if self.current_age < 0:
@@ -77,6 +81,8 @@ class RetirementProfile:
             raise ValueError("Contribution frequency must be monthly or annual.")
         if self.target_estate_value is not None and self.target_estate_value < 0:
             raise ValueError("Target estate value cannot be negative.")
+        if self.spouse_is_sole_beneficiary and self.spouse_date_of_birth is None:
+            raise ValueError("A sole-beneficiary spouse requires the spouse's date of birth.")
 
     @property
     def retirement_month(self) -> int:
@@ -97,6 +103,9 @@ class RetirementAccount:
     account_type: Literal["traditional_ira", "roth_ira", "taxable", "unknown"]
     balance: float
     taxable_cost_basis: float | None = None
+    prior_december_31_balance: float | None = None
+    allocation: Mapping[str, float] | None = None
+    is_inherited: bool = False
 
     def __post_init__(self) -> None:
         if self.account_type not in ACCOUNT_TYPES:
@@ -106,8 +115,14 @@ class RetirementAccount:
         if self.taxable_cost_basis is not None:
             if self.account_type != "taxable":
                 raise ValueError("Taxable cost basis applies only to taxable accounts.")
-            if not 0 <= self.taxable_cost_basis <= self.balance:
-                raise ValueError("Taxable cost basis must be between zero and account balance.")
+            if self.taxable_cost_basis < 0:
+                raise ValueError("Taxable cost basis cannot be negative.")
+        if self.prior_december_31_balance is not None and self.prior_december_31_balance < 0:
+            raise ValueError("Prior December 31 balance cannot be negative.")
+        if self.allocation is not None and (
+            not self.allocation or any(value < 0 for value in self.allocation.values())
+        ):
+            raise ValueError("Account allocation weights must be nonnegative and nonempty.")
 
 
 @dataclass(frozen=True)
@@ -256,6 +271,8 @@ class RetirementResult:
     lifetime_taxes_estimate: Mapping[str, float]
     withdrawals_by_account_type: Mapping[str, Mapping[str, float]]
     outside_income_contribution: Mapping[str, float]
+    retained_household_cash: Mapping[str, float]
+    rmd_withdrawals: Mapping[str, float]
     shortfall_distribution: Mapping[str, object]
     target_estate_probability: float | None
     sequence_risk_diagnostics: Mapping[str, object]
@@ -277,6 +294,8 @@ class RetirementResult:
                 key: dict(value) for key, value in self.withdrawals_by_account_type.items()
             },
             "outside_income_contribution": dict(self.outside_income_contribution),
+            "retained_household_cash": dict(self.retained_household_cash),
+            "rmd_withdrawals": dict(self.rmd_withdrawals),
             "shortfall_distribution": dict(self.shortfall_distribution),
             "target_estate_probability": self.target_estate_probability,
             "sequence_risk_diagnostics": dict(self.sequence_risk_diagnostics),
@@ -418,6 +437,72 @@ def _income_start_month(profile: RetirementProfile, income: OutsideIncome) -> in
     return months + income.start_date.month - profile.as_of_date.month
 
 
+def applicable_rmd_start_age(date_of_birth: date) -> float:
+    """Return the owner RMD start age selected by date of birth under current federal law."""
+    if date_of_birth < date(1949, 7, 1):
+        return 70.5
+    if date_of_birth < date(1951, 1, 1):
+        return 72
+    if date_of_birth < date(1960, 1, 1):
+        return 73
+    return 75
+
+
+def first_rmd_year(date_of_birth: date) -> int:
+    start_age = applicable_rmd_start_age(date_of_birth)
+    if start_age != 70.5:
+        return date_of_birth.year + int(start_age)
+    month_index = date_of_birth.month - 1 + 6
+    return date_of_birth.year + 70 + month_index // 12
+
+
+def _age_in_year(date_of_birth: date, year: int) -> int:
+    return year - date_of_birth.year
+
+
+def owner_rmd_divisor(profile: RetirementProfile, year: int) -> tuple[float, str]:
+    if profile.owner_date_of_birth is None:
+        raise ValueError("Owner date of birth is required for an RMD divisor.")
+    owner_age = _age_in_year(profile.owner_date_of_birth, year)
+    spouse_age = None
+    if profile.spouse_is_sole_beneficiary and profile.spouse_date_of_birth is not None:
+        candidate = _age_in_year(profile.spouse_date_of_birth, year)
+        if owner_age - candidate > 10:
+            spouse_age = candidate
+    return lifetime_divisor(owner_age, spouse_age)
+
+
+def _account_allocation_weights(
+    accounts: Sequence[RetirementAccount], symbols: Sequence[str], fallback: np.ndarray
+) -> np.ndarray:
+    weights = np.empty((len(accounts), len(symbols)))
+    symbol_indices = {symbol: index for index, symbol in enumerate(symbols)}
+    for account_index, account in enumerate(accounts):
+        if account.allocation is None:
+            weights[account_index] = fallback
+            continue
+        unknown = set(account.allocation) - set(symbols)
+        if unknown:
+            raise ValueError(
+                f"Account {account.name} allocation references unavailable symbols: "
+                + ", ".join(sorted(unknown))
+                + "."
+            )
+        total = sum(account.allocation.values())
+        if total <= 0:
+            raise ValueError(f"Account {account.name} allocation must have a positive total.")
+        weights[account_index] = 0
+        for symbol, value in account.allocation.items():
+            weights[account_index, symbol_indices[symbol]] = value / total
+    return weights
+
+
+def aggregate_taxable_basis(portfolio: Portfolio, cash_balance: float | None = None) -> float:
+    """Return remaining FIFO security basis plus taxable cash, dollar for dollar."""
+    security_basis = sum(float(lot.shares) * float(lot.cost_basis) for lot in portfolio.holdings)
+    return security_basis + (float(portfolio.cash) if cash_balance is None else float(cash_balance))
+
+
 def _simulate(
     request: RetirementRequest, sampled: np.ndarray, symbols: Sequence[str]
 ) -> RetirementResult:
@@ -448,14 +533,17 @@ def _simulate(
         (simulations, len(accounts)),
     ).copy()
     contribution_weights = _contribution_weights(request)
-    _, holding_amounts = _normalized_values(request.holding_values)
+    holding_amounts = np.array([request.holding_values[symbol] for symbol in symbols], dtype=float)
     asset_weights = holding_amounts / holding_amounts.sum()
-    asset_values = np.broadcast_to(asset_weights, (simulations, len(symbols))).copy()
+    account_asset_weights = _account_allocation_weights(accounts, symbols, asset_weights)
+    account_assets = balances[:, :, None] * account_asset_weights[None, :, :]
     paths = np.empty((simulations, months + 1))
     paths[:, 0] = balances.sum(axis=1)
     total_shortfall = np.zeros(simulations)
     lifetime_taxes = np.zeros(simulations)
     outside_used = np.zeros(simulations)
+    retained_cash = np.zeros(simulations)
+    total_rmd_withdrawals = np.zeros(simulations)
     withdrawals = {kind: np.zeros(simulations) for kind in ACCOUNT_TYPES}
     first_depletion_month = np.full(simulations, np.nan)
     retirement_values: np.ndarray | None = None
@@ -467,29 +555,55 @@ def _simulate(
     order = list(assumptions.withdrawal_order) + [
         kind for kind in ACCOUNT_TYPES if kind not in assumptions.withdrawal_order
     ]
+    prior_december_balances = np.broadcast_to(
+        np.array(
+            [
+                account.prior_december_31_balance
+                if account.prior_december_31_balance is not None
+                else account.balance
+                for account in accounts
+            ],
+            dtype=float,
+        ),
+        (simulations, len(accounts)),
+    ).copy()
+    traditional_indices = [
+        index
+        for index, account in enumerate(accounts)
+        if account.account_type == "traditional_ira" and not account.is_inherited
+    ]
+    if (
+        profile.owner_date_of_birth is not None
+        and profile.as_of_date.year >= first_rmd_year(profile.owner_date_of_birth)
+        and any(accounts[index].prior_december_31_balance is None for index in traditional_indices)
+    ):
+        raise ValueError(
+            "Each owner Traditional IRA requires its explicit prior December 31 balance when "
+            "the projection begins in an RMD year."
+        )
 
     for month in range(months):
+        month_end = pd.Timestamp(profile.as_of_date) + pd.offsets.MonthEnd(month + 1)
+        surplus_this_month = np.zeros(simulations)
         if month == profile.retirement_month:
             retirement_values = balances.sum(axis=1).copy()
-        before_assets = asset_values.sum(axis=1)
-        asset_values *= 1 + sampled[:, month, :]
-        portfolio_return = (
-            np.divide(
-                asset_values.sum(axis=1),
-                before_assets,
-                out=np.ones(simulations),
-                where=before_assets > 0,
-            )
-            - 1
+        prior_total = balances.sum(axis=1)
+        account_assets *= 1 + sampled[:, month, None, :]
+        balances = account_assets.sum(axis=2)
+        portfolio_return = np.divide(
+            balances.sum(axis=1) - prior_total,
+            prior_total,
+            out=np.zeros(simulations),
+            where=prior_total > 0,
         )
-        balances *= 1 + portfolio_return[:, None]
         if (
             profile.retirement_month
             <= month
             < profile.retirement_month + retirement_returns.shape[1]
         ):
             retirement_returns[:, month - profile.retirement_month] = portfolio_return
-        balances -= balances * monthly_fee
+        account_assets *= 1 - monthly_fee
+        balances = account_assets.sum(axis=2)
         taxable_indices = [
             i for i, account in enumerate(accounts) if account.account_type == "taxable"
         ]
@@ -502,28 +616,69 @@ def _simulate(
             lifetime_taxes += dividend_tax
             taxable_total = balances[:, taxable_indices].sum(axis=1)
             for index in taxable_indices:
-                balances[:, index] -= dividend_tax * np.divide(
+                reduction = dividend_tax * np.divide(
                     balances[:, index],
                     taxable_total,
                     out=np.zeros(simulations),
                     where=taxable_total > 0,
                 )
+                prior_balance = balances[:, index].copy()
+                balances[:, index] -= reduction
+                account_assets[:, index, :] *= np.divide(
+                    balances[:, index],
+                    prior_balance,
+                    out=np.zeros(simulations),
+                    where=prior_balance > 0,
+                )[:, None]
+
+        rmd_net = np.zeros(simulations)
+        if (
+            month_end.month == 12
+            and profile.owner_date_of_birth is not None
+            and month_end.year >= first_rmd_year(profile.owner_date_of_birth)
+            and traditional_indices
+        ):
+            divisor, _ = owner_rmd_divisor(profile, month_end.year)
+            required = sum(
+                prior_december_balances[:, index] / divisor for index in traditional_indices
+            )
+            remaining_rmd = required.copy()
+            for index in traditional_indices:
+                gross = np.minimum(balances[:, index], remaining_rmd)
+                prior_balance = balances[:, index].copy()
+                balances[:, index] -= gross
+                account_assets[:, index, :] *= np.divide(
+                    balances[:, index],
+                    prior_balance,
+                    out=np.zeros(simulations),
+                    where=prior_balance > 0,
+                )[:, None]
+                remaining_rmd = np.maximum(remaining_rmd - gross, 0)
+                tax = gross * taxes.ordinary_income_rate
+                lifetime_taxes += tax
+                withdrawals["traditional_ira"] += gross
+                total_rmd_withdrawals += gross
+                rmd_net += gross - tax
 
         if month < profile.retirement_month:
             contribution = (
                 profile.contribution_amount
                 if profile.contribution_frequency == "monthly"
-                else profile.contribution_amount
-                if month % 12 == 0
-                else 0.0
+                else profile.contribution_amount / 12
             )
             balances += contribution * contribution_weights
+            account_assets += (
+                contribution
+                * contribution_weights[None, :, None]
+                * account_asset_weights[None, :, :]
+            )
             for index, account in enumerate(accounts):
                 if (
                     account.account_type == "taxable"
                     and not np.isnan(taxable_bases[:, index]).all()
                 ):
                     taxable_bases[:, index] += contribution * contribution_weights[index]
+            surplus_this_month = rmd_net
         else:
             inflation_factor = (1 + monthly_inflation) ** month
             spending = profile.fixed_real_annual_spending / 12 * inflation_factor
@@ -555,9 +710,10 @@ def _simulate(
                 income_tax = gross * fraction * taxes.ordinary_income_rate
                 lifetime_taxes += income_tax
                 outside_net += gross - income_tax
-            used = np.minimum(outside_net, spending)
-            outside_used += used
-            remaining = np.maximum(spending - outside_net, 0)
+            available_income = outside_net + rmd_net
+            outside_used += np.minimum(outside_net, spending)
+            surplus_this_month = np.maximum(available_income - spending, 0)
+            remaining = np.maximum(spending - available_income, 0)
             for kind in order:
                 for index, account in enumerate(accounts):
                     if account.account_type != kind:
@@ -585,6 +741,12 @@ def _simulate(
                     net = gross - tax
                     prior_balance = balances[:, index].copy()
                     balances[:, index] -= gross
+                    account_assets[:, index, :] *= np.divide(
+                        balances[:, index],
+                        prior_balance,
+                        out=np.zeros(simulations),
+                        where=prior_balance > 0,
+                    )[:, None]
                     if kind == "taxable":
                         taxable_bases[:, index] *= 1 - np.divide(
                             gross,
@@ -600,9 +762,33 @@ def _simulate(
             total_shortfall += remaining
 
         balances = np.maximum(balances, 0)
+        account_assets = np.maximum(account_assets, 0)
         if rebalance_every is not None and (month + 1) % rebalance_every == 0:
-            asset_values = asset_values.sum(axis=1)[:, None] * asset_weights
-        paths[:, month + 1] = balances.sum(axis=1)
+            taxable_indices = [
+                index for index, account in enumerate(accounts) if account.account_type == "taxable"
+            ]
+            if taxable_indices:
+                taxable_total = balances[:, taxable_indices].sum(axis=1)
+                for index in taxable_indices:
+                    share = np.divide(
+                        balances[:, index],
+                        taxable_total,
+                        out=np.full(simulations, 1 / len(taxable_indices)),
+                        where=taxable_total > 0,
+                    )
+                    invested = retained_cash * share
+                    balances[:, index] += invested
+                    account_assets[:, index, :] += (
+                        invested[:, None] * account_asset_weights[index][None, :]
+                    )
+                    if not np.isnan(taxable_bases[:, index]).all():
+                        taxable_bases[:, index] += invested
+                retained_cash[:] = 0
+            account_assets = balances[:, :, None] * account_asset_weights[None, :, :]
+        retained_cash += surplus_this_month
+        if month_end.month == 12:
+            prior_december_balances = balances.copy()
+        paths[:, month + 1] = balances.sum(axis=1) + retained_cash
 
     if retirement_values is None:
         retirement_values = paths[:, -1].copy()
@@ -659,10 +845,16 @@ def _simulate(
     }
     limitations = (
         "This is a transparent planning tax estimate, not tax advice or a tax-return calculation.",
-        "Tax rates are fixed user assumptions; brackets, deductions, RMDs, state/local law, filing status, loss harvesting, and account-specific legal rules are not modeled.",
-        "Taxable withdrawals use aggregate embedded gain when cost basis is provided, otherwise the configured realization fraction; detailed tax lots are not projected.",
-        "Social Security taxation uses a configurable fixed taxable fraction rather than provisional-income rules.",
-        "Outside income offsets spending; unspent outside-income surplus is not automatically reinvested.",
+        "Tax rates are fixed user assumptions; brackets, deductions, state/local law, filing status, loss harvesting, and account-specific legal rules are not modeled.",
+        "Owner Traditional IRA RMDs use date-of-birth-dependent starting ages, prior-December balances, December month-end timing, and versioned "
+        + RMD_TABLE_VERSION
+        + "; inherited-account rules are out of scope.",
+        "Traditional IRAs are assumed to have no nondeductible basis, so RMDs and withdrawals are fully ordinary income at the configured rate.",
+        "Roth IRA withdrawals are assumed qualified and tax free; qualification-date calculations are not modeled.",
+        "Taxable withdrawals use aggregate FIFO security basis plus taxable cash when supplied; basis may exceed value and is reduced proportionally because detailed projected lots are not modeled.",
+        "Social Security taxation uses the configured fixed taxable fraction rather than provisional-income rules.",
+        "Unspent outside income and net RMD surplus remain taxable household cash and are invested only at the next configured rebalance.",
+        "Account-specific allocations are supported; accounts without one use the household allocation.",
         "Fixed real spending is inflation adjusted; no guardrail or percentage-spending strategy is modeled.",
         "Return history and parametric assumptions may not represent future regimes or unprecedented events.",
     )
@@ -687,6 +879,11 @@ def _simulate(
             for kind, values in withdrawals.items()
         },
         {**_distribution_percentiles(outside_used), "mean": float(outside_used.mean())},
+        {**_distribution_percentiles(retained_cash), "mean": float(retained_cash.mean())},
+        {
+            **_distribution_percentiles(total_rmd_withdrawals),
+            "mean": float(total_rmd_withdrawals.mean()),
+        },
         {**_distribution(total_shortfall), **_distribution_percentiles(total_shortfall)},
         (
             float(np.mean(real_terminal >= profile.target_estate_value))
@@ -740,6 +937,8 @@ def build_retirement_request(
     outside_income: Sequence[OutsideIncome] = (),
     spending_events: Sequence[SpendingEvent] = (),
     contribution_allocation: Mapping[str, float] | None = None,
+    account_allocations: Mapping[str, Mapping[str, float]] | None = None,
+    prior_december_31_balances: Mapping[str, float] | None = None,
     proxies: Mapping[str, str] | None = None,
     external_assumptions: Mapping[str, CapitalMarketAssumption | Mapping[str, object]]
     | None = None,
@@ -757,12 +956,34 @@ def build_retirement_request(
         portfolio = portfolio_by_id.get(portfolio_id)
         if portfolio is None or value is None:
             continue
-        accounts.append(RetirementAccount(portfolio.name, portfolio.account_type, float(value)))
+        taxable_basis = None
+        if portfolio.account_type == "taxable":
+            cash_series = reconstruction.portfolios[portfolio_id].daily.cash
+            cash_value = (
+                float(cash_series.loc[pd.Timestamp(as_of)])
+                if pd.Timestamp(as_of) in cash_series.index
+                else float(portfolio.cash)
+            )
+            taxable_basis = aggregate_taxable_basis(portfolio, cash_value)
+        accounts.append(
+            RetirementAccount(
+                portfolio.name,
+                portfolio.account_type,
+                float(value),
+                taxable_cost_basis=taxable_basis,
+                prior_december_31_balance=(prior_december_31_balances or {}).get(portfolio.name),
+                allocation=(account_allocations or {}).get(portfolio.name),
+            )
+        )
     positions = reconstruction.combined.positions.loc[pd.Timestamp(as_of)]
     prices = market_coverage.data.copy()
     prices.index = pd.to_datetime(prices.index).normalize()
     holding_values: dict[str, float] = {}
-    for symbol, quantity in positions.items():
+    quantities: dict[str, float] = {}
+    for key, quantity in positions.items():
+        symbol = key[-1] if isinstance(key, tuple) else key
+        quantities[str(symbol)] = quantities.get(str(symbol), 0.0) + float(quantity)
+    for symbol, quantity in quantities.items():
         if abs(float(quantity)) <= 1e-12:
             continue
         available = prices.loc[prices.index <= pd.Timestamp(as_of), symbol].dropna()
