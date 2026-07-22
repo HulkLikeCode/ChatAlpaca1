@@ -234,9 +234,13 @@ classification.
 The Monitor view presents an indicative IEX portfolio pulse, holding and portfolio daily
 contribution, symbol-consolidated largest movers, stale/missing symbols, assigned open orders and
 recent fills, symbol quote/trade detail, and controlled broad-market and sector proxy components.
-Returns, trend, drawdown, realized volatility, correlation regime, and 21-day rolling SPY
-correlation remain individually disclosed; Phase 12 does not create a proprietary composite market
-score.
+Daily, 1-month, 3-month, and 12-month returns require their full observation windows and disclose
+counts and endpoints; shorter windows remain unavailable. Drawdown is labeled from the
+available-window peak. The primary correlation output uses exactly 21 complete aligned daily-return
+pairs against SPY and discloses n/21 plus endpoints; missing SPY, insufficient pairs, zero variance,
+or nonfinite correlation is unavailable. A secondary `high` at 0.70 or above and `mixed` otherwise
+label is explicitly disclosed as a fixed descriptive heuristic, not a significance test. Phase 12
+does not create a proprietary composite market score.
 Cash-only selections retain their cash value. Holding share of net daily P/L is unavailable when
 the absolute net daily P/L denominator is below $0.01; exactly $0.01 remains calculable.
 

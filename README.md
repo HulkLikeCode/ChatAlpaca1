@@ -43,7 +43,10 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Market and limit orders, cancellation, fill synchronization, and an auditable internal transaction ledger
 - Tiered active-session monitoring for fewer than 400 held symbols, with capped IEX streaming,
   batched snapshot fallback, reconnect gap backfill, explicit freshness, portfolio pulse, market
-  context, and symbol detail; no closed-app monitoring claim or persistent worker
+  context, and symbol detail; period returns require their full horizon, drawdown is measured from
+  the available-window peak, and raw 21-session SPY correlation requires 21 complete pairs before
+  its secondary fixed-threshold heuristic is shown; no closed-app monitoring claim or persistent
+  worker
 - Automatic persistence through SQLite locally or hosted PostgreSQL in production
 - Architecture hooks for strategies, short positions, options, and separately gated live trading
 - Dark black/blue/purple/white theme with no green or red status colors

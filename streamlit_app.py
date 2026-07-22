@@ -77,6 +77,7 @@ from chat_alpaca.portfolio_service import (
 )
 from chat_alpaca.realtime import (
     BROAD_MARKET_PROXIES,
+    CORRELATION_HEURISTIC_DISCLOSURE,
     OPEN_ORDER_STATUSES,
     SECTOR_PROXIES,
     ActiveSessionMonitor,
@@ -3206,9 +3207,9 @@ def render_active_monitoring(
             "1M return",
             "3M return",
             "12M return",
-            "Drawdown",
+            "Drawdown from available-window peak",
             "Realized volatility",
-            "21-day SPY correlation",
+            "21-session SPY correlation",
         )
         context = context.copy()
         context[list(percentage_columns)] *= 100
@@ -3221,10 +3222,13 @@ def render_active_monitoring(
             },
         )
         st.caption(
-            "Components are disclosed individually: returns, 50-day trend, drawdown, 21-day "
-            "realized volatility, SPY correlation regime, and 21-day rolling SPY correlation. "
-            "No composite market score is used."
+            "Components are disclosed individually: horizon-specific returns and coverage, "
+            "50-day trend, drawdown from the available-window peak, 21-session realized "
+            "volatility, and raw 21-session SPY correlation with n/21 and aligned endpoint dates. "
+            "Unavailable horizons and correlations remain unavailable. No composite market score "
+            "is used."
         )
+        st.caption(CORRELATION_HEURISTIC_DISCLOSURE)
 
 
 def main() -> None:

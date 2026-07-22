@@ -35,9 +35,11 @@ freshness checks once outside regular hours.
 3. Confirm Portfolio pulse includes indicative total value, daily change, holding and portfolio
    contribution, one combined largest-mover row per symbol, and stale/missing symbols without
    replacing missing values by zero. Confirm the mover table has no Portfolio column.
-4. Confirm broad-market and sector rows disclose each return, trend, drawdown, volatility,
-   correlation regime, and 21-day rolling SPY correlation component; confirm proxy dispersion is
-   absent and there is no unexplained composite market score.
+4. Confirm broad-market and sector rows keep short-history 1M/3M/12M returns unavailable and show
+   observation counts and endpoints. Confirm drawdown is labeled from the available-window peak.
+   Confirm raw 21-session SPY correlation is primary, shows n/21 and aligned dates, is unavailable
+   for missing/short/constant data, and places the fixed-threshold heuristic disclosure beside the
+   secondary label. Confirm proxy dispersion is absent and there is no composite market score.
 5. On Overview, confirm indicative all-time and daily gain/loss refresh with quotes. Confirm custom
    gain/loss refreshes only when Custom End is today and remains fixed for an earlier end date.
 

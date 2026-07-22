@@ -5,6 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -24,9 +25,11 @@ from chat_alpaca.realtime import (
     alpaca_clients,
     build_portfolio_pulse,
     classify_quote,
+    correlation_heuristic,
     market_context_metrics,
     market_hours_state,
     prioritize_subscriptions,
+    sample_realized_volatility,
 )
 from chat_alpaca.trading import submit_allocated_order, sync_allocations
 
@@ -204,6 +207,7 @@ def test_quote_price_falls_through_invalid_midpoint_components(bid: object, ask:
     quote = QuoteRecord("AAA", bid=bid, ask=ask, previous_close=90)
 
     assert quote.midpoint is None
+    assert quote.spread is None
     assert quote.price == 90
     assert quote.price_source == "previous_close"
 
@@ -622,12 +626,91 @@ def test_market_context_discloses_components_without_a_score() -> None:
     assert "Trend" in result
     assert list(result.columns[:2]) == ["Symbol", "Name"]
     assert result["Name"].str.len().max() <= 13
-    assert "Drawdown" in result
+    assert "Drawdown from available-window peak" in result
     assert "Realized volatility" in result
-    assert "Correlation regime" in result
-    assert "21-day SPY correlation" in result
+    assert "Correlation heuristic" in result
+    assert "21-session SPY correlation" in result
+    assert set(result["Correlation observations"]) == {"21/21"}
     assert "Cross-proxy dispersion" not in result
     assert not any("score" in column.lower() for column in result)
+
+
+def test_market_context_short_history_does_not_reuse_one_return_for_long_horizons() -> None:
+    index = pd.to_datetime(["2026-01-02", "2026-01-05"])
+
+    result = market_context_metrics(pd.DataFrame({"SPY": [100.0, 110.0]}, index=index)).iloc[0]
+
+    assert result["Daily return"] == pytest.approx(0.10)
+    assert result["Daily observations"] == "2/2"
+    assert result["Daily first date"] == index[0].date()
+    assert result["Daily last date"] == index[1].date()
+    for horizon, required in (("1M", 22), ("3M", 64), ("12M", 253)):
+        assert pd.isna(result[f"{horizon} return"])
+        assert result[f"{horizon} observations"] == f"2/{required}"
+
+
+def test_spy_correlation_uses_exactly_21_complete_pairs_and_discloses_dates() -> None:
+    index = pd.bdate_range("2026-01-02", periods=22)
+    daily_returns = np.linspace(-0.02, 0.03, 21)
+    prices = 100 * np.cumprod(np.r_[1.0, 1 + daily_returns])
+
+    result = market_context_metrics(
+        pd.DataFrame({"SPY": prices, "XLK": prices * 0.8}, index=index)
+    ).set_index("Symbol")
+
+    assert result.loc["XLK", "21-session SPY correlation"] == pytest.approx(1.0)
+    assert result.loc["XLK", "Correlation observations"] == "21/21"
+    assert result.loc["XLK", "Correlation first date"] == index[1].date()
+    assert result.loc["XLK", "Correlation last date"] == index[-1].date()
+    assert result.loc["XLK", "Correlation heuristic"] == "high"
+
+
+def test_spy_correlation_unavailable_states_are_not_classified_mixed() -> None:
+    index = pd.bdate_range("2026-01-02", periods=22)
+    variable = 100 * np.cumprod(np.r_[1.0, 1 + np.linspace(-0.02, 0.03, 21)])
+    missing_spy = market_context_metrics(pd.DataFrame({"XLK": variable}, index=index)).iloc[0]
+    constant_asset = (
+        market_context_metrics(
+            pd.DataFrame({"SPY": variable, "XLK": np.full(22, 80.0)}, index=index)
+        )
+        .set_index("Symbol")
+        .loc["XLK"]
+    )
+    insufficient = (
+        market_context_metrics(
+            pd.DataFrame({"SPY": variable[:10], "XLK": variable[:10]}, index=index[:10])
+        )
+        .set_index("Symbol")
+        .loc["XLK"]
+    )
+
+    for row in (missing_spy, constant_asset, insufficient):
+        assert pd.isna(row["21-session SPY correlation"])
+        assert row["Correlation heuristic"] is None
+    assert missing_spy["Correlation observations"] == "0/21"
+    assert constant_asset["Correlation observations"] == "21/21"
+    assert insufficient["Correlation observations"] == "9/21"
+
+
+@pytest.mark.parametrize(
+    ("correlation", "expected"),
+    [(0.699999, "mixed"), (0.700000, "high"), (0.700001, "high")],
+)
+def test_correlation_heuristic_exact_threshold(correlation: float, expected: str) -> None:
+    assert correlation_heuristic(correlation) == expected
+
+
+def test_sample_realized_volatility_independent_boundaries_and_nonfinite_values() -> None:
+    assert sample_realized_volatility(pd.Series([0.02, 0.02])) == 0
+    two_returns = sample_realized_volatility(pd.Series([0.01, 0.03]))
+    assert two_returns == pytest.approx(np.std([0.01, 0.03], ddof=1) * np.sqrt(252))
+    twenty_one = np.linspace(-0.02, 0.02, 21)
+    assert sample_realized_volatility(pd.Series(twenty_one)) == pytest.approx(
+        np.std(twenty_one, ddof=1) * np.sqrt(252)
+    )
+    nonfinite = sample_realized_volatility(pd.Series([0.01, np.nan, 0.03, np.inf]))
+    assert nonfinite == pytest.approx(np.std([0.01, 0.03], ddof=1) * np.sqrt(252))
+    assert pd.isna(sample_realized_volatility(pd.Series([np.nan, np.inf])))
 
 
 def test_objects_do_not_expose_or_log_credentials(caplog: object) -> None:
