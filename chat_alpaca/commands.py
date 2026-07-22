@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from chat_alpaca.portfolio_service import (
@@ -41,11 +42,20 @@ def calculated_trade_cash(kind: str, quantity: float, price: float, fees: float)
     """Return the cash effect used by buy and sell command previews."""
     if kind not in {"buy", "sell"}:
         raise ValueError("Trade cash can only be calculated for a buy or sell.")
-    normalized_quantity = max(quantity, 0.0)
-    normalized_price = max(price, 0.0)
-    normalized_fees = max(fees, 0.0)
-    notional = normalized_quantity * normalized_price
-    return -(notional + normalized_fees) if kind == "buy" else notional - normalized_fees
+    values = {"quantity": quantity, "price": price, "fees": fees}
+    normalized: dict[str, float] = {}
+    for name, value in values.items():
+        if isinstance(value, bool):
+            raise ValueError(f"Trade {name} must be a finite nonnegative number.")
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Trade {name} must be a finite nonnegative number.") from exc
+        if not math.isfinite(parsed) or parsed < 0:
+            raise ValueError(f"Trade {name} must be a finite nonnegative number.")
+        normalized[name] = parsed
+    notional = normalized["quantity"] * normalized["price"]
+    return -(notional + normalized["fees"]) if kind == "buy" else notional - normalized["fees"]
 
 
 def build_transaction_draft(command: TransactionCommand) -> TransactionDraft:
@@ -56,6 +66,10 @@ def build_transaction_draft(command: TransactionCommand) -> TransactionDraft:
     parsed_quantity = shares(command.quantity) if position_kind else None
     parsed_price = money(command.price) if position_kind else None
     parsed_fees = money(command.fees) if command.fees else None
+    if parsed_price is not None and parsed_price < 0:
+        raise ValueError("Trade price cannot be negative.")
+    if parsed_fees is not None and parsed_fees < 0:
+        raise ValueError("Transaction fees cannot be negative.")
     if command.kind == "buy":
         assert parsed_quantity is not None and parsed_price is not None
         parsed_cash_delta = -(parsed_quantity * parsed_price + (parsed_fees or 0))

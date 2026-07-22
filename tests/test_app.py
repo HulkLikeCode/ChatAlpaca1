@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -366,9 +367,10 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "Current",
         "Cost basis",
         "Value",
-        "All time",
-        "Day",
-        "Custom",
+        "Unrealized gain/loss",
+        "Latest close change",
+        "Change dates",
+        "Current-lot unrealized custom change",
         "Annualized market-model intercept, RF assumed 0%",
         "Beta",
         "Alpha/Beta observations",
@@ -387,9 +389,10 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "Current",
         "Cost basis",
         "Value",
-        "All time",
-        "Day",
-        "Custom",
+        "Unrealized gain/loss",
+        "Latest close change",
+        "Change dates",
+        "Current-lot unrealized custom change",
         "Annualized market-model intercept, RF assumed 0%",
         "Beta",
         "Alpha/Beta observations",
@@ -401,3 +404,9 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         item.value for item in app.dataframe if list(item.value.columns) == expected_detail
     )
     assert list(detail.columns) == expected_detail
+    assert pd.api.types.is_numeric_dtype(detail["Shares"])
+    assert any(
+        "Current-lot unrealized custom change uses only open lots and price movement. It excludes "
+        "sold lots and income and is not the portfolio Custom gain/loss measure." in item.value
+        for item in app.caption
+    )

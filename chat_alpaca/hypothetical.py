@@ -17,6 +17,18 @@ from chat_alpaca.models import HypotheticalScenario, Portfolio
 from chat_alpaca.scenarios import ledger_state_hash
 
 HYPOTHETICAL_MODEL_VERSION = "1.0.0"
+CONCENTRATION_DISCLOSURE = (
+    "Largest and top-five weights include cash in total value; HHI and effective holdings use "
+    "invested assets only."
+)
+DRAWDOWN_DISCLOSURE = (
+    "Historical constant-weight drawdown; this is not the realized path of the current or "
+    "proposed trades."
+)
+EXPECTED_RETURN_DISCLOSURE = (
+    "Expected return assumes uninvested cash earns 0%. The current UI applies one common entered "
+    "return to all involved securities."
+)
 
 
 class HypotheticalActionType(str, Enum):
@@ -555,6 +567,9 @@ def analyze_hypothetical_scenario(
         "Analysis only: this scenario does not create transactions, lots, ledger rows, "
         "Alpaca allocations, or orders.",
         "Expected return and probability outputs are assumption-driven and not guarantees.",
+        CONCENTRATION_DISCLOSURE,
+        DRAWDOWN_DISCLOSURE,
+        EXPECTED_RETURN_DISCLOSURE,
     ]
     if after.cash < 0:
         warnings.append("The proposed actions produce negative cash.")

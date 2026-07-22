@@ -190,6 +190,20 @@ def test_monthly_returns_does_not_forward_fill_missing_months() -> None:
     assert returns["AAA"].isna().all()
 
 
+def test_monthly_returns_use_each_month_last_observation_and_ordinary_returns() -> None:
+    prices = pd.DataFrame(
+        {"AAA": [95.0, 100.0, 108.0, 110.0, 99.0]},
+        index=pd.to_datetime(
+            ["2020-01-15", "2020-01-31", "2020-02-14", "2020-02-28", "2020-03-31"]
+        ),
+    )
+
+    returns = monthly_returns_from_prices(prices)
+
+    assert list(returns.index) == list(pd.to_datetime(["2020-02-29", "2020-03-31"]))
+    assert returns["AAA"].tolist() == pytest.approx([0.10, -0.10])
+
+
 def test_persistence_saves_summaries_and_not_raw_paths(session: Session) -> None:
     portfolio = Portfolio(name="Phase 8", cash=Decimal("100"), account_type="taxable")
     dataset = MarketDataset(

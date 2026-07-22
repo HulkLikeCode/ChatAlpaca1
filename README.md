@@ -200,6 +200,10 @@ insufficient. Alpha is labeled `Annualized market-model intercept, RF assumed 0%
 Missing quote moves remain unavailable rather than zero. Overview keeps its zero-decimal portfolio
 value cards directly below the gain/loss metrics and summarizes valuation, Alpha/Beta, quote, and
 custom-end coverage in one compact status strip.
+Exact holdings retain numeric share values and adapt display precision through eight decimal
+places. Current-open-lot fields are labeled `Unrealized gain/loss`, `Latest close change` with the
+actual observation dates, and `Current-lot unrealized custom change`; the latter excludes sold lots
+and income and is distinct from portfolio Custom gain/loss.
 
 Portfolio cards show cumulative dividend ledger credits in the inclusive applied master range;
 interest is excluded. Portfolio and
@@ -231,6 +235,13 @@ historical-replay stresses plus tabular sensitivity grids. Runs persist the mode
 ledger hash and dataset references, assumptions, coverage, proxy disclosure, validation state, and
 summary outputs. Deterministic scenarios generate no raw paths. Automated test success is retained
 as validation evidence but cannot by itself label a model validated.
+DataFrame inputs resolve every nonzero held symbol to one common household valuation date: the
+oldest latest usable symbol date, with each positive finite price taken on or before that date.
+Mapping inputs are treated as an explicitly supplied undated snapshot and reject booleans,
+nonfinite values, zero, and negative prices. Historical replay uses only jointly complete rows,
+never forward-fills, requires at least two observations, and persists its shared endpoints and
+observation count. Deterministic model version `1.1.0` applies one resolved snapshot throughout each
+run.
 
 Phase 8 adds historical block-bootstrap forecasting in `chat_alpaca.bootstrap_forecasting`. It
 samples observed, jointly aligned monthly holding or portfolio returns in circular 3-, 6-, or
@@ -290,8 +301,12 @@ configured taxable fraction rather than provisional-income rules.
 
 Taxable basis is the aggregate approximation of remaining FIFO security basis plus taxable cash,
 which can exceed market value, and is reduced proportionally on withdrawals. Unspent outside income
-and net RMD surplus remain taxable household cash and are invested only at the next configured
-rebalance. The tax calculation is a transparent planning estimate, not tax advice.
+and net RMD surplus remain zero-return household cash until the next configured rebalance, remain
+spendable before additional account withdrawals, and are included in retirement-date and terminal
+household value. Each applicable RMD is calculated, withdrawn, taxed, and added net to household
+cash once before any additional withdrawal. Current net outside income and net RMD proceeds fund
+spending before previously retained cash. The tax calculation is a transparent planning estimate,
+not tax advice.
 
 Outputs include nominal and real percentile paths, retirement-date and terminal distributions,
 full-horizon funding and depletion probabilities, depletion ages, lifetime taxes, withdrawals by
@@ -300,6 +315,8 @@ sequence diagnostics, and worst-decile scenarios. Sensitivity covers retirement 
 inflation, Social Security timing, contributions, expected returns, tax rates, and withdrawal order.
 Rolling historical sequence replay is validation evidence only and never self-validates the model.
 Saved runs retain summaries and annual bands but exclude raw paths and per-scenario arrays.
+Retirement model version `1.2.0` reports separate household-asset and unpaid-shortfall
+reconciliations; unpaid shortfall is an unmet obligation and is never counted as an asset.
 
 Phase 11 adds non-executable hypothetical trade analysis in `chat_alpaca.hypothetical`. It copies
 ledger-derived cash and FIFO lots into isolated in-memory state, applies any number of proposed

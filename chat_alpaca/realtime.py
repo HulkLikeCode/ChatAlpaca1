@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -105,9 +106,11 @@ class QuoteRecord:
 
     @property
     def midpoint(self) -> float | None:
-        if self.bid is None or self.ask is None or self.bid <= 0 or self.ask <= 0:
+        bid = _valid_quote_value(self.bid)
+        ask = _valid_quote_value(self.ask)
+        if bid is None or ask is None:
             return None
-        return (self.bid + self.ask) / 2
+        return (bid + ask) / 2
 
     @property
     def spread(self) -> float | None:
@@ -117,7 +120,35 @@ class QuoteRecord:
 
     @property
     def price(self) -> float | None:
-        return self.latest_trade or self.midpoint or self.previous_close
+        return (
+            _valid_quote_value(self.latest_trade)
+            or self.midpoint
+            or _valid_quote_value(self.previous_close)
+        )
+
+    @property
+    def intraday_price(self) -> float | None:
+        return _valid_quote_value(self.latest_trade) or self.midpoint
+
+    @property
+    def price_source(self) -> str:
+        if _valid_quote_value(self.latest_trade) is not None:
+            return "latest_trade"
+        if self.midpoint is not None:
+            return "midpoint"
+        if _valid_quote_value(self.previous_close) is not None:
+            return "previous_close"
+        return "unavailable"
+
+
+def _valid_quote_value(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed > 0 else None
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -141,8 +172,8 @@ def classify_quote(
     observed = _aware(now or datetime.now(timezone.utc))
     as_of = _aware(quote.as_of_time or quote.trade_time or quote.quote_time or quote.receipt_time)
     stream_set = {normalize_symbol(symbol) for symbol in streamed_symbols}
-    if quote.latest_trade is None and quote.midpoint is None:
-        if quote.previous_close is not None:
+    if quote.intraday_price is None:
+        if _valid_quote_value(quote.previous_close) is not None:
             return replace(
                 quote,
                 status=FreshnessStatus.PREVIOUS_CLOSE,
@@ -830,10 +861,11 @@ def build_portfolio_pulse(
             shares_by_symbol[symbol] = shares_by_symbol.get(symbol, 0.0) + shares
             quote = quotes.get(symbol, QuoteRecord(symbol))
             statuses.append(quote.status)
-            intraday_price = quote.latest_trade or quote.midpoint
+            intraday_price = quote.intraday_price
+            previous_close = _valid_quote_value(quote.previous_close)
             change = (
-                shares * (intraday_price - quote.previous_close)
-                if intraday_price is not None and quote.previous_close is not None
+                shares * (intraday_price - previous_close)
+                if intraday_price is not None and previous_close is not None
                 else None
             )
             if change is not None:
@@ -853,10 +885,11 @@ def build_portfolio_pulse(
     for symbol, shares in sorted(shares_by_symbol.items()):
         quote = quotes.get(symbol, QuoteRecord(symbol))
         price = quote.price
-        intraday_price = quote.latest_trade or quote.midpoint
+        intraday_price = quote.intraday_price
+        previous_close = _valid_quote_value(quote.previous_close)
         change = (
-            shares * (intraday_price - quote.previous_close)
-            if intraday_price is not None and quote.previous_close is not None
+            shares * (intraday_price - previous_close)
+            if intraday_price is not None and previous_close is not None
             else None
         )
         rows.append(

@@ -85,9 +85,25 @@ silently changing the economic meaning of reported performance and risk.
 
 **Decision:** Model owner Traditional IRA RMDs at December month-end using date-of-birth-dependent
 starting ages and versioned IRS lifetime tables. Assume no Traditional IRA basis and qualified Roth
-withdrawals. Retain net RMD and outside-income surplus as taxable cash until the next rebalance.
+withdrawals. Execute and tax each RMD once, then add its net proceeds to household cash before any
+additional withdrawal. Retain net RMD and outside-income surplus as zero-return, spendable taxable
+cash until the next rebalance; use current income and net RMD, then prior retained cash, before
+additional withdrawals. Include retained cash in retirement-date, path, and terminal household
+value, while tracking unpaid shortfall separately from assets.
 Taxable aggregate basis equals remaining FIFO security basis plus cash and is reduced proportionally.
 
 **Rationale:** This implements the approved reproducible planning convention while keeping inherited
 accounts, provisional-income Social Security taxation, qualification dates, detailed future lots,
 and tax optimization explicitly outside scope.
+
+## ADR-014: Phase 2 dated-snapshot and evidence contracts
+
+**Decision:** Deterministic DataFrame scenarios use one common household valuation date and
+historical replay uses jointly complete shared endpoints without forward filling. Invalid quote and
+transaction numeric inputs are rejected or fall through explicitly. Scoped ledger, fill,
+forecast, hypothetical, and holdings methods retain their existing architecture and are supported
+by independent reference cases and exact disclosures.
+
+**Rationale:** Shared dates prevent mixed-date household valuations, while independent reference
+cases and explicit labels make retained formulas reviewable without redesigning the ledger,
+trading gates, database schema, or calculation architecture.

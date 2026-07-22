@@ -618,6 +618,12 @@ def consolidated_holdings(
             latest = _price_on_or_before(closes, lot.symbol)
             prices = closes[lot.symbol].dropna() if lot.symbol in closes else pd.Series(dtype=float)
             prior = float(prices.iloc[-2]) if len(prices) >= 2 else None
+            daily_price_dates = (
+                f"{prices.index[-2].strftime('%-m/%-d/%y')} → "
+                f"{prices.index[-1].strftime('%-m/%-d/%y')}"
+                if len(prices) >= 2
+                else None
+            )
             custom_end_price = _price_on_or_before(closes, lot.symbol, custom_end)
             if lot.acquired_on > custom_end or custom_end_price is None:
                 custom_gain_loss = None
@@ -650,6 +656,7 @@ def consolidated_holdings(
                         if latest is not None and prior is not None
                         else None
                     ),
+                    "Daily price dates": daily_price_dates,
                     "Custom gain/loss": custom_gain_loss,
                     "Alpha": risk_metrics.get(lot.symbol, AlphaBetaMetrics(None, None, 0)).alpha,
                     "Beta": risk_metrics.get(lot.symbol, AlphaBetaMetrics(None, None, 0)).beta,
@@ -674,6 +681,7 @@ def consolidated_holdings(
                 lambda values: values.sum(min_count=1),
             ),
             "Daily gain/loss": ("Daily gain/loss", lambda values: values.sum(min_count=1)),
+            "Daily price dates": ("Daily price dates", "first"),
             "Custom gain/loss": ("Custom gain/loss", lambda values: values.sum(min_count=1)),
             "Alpha": ("Alpha", "first"),
             "Beta": ("Beta", "first"),
@@ -694,6 +702,7 @@ def consolidated_holdings(
             "Market value",
             "All-time gain/loss",
             "Daily gain/loss",
+            "Daily price dates",
             "Custom gain/loss",
             "Alpha",
             "Beta",
@@ -701,3 +710,14 @@ def consolidated_holdings(
         ]
     ].sort_values("Symbol")
     return grouped, detail
+
+
+def adaptive_share_number_format(values: Iterable[object]) -> str:
+    """Expose all stored share precision while preserving a numeric column for sorting."""
+    precision = 0
+    for value in values:
+        if pd.isna(value):
+            continue
+        decimal_value = Decimal(str(value)).normalize()
+        precision = max(precision, min(max(-decimal_value.as_tuple().exponent, 0), 8))
+    return f"%.{precision}f"

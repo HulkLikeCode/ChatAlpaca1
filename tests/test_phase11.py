@@ -9,6 +9,9 @@ import pytest
 from sqlalchemy import func, select
 
 from chat_alpaca.hypothetical import (
+    CONCENTRATION_DISCLOSURE,
+    DRAWDOWN_DISCLOSURE,
+    EXPECTED_RETURN_DISCLOSURE,
     HypotheticalAssumptions,
     PortfolioBaseline,
     ProposedAction,
@@ -161,6 +164,72 @@ def test_multiple_trades_before_after_cash_weights_sectors_risk_and_forecast(ses
     assert result.after.depletion_probability is not None
     assert result.after.effective_number_of_holdings > result.before.effective_number_of_holdings
     assert "AAA" in result.after.benchmark_relative_exposure
+    assert CONCENTRATION_DISCLOSURE in result.warnings
+    assert DRAWDOWN_DISCLOSURE in result.warnings
+    assert EXPECTED_RETURN_DISCLOSURE in result.warnings
+
+
+def test_independent_weight_covariance_and_component_risk_reference_case() -> None:
+    baseline = PortfolioBaseline(
+        1,
+        "Taxable",
+        100,
+        (
+            baseline_lot(1, "Taxable", "AAA", 10, 10, 1),
+            baseline_lot(1, "Taxable", "BBB", 10, 5, 2),
+        ),
+    )
+    returns = pd.DataFrame(
+        {
+            "AAA": [0.10, -0.10, 0.08, -0.08, 0.06, -0.06],
+            "BBB": [-0.04, 0.04, -0.03, 0.03, -0.02, 0.02],
+        },
+        index=pd.date_range("2026-01-02", periods=6, freq="B"),
+    )
+    assumptions = HypotheticalAssumptions(
+        expected_returns={"AAA": 0.08, "BBB": 0.04},
+        sectors={"AAA": "Technology", "BBB": "Health Care"},
+        benchmark_weights={"AAA": 0.40, "BBB": 0.60},
+        stress_shocks={},
+    )
+
+    result = analyze_hypothetical_scenario(
+        (baseline,),
+        (ProposedAction("add_cash", 1, amount=1),),
+        {"AAA": 20, "BBB": 10},
+        returns,
+        assumptions,
+        market_data_as_of=datetime(2026, 7, 20, 15, tzinfo=timezone.utc),
+    )
+    snapshot = result.before
+    weights = np.array([0.50, 0.25])
+    covariance = returns[["AAA", "BBB"]].cov().to_numpy() * 252
+    variance = float(weights @ covariance @ weights)
+    expected_components = weights * (covariance @ weights) / variance
+
+    assert snapshot.total_value == 400
+    assert snapshot.portfolio_values == {"Taxable": 400}
+    assert snapshot.cash / snapshot.total_value == pytest.approx(0.25)
+    assert snapshot.holding_weights == pytest.approx({"AAA": 0.50, "BBB": 0.25})
+    assert snapshot.assignment_weights == pytest.approx(
+        {"Taxable · AAA": 0.50, "Taxable · BBB": 0.25}
+    )
+    assert snapshot.sector_exposure == pytest.approx({"Technology": 0.50, "Health Care": 0.25})
+    assert snapshot.benchmark_relative_exposure == pytest.approx({"AAA": 0.10, "BBB": -0.35})
+    assert snapshot.concentration == pytest.approx(
+        {
+            "largest_holding_weight": 0.50,
+            "top_five_weight": 0.75,
+            "herfindahl_index": 5 / 9,
+        }
+    )
+    assert snapshot.effective_number_of_holdings == pytest.approx(1.8)
+    assert snapshot.volatility == pytest.approx(np.sqrt(variance))
+    assert snapshot.risk_contribution == pytest.approx(
+        dict(zip(("AAA", "BBB"), expected_components, strict=True))
+    )
+    assert snapshot.risk_contribution["BBB"] < 0
+    assert sum(snapshot.risk_contribution.values()) == pytest.approx(1)
 
 
 def test_analysis_does_not_mutate_accounting_or_submit_orders(session, monkeypatch) -> None:

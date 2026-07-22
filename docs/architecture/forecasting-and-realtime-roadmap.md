@@ -57,6 +57,11 @@ Each saved forecast run must retain model type and version, assumptions, data co
 ledger-derived holdings and cash and refuses scenarios when required current or replay prices are
 missing. Results retain household, internal-portfolio, holding, sector, and account-type effects,
 largest loss contributors, assumptions, coverage, proxy warnings, and baseline comparisons.
+Model `1.1.0` resolves DataFrame inputs at one common household valuation date and persists that
+date, per-symbol source dates, and completeness counts. Mapping values form one undated explicit
+snapshot and must be numeric, finite, positive, and non-boolean. Historical replay retains only
+jointly complete required-symbol rows, requires two or more, persists shared endpoints and count,
+and never forward-fills.
 
 Saved deterministic runs contain summary outputs and deterministic baseline/scenario bands only;
 there is no raw path storage. Market inputs are linked to immutable `market_datasets`, and a
@@ -149,9 +154,13 @@ satisfaction, and December month-end timing. Inherited-account RMDs remain out o
 Taxable basis is approximated as remaining FIFO security basis plus taxable cash and may exceed
 market value; withdrawals reduce it proportionally. Social Security uses a fixed configured taxable
 fraction rather than provisional-income rules. Unspent outside income and net RMD surplus remain
-taxable household cash until the next configured rebalance. This is a transparent planning
-estimate, not tax advice; brackets, deductions, filing status, state/local rules, detailed future
-lots, loss harvesting, and unsupported jurisdiction-specific rules remain out of scope.
+zero-return taxable household cash until the next configured rebalance. Model `1.2.0` keeps that
+cash spendable: current net outside income and net RMD proceeds fund spending first, then prior
+retained cash, then additional withdrawals. RMDs are calculated, executed, taxed, and deposited net
+into household cash once before that additional-withdrawal loop. Retained cash remains in
+retirement-date, path, and terminal household values. This is a transparent planning estimate, not
+tax advice; brackets, deductions, filing status, state/local rules, detailed future lots, loss
+harvesting, and unsupported jurisdiction-specific rules remain out of scope.
 
 Results disclose funding and depletion probabilities, depletion ages, nominal and real percentile
 paths, retirement-date value, lifetime taxes, withdrawals by account type, outside-income funding,
@@ -161,6 +170,10 @@ contributions, returns, taxes, and withdrawal order with a stable seed. Complete
 sequences can be replayed as backtest evidence. Neither replay nor automated tests grant validated
 status. Generic forecast persistence stores reproducibility inputs, summarized results, and annual
 bands without raw stochastic paths.
+Household assets reconcile separately from unpaid shortfall. Gross account withdrawals are internal
+transfers and therefore cancel from the household identity; withdrawal tax and spending actually
+funded reduce household assets. Unpaid shortfall equals required obligations less obligations
+actually funded and is not included in ending household value.
 
 ## Real-time monitoring
 
@@ -200,6 +213,9 @@ coloring. Portfolios without a calculable quote move retain their confirmed-clos
 aggregates disclose available, fresh, and fallback portfolio coverage. Custom gain/loss receives the
 overlay only when its selected end date is the current day. This presentation overlay never mutates
 the ledger or durable historical datasets.
+Quote values follow latest trade, valid two-sided midpoint, valid previous close, then unavailable.
+Boolean, nonfinite, zero, and negative values fall through without changing freshness or provenance
+classification.
 
 The Monitor view presents an indicative IEX portfolio pulse, holding and portfolio daily
 contribution, symbol-consolidated largest movers, stale/missing symbols, assigned open orders and
@@ -225,6 +241,10 @@ compare cash, market value, cost basis, holding and assignment weights, look-thr
 benchmark-relative exposure, concentration, effective holdings, volatility, beta, component risk,
 historical drawdown, expected-return assumptions, forecast target probability and downside bands,
 deterministic stress losses, and optional retirement success probability.
+Largest and top-five weights use total household value including cash; HHI and effective holdings
+use invested assets. Historical drawdown is a constant-weight exposure statistic, not the realized
+path of current or proposed trades. Expected return gives uninvested cash a zero return, and the
+current UI applies one common entered return to all involved securities.
 
 Named scenario persistence retains creator and creation time, portfolio scope, the canonical
 baseline ledger hash, market-data as-of time, assumptions, proposals, and summary results. Reads

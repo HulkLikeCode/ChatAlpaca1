@@ -88,6 +88,7 @@ def test_accumulation_period_and_retirement_transition() -> None:
     assert result.nominal_monthly_percentiles.loc[119, "P50"] == pytest.approx(111_900)
     assert result.retirement_date_value_distribution["P50"] == pytest.approx(112_000)
     assert result.nominal_monthly_percentiles.loc[121, "P50"] == pytest.approx(111_000)
+    assert result.model_version == "1.2.0"
 
 
 def test_fixed_real_spending_inflation_and_real_nominal_reporting() -> None:
