@@ -13,6 +13,7 @@ import streamlit as st
 from chat_alpaca.analytics import (
     adaptive_share_number_format,
     consolidated_holdings,
+    household_valuation,
 )
 from chat_alpaca.bootstrap import initialize_application
 from chat_alpaca.classification import (
@@ -740,8 +741,6 @@ def render_consolidated_holdings(
             "Average cost / share": "Avg/share",
             "Cost / share": "Avg/share",
             "Total cost basis": "Cost basis",
-            "Latest price": "Current",
-            "Market value": "Value",
             "All-time gain/loss": "Unrealized gain/loss",
             "Daily gain/loss": "Latest close change",
             "Daily price dates": "Change dates",
@@ -750,9 +749,11 @@ def render_consolidated_holdings(
         }
         money_columns = (
             "Avg/share",
-            "Current",
+            "Confirmed price",
+            "Latest symbol price",
             "Cost basis",
-            "Value",
+            "Confirmed value",
+            "Latest/indicative value",
             "Unrealized gain/loss",
             "Latest close change",
             "Current-lot unrealized custom change",
@@ -761,9 +762,13 @@ def render_consolidated_holdings(
             summary_columns = [
                 "Symbol",
                 "Avg/share",
-                "Current",
+                "Confirmed valuation date",
+                "Confirmed price",
+                "Confirmed value",
+                "Latest symbol price",
+                "Latest symbol date",
+                "Latest/indicative value",
                 "Cost basis",
-                "Value",
                 "Unrealized gain/loss",
                 "Latest close change",
                 "Change dates",
@@ -789,21 +794,28 @@ def render_consolidated_holdings(
                         st.column_config.NumberColumn(format="%.2f%%")
                     ),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
+                    "Confirmed valuation date": st.column_config.DateColumn(format="M/D/YY"),
+                    "Latest symbol date": st.column_config.DateColumn(format="M/D/YY"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.0f")
                         for column in money_columns
                     },
                     "Avg/share": st.column_config.NumberColumn(format="$%,.2f"),
-                    "Current": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Confirmed price": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Latest symbol price": st.column_config.NumberColumn(format="$%,.2f"),
                 },
             )
         else:
             detail_columns = [
                 "Symbol",
                 "Avg/share",
-                "Current",
+                "Confirmed valuation date",
+                "Confirmed price",
+                "Confirmed value",
+                "Latest symbol price",
+                "Latest symbol date",
+                "Latest/indicative value",
                 "Cost basis",
-                "Value",
                 "Unrealized gain/loss",
                 "Latest close change",
                 "Change dates",
@@ -831,12 +843,15 @@ def render_consolidated_holdings(
                     ),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
                     "Acquired": st.column_config.DateColumn(format="M/D/YY"),
+                    "Confirmed valuation date": st.column_config.DateColumn(format="M/D/YY"),
+                    "Latest symbol date": st.column_config.DateColumn(format="M/D/YY"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.0f")
                         for column in money_columns
                     },
                     "Avg/share": st.column_config.NumberColumn(format="$%,.2f"),
-                    "Current": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Confirmed price": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Latest symbol price": st.column_config.NumberColumn(format="$%,.2f"),
                 },
             )
         insufficient = summary[summary["Alpha"].isna()]
@@ -848,6 +863,10 @@ def render_consolidated_holdings(
         st.caption(
             "Current-lot unrealized custom change uses only open lots and price movement. It "
             "excludes sold lots and income and is not the portfolio Custom gain/loss measure."
+        )
+        st.caption(
+            "Monitoring overlay — mixed-date values are non-additive unless all symbol dates "
+            "match. Latest/indicative values are shown per symbol and are not totaled."
         )
 
 
@@ -2644,11 +2663,12 @@ def render_hypothetical_analysis(
                 raise ValueError(
                     "Confirmed market prices are required for hypothetical trade analysis."
                 )
-            prices = {
-                str(column).upper(): float(closes[column].dropna().iloc[-1])
-                for column in closes
-                if not closes[column].dropna().empty
-            }
+            household = household_valuation(portfolios, closes)
+            if not household.is_complete or household.common_valuation_date is None:
+                raise ValueError(
+                    "A common confirmed household valuation is required for hypothetical analysis."
+                )
+            prices = dict(household.confirmed_prices)
             proposed_symbols = {action.symbol for action in actions if action.symbol}
             expected = {symbol: expected_return / 100 for symbol in set(prices) | proposed_symbols}
             returns = closes.pct_change(fill_method=None)
@@ -2678,6 +2698,8 @@ def render_hypothetical_analysis(
                 assumptions,
                 market_data_as_of=as_of,
                 benchmark_returns=benchmark,
+                common_confirmed_valuation_date=household.common_valuation_date,
+                latest_symbol_dates=household.latest_symbol_dates,
             )
             st.session_state.hypothetical_result = (result, assumptions)
         except ValueError as exc:

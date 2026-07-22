@@ -386,11 +386,55 @@ def test_consolidated_holdings_sum_symbols_and_preserve_lot_breakdown() -> None:
     assert row["Shares"] == 5.0
     assert row["Average cost / share"] == 16.0
     assert row["Total cost basis"] == 80.0
-    assert row["Market value"] == 125.0
+    assert row["Confirmed valuation date"] == date(2026, 1, 3)
+    assert row["Confirmed price"] == 25.0
+    assert row["Confirmed value"] == 125.0
+    assert row["Latest symbol price"] == 25.0
+    assert row["Latest symbol date"] == date(2026, 1, 3)
+    assert row["Latest/indicative value"] == 125.0
     assert row["All-time gain/loss"] == 45.0
     assert row["Daily gain/loss"] == 15.0
     assert row["Daily price dates"] == "1/2/26 → 1/3/26"
     assert row["Custom gain/loss"] == 41.0
+
+
+def test_household_holdings_use_one_confirmed_date_and_separate_latest_overlay() -> None:
+    first = Portfolio(id=1, name="First", cash=Decimal("0"))
+    first.holdings = [
+        HoldingLot(
+            symbol="AAA",
+            shares=Decimal("2"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("80"),
+        )
+    ]
+    second = Portfolio(id=2, name="Second", cash=Decimal("0"))
+    second.holdings = [
+        HoldingLot(
+            symbol="BBB",
+            shares=Decimal("3"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("40"),
+        )
+    ]
+    closes = pd.DataFrame(
+        {"AAA": [100.0, 110.0], "BBB": [50.0, float("nan")]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-03"]),
+    )
+
+    summary, _ = consolidated_holdings([first, second], closes, date(2026, 1, 2), date(2026, 1, 3))
+
+    assert set(summary["Confirmed valuation date"]) == {date(2026, 1, 2)}
+    assert summary.set_index("Symbol")["Confirmed value"].to_dict() == {
+        "AAA": 200.0,
+        "BBB": 150.0,
+    }
+    assert summary.set_index("Symbol")["Latest/indicative value"].to_dict() == {
+        "AAA": 220.0,
+        "BBB": 150.0,
+    }
+    assert summary["Confirmed value"].sum() == 350.0
+    assert summary["Latest/indicative value"].sum() == 370.0
 
 
 def test_adaptive_share_format_preserves_numeric_sorting_and_fractional_precision() -> None:

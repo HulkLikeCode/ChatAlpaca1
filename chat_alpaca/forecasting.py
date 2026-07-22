@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from chat_alpaca.analytics import portfolio_valuation
+from chat_alpaca.analytics import household_valuation
 from chat_alpaca.bootstrap_forecasting import (
     BOOTSTRAP_MODEL_TYPE as BOOTSTRAP_MODEL_TYPE,
 )
@@ -154,7 +154,8 @@ def build_forecast_request(
         valuation_basis = "cost_basis_plus_cash"
         coverage = "Market-price coverage unavailable; cost basis fallback disclosed."
     else:
-        valuations = [portfolio_valuation(portfolio, closes) for portfolio in portfolios]
+        household = household_valuation(portfolios, closes)
+        valuations = household.valuations
         incomplete = [
             portfolio.name
             for portfolio, valuation in zip(portfolios, valuations, strict=True)
@@ -165,12 +166,7 @@ def build_forecast_request(
                 "A projection is unavailable until every held symbol has a usable price. "
                 "Incomplete portfolios: " + ", ".join(incomplete) + "."
             )
-        current_value = float(
-            sum(
-                (valuation.total_calculated_value for valuation in valuations),
-                start=money(0),
-            )
-        )
+        current_value = float(household.total_calculated_value)
         warnings = tuple(
             sorted(
                 {
@@ -180,7 +176,10 @@ def build_forecast_request(
             )
         )
         valuation_basis = "confirmed_market_value"
-        coverage = f"Complete valuations: {len(valuations)} of {len(valuations)} portfolios."
+        coverage = (
+            f"Common confirmed household valuation date: {household.common_valuation_date}; "
+            f"complete valuations: {len(valuations)} of {len(valuations)} portfolios."
+        )
     if current_value <= 0:
         raise ValueError("A projection requires a selected portfolio with a positive value.")
     return ForecastRequest(

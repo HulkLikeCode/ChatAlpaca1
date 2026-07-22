@@ -364,9 +364,13 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
     expected_summary = [
         "Symbol",
         "Avg/share",
-        "Current",
+        "Confirmed valuation date",
+        "Confirmed price",
+        "Confirmed value",
+        "Latest symbol price",
+        "Latest symbol date",
+        "Latest/indicative value",
         "Cost basis",
-        "Value",
         "Unrealized gain/loss",
         "Latest close change",
         "Change dates",
@@ -386,9 +390,13 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
     expected_detail = [
         "Symbol",
         "Avg/share",
-        "Current",
+        "Confirmed valuation date",
+        "Confirmed price",
+        "Confirmed value",
+        "Latest symbol price",
+        "Latest symbol date",
+        "Latest/indicative value",
         "Cost basis",
-        "Value",
         "Unrealized gain/loss",
         "Latest close change",
         "Change dates",
@@ -408,5 +416,10 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
     assert any(
         "Current-lot unrealized custom change uses only open lots and price movement. It excludes "
         "sold lots and income and is not the portfolio Custom gain/loss measure." in item.value
+        for item in app.caption
+    )
+    assert any(
+        "Monitoring overlay — mixed-date values are non-additive unless all symbol dates match."
+        in item.value
         for item in app.caption
     )

@@ -37,6 +37,33 @@ class ValuationResult:
 
 
 @dataclass(frozen=True)
+class HouseholdValuationResult:
+    """One additive confirmed valuation plus a separate latest-symbol overlay."""
+
+    valuations: tuple[ValuationResult, ...]
+    common_valuation_date: date | None
+    confirmed_prices: dict[str, float]
+    latest_symbol_prices: dict[str, float]
+    latest_symbol_dates: dict[str, date]
+    missing_symbols: tuple[str, ...]
+    limiting_symbols: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+    @property
+    def is_complete(self) -> bool:
+        return all(valuation.is_complete for valuation in self.valuations)
+
+    @property
+    def total_calculated_value(self) -> Decimal | None:
+        if not self.is_complete:
+            return None
+        return sum(
+            (valuation.total_calculated_value for valuation in self.valuations),
+            Decimal("0"),
+        )
+
+
+@dataclass(frozen=True)
 class AlphaBetaMetrics:
     alpha: float | None
     beta: float | None
@@ -499,14 +526,22 @@ def _last_price_dates(closes: pd.DataFrame, symbols: set[str]) -> dict[str, date
     return dates
 
 
-def portfolio_valuation(portfolio: Portfolio, closes: pd.DataFrame) -> ValuationResult:
-    """Value holdings at one common close and disclose missing or stale prices."""
-    symbols = {lot.symbol for lot in portfolio.holdings if Decimal(lot.shares) != 0}
+def household_valuation(
+    portfolios: Iterable[Portfolio], closes: pd.DataFrame
+) -> HouseholdValuationResult:
+    """Value every selected portfolio at one common confirmed household date."""
+    portfolio_list = list(portfolios)
+    symbols = {
+        lot.symbol
+        for portfolio in portfolio_list
+        for lot in portfolio.holdings
+        if Decimal(lot.shares) != 0
+    }
     last_dates = _last_price_dates(closes, symbols)
     missing = tuple(sorted(symbols - last_dates.keys()))
     common_date = min(last_dates.values()) if last_dates and not missing else None
     freshest_date = max(last_dates.values()) if last_dates else None
-    stale = (
+    limiting = (
         tuple(
             sorted(
                 symbol for symbol, price_date in last_dates.items() if price_date < freshest_date
@@ -515,39 +550,83 @@ def portfolio_valuation(portfolio: Portfolio, closes: pd.DataFrame) -> Valuation
         if freshest_date
         else ()
     )
-
-    market_value = Decimal("0")
-    missing_at_common = set(missing)
-    for lot in portfolio.holdings:
-        cutoff = common_date if common_date is not None else last_dates.get(lot.symbol)
-        price = _price_on_or_before(closes, lot.symbol, cutoff) if cutoff is not None else None
-        if price is None:
-            missing_at_common.add(lot.symbol)
-            continue
-        market_value += Decimal(str(price)) * Decimal(lot.shares)
-
-    all_missing = tuple(sorted(missing_at_common))
-    complete = not all_missing and (not symbols or common_date is not None)
-    warnings: list[str] = []
-    if all_missing:
-        warnings.append("Missing prices for held symbols: " + ", ".join(all_missing) + ".")
-    if stale:
-        details = ", ".join(f"{symbol} ({last_dates[symbol]})" for symbol in stale)
-        warnings.append(
-            f"Prices have mixed freshness; valuation uses the common close {common_date}: {details}."
-        )
-    coverage = 100.0 if complete else (0.0 if symbols and not last_dates else None)
-    return ValuationResult(
-        total_calculated_value=market_value + Decimal(portfolio.cash),
-        market_value=market_value,
-        is_complete=complete,
-        missing_symbols=all_missing,
-        valued_market_value_percentage=coverage,
-        warnings=tuple(warnings),
-        common_valuation_date=common_date,
-        stale_symbols=stale,
-        last_price_dates=last_dates,
+    latest_prices = {
+        symbol: price
+        for symbol, price_date in last_dates.items()
+        if (price := _price_on_or_before(closes, symbol, price_date)) is not None
+    }
+    confirmed_prices = (
+        {
+            symbol: price
+            for symbol in symbols
+            if (price := _price_on_or_before(closes, symbol, common_date)) is not None
+        }
+        if common_date is not None
+        else {}
     )
+    missing_at_common = (
+        missing if common_date is None else tuple(sorted(symbols - confirmed_prices.keys()))
+    )
+    household_complete = not missing_at_common
+
+    household_warnings: list[str] = []
+    if missing_at_common:
+        household_warnings.append(
+            "A common confirmed household valuation is unavailable. Missing prices for held "
+            "symbols: " + ", ".join(missing_at_common) + "."
+        )
+    if limiting:
+        details = ", ".join(f"{symbol} ({last_dates[symbol]})" for symbol in limiting)
+        household_warnings.append(
+            f"The common confirmed household valuation date is {common_date}; limiting symbols: "
+            f"{details}."
+        )
+
+    valuations: list[ValuationResult] = []
+    for portfolio in portfolio_list:
+        portfolio_symbols = {lot.symbol for lot in portfolio.holdings if Decimal(lot.shares) != 0}
+        portfolio_missing = tuple(sorted(portfolio_symbols - confirmed_prices.keys()))
+        market_value = Decimal("0")
+        for lot in portfolio.holdings:
+            price = confirmed_prices.get(lot.symbol)
+            if price is not None:
+                market_value += Decimal(str(price)) * Decimal(lot.shares)
+        complete = household_complete
+        warnings = list(household_warnings)
+        if portfolio_missing and not household_warnings:
+            warnings.append(
+                "Missing prices for held symbols: " + ", ".join(portfolio_missing) + "."
+            )
+        valuations.append(
+            ValuationResult(
+                total_calculated_value=market_value + Decimal(portfolio.cash),
+                market_value=market_value,
+                is_complete=complete,
+                missing_symbols=missing_at_common,
+                valued_market_value_percentage=(
+                    100.0 if complete else (0.0 if symbols and not last_dates else None)
+                ),
+                warnings=tuple(warnings),
+                common_valuation_date=common_date,
+                stale_symbols=limiting,
+                last_price_dates=dict(last_dates),
+            )
+        )
+    return HouseholdValuationResult(
+        valuations=tuple(valuations),
+        common_valuation_date=common_date,
+        confirmed_prices=confirmed_prices,
+        latest_symbol_prices=latest_prices,
+        latest_symbol_dates=last_dates,
+        missing_symbols=missing_at_common,
+        limiting_symbols=limiting,
+        warnings=tuple(household_warnings),
+    )
+
+
+def portfolio_valuation(portfolio: Portfolio, closes: pd.DataFrame) -> ValuationResult:
+    """Value one portfolio at its common confirmed close."""
+    return household_valuation([portfolio], closes).valuations[0]
 
 
 def latest_values(portfolio: Portfolio, closes: pd.DataFrame) -> tuple[Decimal, Decimal]:
@@ -559,7 +638,10 @@ def latest_values(portfolio: Portfolio, closes: pd.DataFrame) -> tuple[Decimal, 
 
 
 def total_portfolio_value(portfolios: Iterable[Portfolio], closes: pd.DataFrame) -> Decimal:
-    return sum((latest_values(portfolio, closes)[1] for portfolio in portfolios), Decimal("0"))
+    valuation = household_valuation(portfolios, closes)
+    if valuation.total_calculated_value is None:
+        raise IncompleteValuationError(" ".join(valuation.warnings))
+    return valuation.total_calculated_value
 
 
 def rebase_comparison_series(series: Iterable[pd.Series]) -> list[pd.Series]:
@@ -593,6 +675,7 @@ def consolidated_holdings(
     if custom_start > custom_end:
         raise ValueError("The custom holdings start date must be on or before the end date.")
     portfolio_list = list(portfolios)
+    household = household_valuation(portfolio_list, closes)
     risk_metrics: dict[str, AlphaBetaMetrics] = {}
     benchmark_levels = (
         benchmark_closes[benchmark_symbol].dropna()
@@ -615,7 +698,9 @@ def consolidated_holdings(
             shares = float(lot.shares)
             cost_per_share = float(lot.cost_basis)
             cost_basis = shares * cost_per_share
-            latest = _price_on_or_before(closes, lot.symbol)
+            confirmed = household.confirmed_prices.get(lot.symbol)
+            latest = household.latest_symbol_prices.get(lot.symbol)
+            latest_date = household.latest_symbol_dates.get(lot.symbol)
             prices = closes[lot.symbol].dropna() if lot.symbol in closes else pd.Series(dtype=float)
             prior = float(prices.iloc[-2]) if len(prices) >= 2 else None
             daily_price_dates = (
@@ -646,10 +731,14 @@ def consolidated_holdings(
                     "Acquired": lot.acquired_on,
                     "Cost / share": cost_per_share,
                     "Cost basis": cost_basis,
-                    "Latest price": latest,
-                    "Market value": shares * latest if latest is not None else None,
+                    "Confirmed valuation date": household.common_valuation_date,
+                    "Confirmed price": confirmed,
+                    "Confirmed value": shares * confirmed if confirmed is not None else None,
+                    "Latest symbol price": latest,
+                    "Latest symbol date": latest_date,
+                    "Latest/indicative value": shares * latest if latest is not None else None,
                     "All-time gain/loss": (
-                        shares * latest - cost_basis if latest is not None else None
+                        shares * confirmed - cost_basis if confirmed is not None else None
                     ),
                     "Daily gain/loss": (
                         shares * (latest - prior)
@@ -674,8 +763,15 @@ def consolidated_holdings(
         Shares=("Shares", "sum"),
         **{
             "Total cost basis": ("Cost basis", "sum"),
-            "Latest price": ("Latest price", "first"),
-            "Market value": ("Market value", lambda values: values.sum(min_count=1)),
+            "Confirmed valuation date": ("Confirmed valuation date", "first"),
+            "Confirmed price": ("Confirmed price", "first"),
+            "Confirmed value": ("Confirmed value", lambda values: values.sum(min_count=1)),
+            "Latest symbol price": ("Latest symbol price", "first"),
+            "Latest symbol date": ("Latest symbol date", "first"),
+            "Latest/indicative value": (
+                "Latest/indicative value",
+                lambda values: values.sum(min_count=1),
+            ),
             "All-time gain/loss": (
                 "All-time gain/loss",
                 lambda values: values.sum(min_count=1),
@@ -698,8 +794,12 @@ def consolidated_holdings(
             "Shares",
             "Average cost / share",
             "Total cost basis",
-            "Latest price",
-            "Market value",
+            "Confirmed valuation date",
+            "Confirmed price",
+            "Confirmed value",
+            "Latest symbol price",
+            "Latest symbol date",
+            "Latest/indicative value",
             "All-time gain/loss",
             "Daily gain/loss",
             "Daily price dates",

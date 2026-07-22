@@ -335,10 +335,14 @@ confirmation, an unchanged ledger hash, and a newly reviewed non-stale market pr
 reviewed ticket data and does not submit an order.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
-zero display decimals, weighted-average cost, total basis, market value, and all-time/daily/custom
-gain or loss. Currency values also use zero display decimals; stored shares, prices, and calculations
-retain their full precision. Its Summary and By Portfolio / Lot views preserve each acquisition date
-and original cost basis without nesting collapsible sections.
+zero display decimals, weighted-average cost, total basis, and all-time/daily/custom gain or loss.
+Confirmed prices and values use one additive common date across the selected household. A separate
+latest-symbol monitoring layer shows each symbol's latest date, price, and indicative value without
+summing mixed-date values. Currency values also use zero display decimals; stored shares, prices,
+and calculations retain their full precision. Its Summary and By Portfolio / Lot views preserve
+each acquisition date and original cost basis without nesting collapsible sections. Saved
+hypothetical model `1.1.0` records the common confirmed date, confirmed prices, latest-symbol dates,
+and the valuation-layer semantics; saved `1.0.0` records remain unchanged.
 
 ## Portfolio configuration and classification
 

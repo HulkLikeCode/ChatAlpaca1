@@ -95,6 +95,42 @@ def test_combined_performance_report_returns_incomplete_coverage_warning() -> No
     assert report.rows[0].cash == 0
 
 
+def test_selected_totals_and_cards_share_one_household_confirmed_date() -> None:
+    first = Portfolio(id=1, name="First", cash=Decimal("0"))
+    first.holdings = [
+        HoldingLot(
+            symbol="AAA",
+            shares=Decimal("2"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("80"),
+        )
+    ]
+    second = Portfolio(id=2, name="Second", cash=Decimal("0"))
+    second.holdings = [
+        HoldingLot(
+            symbol="BBB",
+            shares=Decimal("3"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("40"),
+        )
+    ]
+    closes = pd.DataFrame(
+        {"AAA": [100.0, 110.0], "BBB": [50.0, float("nan")]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-03"]),
+    )
+
+    report = assemble_combined_performance_report(
+        [first, second], closes, date(2026, 1, 2), date(2026, 1, 3)
+    )
+    cards = assemble_portfolio_card_reports(
+        [first, second], closes, date(2026, 1, 2), date(2026, 1, 3)
+    )
+
+    assert report.total_value == Decimal("350.0")
+    assert "2026-01-02" in report.coverage
+    assert [card.value_label for card in cards] == ["$200", "$150"]
+
+
 def test_intraday_overlay_updates_current_metrics_but_can_hold_custom_fixed() -> None:
     portfolio = _portfolio()
     closes = pd.DataFrame(

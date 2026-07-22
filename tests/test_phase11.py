@@ -131,6 +131,8 @@ def _run(first: Portfolio, second: Portfolio):
         _assumptions(),
         market_data_as_of=datetime(2026, 7, 20, 15, tzinfo=timezone.utc),
         benchmark_returns=benchmark,
+        common_confirmed_valuation_date=date(2026, 7, 17),
+        latest_symbol_dates={"AAA": date(2026, 7, 20), "BBB": date(2026, 7, 17)},
     )
     return actions, result
 
@@ -167,6 +169,11 @@ def test_multiple_trades_before_after_cash_weights_sectors_risk_and_forecast(ses
     assert CONCENTRATION_DISCLOSURE in result.warnings
     assert DRAWDOWN_DISCLOSURE in result.warnings
     assert EXPECTED_RETURN_DISCLOSURE in result.warnings
+    assert result.model_version == "1.1.0"
+    assert result.common_confirmed_valuation_date == date(2026, 7, 17)
+    assert result.confirmed_prices == {"AAA": 100.0, "BBB": 20.0}
+    assert result.latest_symbol_dates["AAA"] == date(2026, 7, 20)
+    assert "mixed-date values are non-additive" in result.valuation_layers["monitoring_overlay"]
 
 
 def test_independent_weight_covariance_and_component_risk_reference_case() -> None:

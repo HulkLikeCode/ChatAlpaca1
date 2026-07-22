@@ -253,3 +253,9 @@ foreign-key or service path to transactions, lots, ledger entries, order allocat
 submission. A separate ticket-copy function requires explicit owner confirmation, an unchanged
 baseline, and a newly reviewed price inside the freshness window; it creates review data only and
 never submits an order.
+
+Hypothetical model `1.1.0` values both baseline and proposed snapshots from one common confirmed
+date across the selected household. Saved results retain that date, the confirmed prices, any
+included latest-symbol dates, and explicit metadata distinguishing the additive confirmed layer
+from the non-additive mixed-date monitoring overlay. Existing saved `1.0.0` results are read as
+their original snapshots and are not reinterpreted.

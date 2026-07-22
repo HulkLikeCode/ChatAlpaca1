@@ -107,3 +107,35 @@ def test_forecast_request_does_not_silently_fill_incomplete_prices() -> None:
 
     with pytest.raises(ValueError, match="Incomplete portfolios: Example"):
         build_forecast_request([portfolio], closes, ForecastAssumptions(0.07, 0.12, 0, 10))
+
+
+def test_forecast_request_uses_common_confirmed_household_value() -> None:
+    first = Portfolio(id=1, name="First", cash=Decimal("0"))
+    first.holdings = [
+        HoldingLot(
+            symbol="AAA",
+            shares=Decimal("2"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("80"),
+        )
+    ]
+    second = Portfolio(id=2, name="Second", cash=Decimal("0"))
+    second.holdings = [
+        HoldingLot(
+            symbol="BBB",
+            shares=Decimal("3"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("40"),
+        )
+    ]
+    closes = pd.DataFrame(
+        {"AAA": [100.0, 110.0], "BBB": [50.0, float("nan")]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-03"]),
+    )
+
+    request = build_forecast_request(
+        [first, second], closes, ForecastAssumptions(0.07, 0.12, 0, 10)
+    )
+
+    assert request.current_value == 350.0
+    assert "2026-01-02" in request.coverage

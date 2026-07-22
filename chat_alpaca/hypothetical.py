@@ -4,7 +4,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 
 import numpy as np
@@ -16,7 +16,10 @@ from chat_alpaca.forecasting import simulate_portfolio_projection
 from chat_alpaca.models import HypotheticalScenario, Portfolio
 from chat_alpaca.scenarios import ledger_state_hash
 
-HYPOTHETICAL_MODEL_VERSION = "1.0.0"
+HYPOTHETICAL_MODEL_VERSION = "1.1.0"
+MONITORING_OVERLAY_DISCLOSURE = (
+    "Monitoring overlay — mixed-date values are non-additive unless all symbol dates match."
+)
 CONCENTRATION_DISCLOSURE = (
     "Largest and top-five weights include cash in total value; HHI and effective holdings use "
     "invested assets only."
@@ -162,6 +165,10 @@ class AnalysisSnapshot:
 class HypotheticalResult:
     model_version: str
     market_data_as_of: datetime
+    common_confirmed_valuation_date: date | None
+    confirmed_prices: Mapping[str, float]
+    latest_symbol_dates: Mapping[str, date]
+    valuation_layers: Mapping[str, str]
     before: AnalysisSnapshot
     after: AnalysisSnapshot
     changes: Mapping[str, float]
@@ -506,6 +513,8 @@ def analyze_hypothetical_scenario(
     *,
     market_data_as_of: datetime,
     benchmark_returns: pd.Series | None = None,
+    common_confirmed_valuation_date: date | None = None,
+    latest_symbol_dates: Mapping[str, date] | None = None,
 ) -> HypotheticalResult:
     """Analyze copied state only; canonical ORM entities are never mutated."""
     if not baselines:
@@ -581,6 +590,13 @@ def analyze_hypothetical_scenario(
     return HypotheticalResult(
         HYPOTHETICAL_MODEL_VERSION,
         market_data_as_of,
+        common_confirmed_valuation_date,
+        dict(normalized_prices),
+        {str(key).upper(): value for key, value in (latest_symbol_dates or {}).items()},
+        {
+            "confirmed": "Additive values use one common confirmed household valuation date.",
+            "monitoring_overlay": MONITORING_OVERLAY_DISCLOSURE,
+        },
         before,
         after,
         changes,
@@ -589,7 +605,7 @@ def analyze_hypothetical_scenario(
 
 
 def _json_default(value: object) -> object:
-    if isinstance(value, datetime):
+    if isinstance(value, (date, datetime)):
         return value.isoformat()
     if isinstance(value, Enum):
         return value.value
@@ -611,6 +627,10 @@ def save_hypothetical_scenario(
     clean_creator = creator.strip()
     if not clean_name or not clean_creator:
         raise ValueError("A scenario name and creator are required.")
+    if result.model_version == HYPOTHETICAL_MODEL_VERSION and (
+        result.common_confirmed_valuation_date is None
+    ):
+        raise ValueError("Saved hypothetical 1.1.0 scenarios require a confirmed valuation date.")
     existing = session.scalar(
         select(HypotheticalScenario.id).where(
             HypotheticalScenario.creator == clean_creator,
