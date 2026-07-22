@@ -136,7 +136,10 @@ def parse_short_date(value: str) -> date:
 
 def money(value: object) -> Decimal:
     try:
-        return Decimal(str(value)).quantize(Decimal("0.0001"))
+        parsed = Decimal(str(value))
+        if not parsed.is_finite():
+            raise ValueError("Enter a finite dollar amount.")
+        return parsed.quantize(Decimal("0.0001"))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError("Enter a valid dollar amount.") from exc
 
@@ -168,7 +171,10 @@ def _optional_quantity(value: object) -> Decimal | None:
 
 def shares(value: object) -> Decimal:
     try:
-        parsed = Decimal(str(value).replace(",", "")).quantize(Decimal("0.00000001"))
+        parsed = Decimal(str(value).replace(",", ""))
+        if not parsed.is_finite():
+            raise ValueError("Enter a finite share quantity.")
+        parsed = parsed.quantize(Decimal("0.00000001"))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError("Enter a valid share quantity.") from exc
     if parsed <= 0:

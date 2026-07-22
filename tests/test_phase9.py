@@ -141,6 +141,28 @@ def test_parameter_blending_uses_shrunk_history_and_external_assumptions() -> No
     assert blended.covariance_method.startswith("fixed diagonal covariance shrinkage")
 
 
+def test_correlation_multiplier_scales_only_off_diagonal_entries_exactly() -> None:
+    override = pd.DataFrame(
+        [[1.0, 0.8], [0.8, 1.0]],
+        index=["AAA", "BBB"],
+        columns=["AAA", "BBB"],
+    )
+    estimate, *_ = estimate_parameters(
+        _request(
+            assumptions=ParametricAssumptions(
+                1,
+                simulations=10,
+                seed=1,
+                parameter_uncertainty=False,
+                correlation_multiplier=0.25,
+            ),
+            correlation_override=override,
+        )
+    )
+
+    assert estimate.correlation == pytest.approx(np.array([[1.0, 0.2], [0.2, 1.0]]))
+
+
 def test_user_overrides_take_precedence_and_are_disclosed() -> None:
     override = {
         "AAA": CapitalMarketAssumption(annual_return=0.03, annual_volatility=0.07, source="Owner")

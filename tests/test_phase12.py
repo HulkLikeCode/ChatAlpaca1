@@ -179,6 +179,56 @@ def test_stale_previous_close_and_streaming_classification() -> None:
     assert streaming.status == FreshnessStatus.STREAMING
 
 
+@pytest.mark.parametrize("invalid_trade", [0, -1, float("nan"), float("inf"), True])
+def test_quote_price_falls_through_invalid_latest_trade(invalid_trade: object) -> None:
+    quote = QuoteRecord("AAA", latest_trade=invalid_trade, bid=99, ask=101, previous_close=90)
+
+    assert quote.price == 100
+    assert quote.intraday_price == 100
+    assert quote.price_source == "midpoint"
+
+
+@pytest.mark.parametrize(
+    ("bid", "ask"),
+    [
+        (None, 101),
+        (99, None),
+        (0, 101),
+        (-1, 101),
+        (float("nan"), 101),
+        (99, float("inf")),
+        (True, 101),
+    ],
+)
+def test_quote_price_falls_through_invalid_midpoint_components(bid: object, ask: object) -> None:
+    quote = QuoteRecord("AAA", bid=bid, ask=ask, previous_close=90)
+
+    assert quote.midpoint is None
+    assert quote.price == 90
+    assert quote.price_source == "previous_close"
+
+
+@pytest.mark.parametrize("invalid_close", [0, -1, float("nan"), float("inf"), True])
+def test_quote_price_is_unavailable_when_every_source_is_invalid(invalid_close: object) -> None:
+    quote = QuoteRecord("AAA", latest_trade=0, bid=0, ask=0, previous_close=invalid_close)
+
+    assert quote.price is None
+    assert quote.price_source == "unavailable"
+
+
+def test_invalid_intraday_values_preserve_previous_close_classification_and_provenance() -> None:
+    now = datetime(2026, 7, 20, 15, tzinfo=UTC)
+
+    quote = classify_quote(
+        QuoteRecord("AAA", latest_trade=float("nan"), previous_close=90, source="snapshot"),
+        now=now,
+    )
+
+    assert quote.price == 90
+    assert quote.status == FreshnessStatus.PREVIOUS_CLOSE
+    assert quote.source == "previous_close"
+
+
 def test_off_hours_snapshot_uses_receipt_freshness_and_retains_market_as_of() -> None:
     now = datetime(2026, 7, 20, 23, tzinfo=UTC)
     market_time = datetime(2026, 7, 20, 19, 59, tzinfo=UTC)
