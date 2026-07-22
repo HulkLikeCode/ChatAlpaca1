@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from enum import Enum
+from numbers import Real
 from typing import Protocol
 
 import pandas as pd
@@ -21,8 +24,18 @@ from chat_alpaca.models import (
 )
 
 DETERMINISTIC_MODEL_TYPE = "deterministic_scenario"
-DETERMINISTIC_MODEL_VERSION = "1.0.0"
+DETERMINISTIC_MODEL_VERSION = "1.1.0"
 VALIDATION_STATUSES = {"unvalidated", "in_review", "validated", "rejected"}
+
+SHOCK_DISCLOSURE = (
+    "Shock impacts are first-order exposure estimates; they do not model cross-security "
+    "correlation, liquidity, or market impact."
+)
+DIVIDEND_DISCLOSURE = (
+    "The dividend scenario holds positive trailing-365-day dividend income constant for every "
+    "forecast year, applies no dividend growth, and does not model reinvestment or opportunity "
+    "cost."
+)
 
 
 class ScenarioType(str, Enum):
@@ -128,16 +141,100 @@ class ModelValidator(Protocol):
     def limitations(self) -> Sequence[str]: ...
 
 
-def _latest_prices(closes: pd.DataFrame | Mapping[str, float]) -> dict[str, float]:
+def _valid_price(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
+        return None
+    price = float(value)
+    return price if math.isfinite(price) and price > 0 else None
+
+
+def _date_label(value: object) -> str:
+    return pd.Timestamp(value).date().isoformat()
+
+
+def _resolved_prices(
+    closes: pd.DataFrame | Mapping[str, float], required_symbols: Sequence[str]
+) -> tuple[dict[str, float], dict[str, object]]:
+    required = tuple(sorted(set(required_symbols)))
     if isinstance(closes, pd.DataFrame):
-        if closes.empty:
-            return {}
-        return {
-            str(symbol).upper(): float(series.dropna().iloc[-1])
-            for symbol, series in closes.items()
-            if not series.dropna().empty
+        if not required:
+            return {}, {
+                "common_valuation_date": None,
+                "price_source_dates": {},
+                "price_observation_counts": {},
+                "jointly_complete_price_observations": 0,
+            }
+        normalized = closes.copy()
+        normalized.columns = [str(symbol).upper() for symbol in normalized.columns]
+        if normalized.columns.duplicated().any():
+            raise ValueError("Scenario price columns must identify each symbol only once.")
+        missing = [symbol for symbol in required if symbol not in normalized]
+        if missing:
+            raise ValueError(
+                "Scenario refused because current market data is missing for: "
+                + ", ".join(missing)
+                + "."
+            )
+        try:
+            normalized.index = pd.to_datetime(normalized.index)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Scenario DataFrame prices require a date-like index.") from exc
+        if normalized.index.hasnans:
+            raise ValueError("Scenario DataFrame prices require a date for every observation.")
+        normalized = normalized.sort_index()
+        usable = normalized.loc[:, list(required)].map(_valid_price)
+        latest_dates: dict[str, pd.Timestamp] = {}
+        for symbol in required:
+            available = usable[symbol].dropna()
+            if available.empty:
+                raise ValueError(
+                    f"Scenario refused because current market data is missing for: {symbol}."
+                )
+            latest_dates[symbol] = pd.Timestamp(available.index[-1])
+        common_date = min(latest_dates.values())
+        resolved: dict[str, float] = {}
+        source_dates: dict[str, str] = {}
+        observation_counts: dict[str, int] = {}
+        through_common = usable.loc[usable.index <= common_date]
+        for symbol in required:
+            available = through_common[symbol].dropna()
+            if available.empty:
+                raise ValueError(
+                    f"Scenario refused because current market data is missing for: {symbol}."
+                )
+            resolved[symbol] = float(available.iloc[-1])
+            source_dates[symbol] = _date_label(available.index[-1])
+            observation_counts[symbol] = int(len(available))
+        complete = int(through_common.dropna(how="any").shape[0])
+        return resolved, {
+            "common_valuation_date": _date_label(common_date),
+            "price_source_dates": source_dates,
+            "price_observation_counts": observation_counts,
+            "jointly_complete_price_observations": complete,
         }
-    return {str(symbol).upper(): float(value) for symbol, value in closes.items()}
+
+    resolved = {}
+    for raw_symbol, raw_value in closes.items():
+        symbol = str(raw_symbol).upper()
+        price = _valid_price(raw_value)
+        if price is None:
+            raise ValueError(
+                f"Scenario price for {symbol} must be numeric, finite, positive, and not boolean."
+            )
+        resolved[symbol] = price
+    missing = [symbol for symbol in required if symbol not in resolved]
+    if missing:
+        raise ValueError(
+            "Scenario refused because current market data is missing for: "
+            + ", ".join(missing)
+            + "."
+        )
+    return resolved, {
+        "common_valuation_date": None,
+        "price_source_dates": {},
+        "price_observation_counts": {},
+        "jointly_complete_price_observations": None,
+    }
 
 
 def _sector_weights(
@@ -186,7 +283,15 @@ def run_deterministic_scenario(
     """Run one deterministic scenario without randomness or raw path generation."""
     if not portfolios:
         raise ValueError("A deterministic scenario requires at least one portfolio.")
-    prices = _latest_prices(closes)
+    required_symbols = sorted(
+        {
+            lot.symbol.upper()
+            for portfolio in portfolios
+            for lot in portfolio.holdings
+            if float(lot.shares) != 0
+        }
+    )
+    prices, price_coverage = _resolved_prices(closes, required_symbols)
     sectors = sectors or {}
     proxy_use = proxy_use or {}
     holdings: list[dict[str, object]] = []
@@ -195,6 +300,8 @@ def run_deterministic_scenario(
     for portfolio in portfolios:
         cash_by_portfolio[portfolio.name] = float(portfolio.cash)
         for lot in portfolio.holdings:
+            if float(lot.shares) == 0:
+                continue
             symbol = lot.symbol.upper()
             if symbol not in prices:
                 missing.add(symbol)
@@ -230,13 +337,17 @@ def run_deterministic_scenario(
     impacts = [0.0 for _ in holdings]
     direct_portfolio_impacts: dict[str, float] | None = None
     warnings: list[str] = []
+    if price_coverage["common_valuation_date"] is not None:
+        warnings.append(f"Scenario valuation date: {price_coverage['common_valuation_date']}.")
     scenario_value = baseline
 
     if scenario_type == ScenarioType.BROAD_MARKET_DECLINE:
+        warnings.append(SHOCK_DISCLOSURE)
         impacts = [float(row["value"]) * assumptions.market_decline for row in holdings]
         baseline = starting_value
         scenario_value = baseline + sum(impacts)
     elif scenario_type == ScenarioType.HOLDING_DECLINE:
+        warnings.append(SHOCK_DISCLOSURE)
         target = (assumptions.holding_symbol or "").strip().upper()
         if not target:
             raise ValueError("A holding-specific decline requires a holding symbol.")
@@ -249,6 +360,7 @@ def run_deterministic_scenario(
         baseline = starting_value
         scenario_value = baseline + sum(impacts)
     elif scenario_type == ScenarioType.SECTOR_DECLINE:
+        warnings.append(SHOCK_DISCLOSURE)
         target_sector = (assumptions.sector or "").strip()
         if not target_sector:
             raise ValueError("A sector decline requires a sector.")
@@ -266,6 +378,7 @@ def run_deterministic_scenario(
         baseline = starting_value
         scenario_value = baseline + sum(impacts)
     elif scenario_type == ScenarioType.DIVIDEND_REDUCTION:
+        warnings.append(DIVIDEND_DISCLOSURE)
         dividend_start = (as_of or date.today()) - timedelta(days=365)
         dividend_by_portfolio: dict[str, float] = {}
         for portfolio in portfolios:
@@ -357,20 +470,30 @@ def run_deterministic_scenario(
         if assumptions.historical_end:
             window = window.loc[window.index <= pd.Timestamp(assumptions.historical_end)]
         required = sorted({str(row["symbol"]) for row in holdings})
-        unavailable = [
-            symbol
-            for symbol in required
-            if symbol not in window or len(window[symbol].dropna()) < 2
-        ]
+        unavailable = [symbol for symbol in required if symbol not in window]
         if unavailable:
             raise ValueError(
                 "Historical replay refused because prior-period data is missing for: "
                 + ", ".join(unavailable)
                 + "."
             )
+        joint = window.loc[:, required].map(_valid_price).dropna(how="any")
+        if len(joint) < 2:
+            raise ValueError(
+                "Historical replay requires at least two jointly complete observations for every "
+                "required symbol."
+            )
+        replay_start = _date_label(joint.index[0])
+        replay_end = _date_label(joint.index[-1])
+        jointly_complete_observations = int(len(joint))
+        warnings.extend(
+            [
+                f"Historical replay endpoints: {replay_start} through {replay_end}.",
+                f"Historical replay observations: {jointly_complete_observations}.",
+            ]
+        )
         returns = {
-            symbol: float(window[symbol].dropna().iloc[-1] / window[symbol].dropna().iloc[0] - 1)
-            for symbol in required
+            symbol: float(joint[symbol].iloc[-1] / joint[symbol].iloc[0] - 1) for symbol in required
         }
         impacts = [float(row["value"]) * returns[str(row["symbol"])] for row in holdings]
         baseline = starting_value
@@ -434,6 +557,14 @@ def run_deterministic_scenario(
         "dataset_ids": [reference.dataset_id for reference in dataset_references],
         "proxy_symbols": sorted(proxy_use),
         "proxy_use": dict(sorted(proxy_use.items())),
+        **price_coverage,
+        "replay_start_date": replay_start
+        if scenario_type == ScenarioType.HISTORICAL_REPLAY
+        else None,
+        "replay_end_date": replay_end if scenario_type == ScenarioType.HISTORICAL_REPLAY else None,
+        "jointly_complete_replay_observations": jointly_complete_observations
+        if scenario_type == ScenarioType.HISTORICAL_REPLAY
+        else None,
     }
     assumption_payload = asdict(assumptions)
     assumption_payload["scenario_type"] = scenario_type.value
