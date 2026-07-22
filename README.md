@@ -403,6 +403,9 @@ uncapped holdings, analytics, historical-data provenance and precedence, adjustm
 incremental refresh, CSV validation, proxy records, idempotent order-fill allocation, and a
 credential-free Streamlit render.
 
+The merged Phase 2 calculation-remediation evidence is preserved in the
+[Phase 2 acceptance record](docs/manual-tests/phase-2-calculation-remediation.md).
+
 ## Deliberately deferred
 
 The initial architecture models automated strategies, short positions, options, and live mode, but the following production features remain later work:
