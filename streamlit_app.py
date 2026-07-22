@@ -1203,6 +1203,18 @@ def render_forecast(
     for warning in request.warnings:
         _render_warning(warning)
     result = cached_projection(request)
+    contract = result.contract
+    source_date = (
+        contract.source_valuation_date.strftime("%-m/%-d/%y")
+        if contract.source_valuation_date is not None
+        else "unavailable (disclosed fallback)"
+    )
+    st.caption(
+        f"Model {contract.model_type} / {contract.model_version} · seed {contract.seed} · "
+        f"{contract.simulation_count:,} simulations · source valuation date {source_date} · "
+        f"method {contract.source_valuation_methodology} · generated "
+        f"{contract.result_generated_at.isoformat()}."
+    )
     dates = pd.date_range(
         pd.Timestamp.today().normalize() + pd.offsets.MonthEnd(1),
         periods=horizon_years * 12,

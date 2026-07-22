@@ -51,6 +51,12 @@ The retirement model will account for Traditional IRA, Roth IRA, and taxable-acc
 
 Each saved forecast run must retain model type and version, assumptions, data coverage, data sources, adjustment methods, simulation count, random seed, creation timestamp, and validation status.
 
+The earlier session-only planning projection is separately identified as
+`legacy_projection / 1.0.0`; it is not a bootstrap or parametric model. Its result contract retains
+the assumptions, seed, simulation count, common confirmed source valuation date or disclosed
+cost-basis fallback, valuation methodology, and generation timestamp. All numeric service inputs
+must be finite and non-Boolean before paths are generated.
+
 ## Phase 7 deterministic scenarios
 
 `chat_alpaca.scenarios` is the reusable Phase 7 boundary. It applies fixed, explicit assumptions to

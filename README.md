@@ -228,6 +228,10 @@ warnings, and `chat_alpaca.forecasting` constructs explicit forecast requests. W
 are unavailable, a planning scenario may retain the existing cost-basis-plus-cash workflow only
 with that fallback and its coverage disclosed. Application database migration, seeding, and initial
 portfolio loading are coordinated by `chat_alpaca.bootstrap.initialize_application` outside the UI.
+The session-only legacy planning projection has the explicit contract `legacy_projection / 1.0.0`.
+Each result records its assumptions, seed, simulation count, common confirmed source valuation date
+or disclosed fallback, valuation methodology, and generation timestamp. Boolean and nonfinite
+numeric inputs are rejected before simulation.
 
 Phase 7 adds deterministic scenario analysis in `chat_alpaca.scenarios`. It supports broad-market,
 holding, sector, dividend, contribution, inflation, low-return, lost-decade, retirement-date, and
