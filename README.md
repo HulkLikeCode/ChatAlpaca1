@@ -358,6 +358,10 @@ hypothetical model `1.1.0` records the common confirmed date, confirmed prices, 
 and the valuation-layer semantics; saved `1.0.0` records remain unchanged.
 Hypothetical actions, baselines, prices, assumptions, stress magnitudes, and adjacent retirement
 inputs reject Boolean and nonfinite numerical values at the reusable service boundary.
+When a symbol has both positive and negative open lots, Exact Holdings preserves those lot rows but
+keeps average cost per share numerically unavailable instead of netting a misleading signed value.
+Normalized quarterly income scales the selected period to 91.3125 days and is disclosed as a
+non-forecast that may be unstable for periods shorter than 30 days.
 
 ## Portfolio configuration and classification
 

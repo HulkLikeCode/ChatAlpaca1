@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from chat_alpaca.analytics import (
+    MIXED_BASIS_DISCLOSURE,
     adaptive_share_number_format,
     consolidated_holdings,
     household_valuation,
@@ -869,6 +870,8 @@ def render_consolidated_holdings(
             "Monitoring overlay — mixed-date values are non-additive unless all symbol dates "
             "match. Latest/indicative values are shown per symbol and are not totaled."
         )
+        if summary["Mixed long/short open lots"].any():
+            st.caption(MIXED_BASIS_DISCLOSURE)
 
 
 def render_portfolio_income(
@@ -887,8 +890,9 @@ def render_portfolio_income(
         "Normalized quarterly average", dollars(summary.normalized_quarterly_average)
     )
     st.caption(
-        "Cash received from gross dividend and interest credits. The quarterly average "
-        "normalizes the selected range to 91.3125 days; it is not a forecast."
+        "Cash received from gross dividend and interest credits. Normalized quarterly income "
+        "scales the selected period to 91.3125 days. It is not a forecast and may be unstable "
+        "for periods shorter than 30 days."
     )
     if not events:
         st.caption("No dividend or interest income was received in the selected range.")

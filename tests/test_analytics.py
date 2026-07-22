@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from chat_alpaca.analytics import (
+    MIXED_BASIS_DISCLOSURE,
     IncompleteValuationError,
     adaptive_share_number_format,
     alpha_beta_from_returns,
@@ -435,6 +436,35 @@ def test_household_holdings_use_one_confirmed_date_and_separate_latest_overlay()
     }
     assert summary["Confirmed value"].sum() == 350.0
     assert summary["Latest/indicative value"].sum() == 370.0
+
+
+def test_mixed_long_short_lots_suppress_average_cost_and_preserve_detail() -> None:
+    portfolio = Portfolio(id=1, name="Mixed", cash=Decimal("0"))
+    portfolio.holdings = [
+        HoldingLot(
+            symbol="AAA",
+            shares=Decimal("5"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("10"),
+        ),
+        HoldingLot(
+            symbol="AAA",
+            shares=Decimal("-2"),
+            acquired_on=date(2026, 1, 2),
+            cost_basis=Decimal("30"),
+        ),
+    ]
+    closes = pd.DataFrame({"AAA": [20.0]}, index=pd.to_datetime(["2026-01-05"]))
+
+    summary, detail = consolidated_holdings([portfolio], closes, date(2026, 1, 1), date(2026, 1, 5))
+
+    row = summary.iloc[0]
+    assert pd.isna(row["Average cost / share"])
+    assert bool(row["Mixed long/short open lots"])
+    assert detail["Shares"].tolist() == [5.0, -2.0]
+    assert detail["Cost / share"].tolist() == [10.0, 30.0]
+    assert pd.api.types.is_numeric_dtype(summary["Average cost / share"])
+    assert "both long and short open lots" in MIXED_BASIS_DISCLOSURE
 
 
 def test_adaptive_share_format_preserves_numeric_sorting_and_fractional_precision() -> None:

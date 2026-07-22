@@ -13,6 +13,10 @@ from chat_alpaca.models import Portfolio, PortfolioTransaction
 from chat_alpaca.reconstruction import ReconstructionRequest, reconstruct_from_coverage
 
 EXTERNAL_CASH_FLOW_KINDS = {"transfer", "cash_adjustment", "award"}
+MIXED_BASIS_DISCLOSURE = (
+    "Average cost per share is unavailable because this symbol contains both long and short open "
+    "lots."
+)
 
 
 @dataclass(frozen=True)
@@ -758,6 +762,23 @@ def consolidated_holdings(
     detail = pd.DataFrame(rows)
     if detail.empty:
         return pd.DataFrame(), detail
+    numeric_detail_columns = (
+        "Shares",
+        "Cost / share",
+        "Cost basis",
+        "Confirmed price",
+        "Confirmed value",
+        "Latest symbol price",
+        "Latest/indicative value",
+        "All-time gain/loss",
+        "Daily gain/loss",
+        "Custom gain/loss",
+        "Alpha",
+        "Beta",
+        "Alpha/Beta observations",
+    )
+    for column in numeric_detail_columns:
+        detail[column] = pd.to_numeric(detail[column], errors="coerce")
     grouped = detail.groupby("Symbol", as_index=False).agg(
         Portfolios=("Portfolio", "nunique"),
         Shares=("Shares", "sum"),
@@ -787,6 +808,11 @@ def consolidated_holdings(
     grouped["Average cost / share"] = grouped["Total cost basis"].div(
         grouped["Shares"].replace(0, np.nan)
     )
+    mixed_lots = detail.groupby("Symbol")["Shares"].agg(
+        lambda values: bool((values > 0).any() and (values < 0).any())
+    )
+    grouped["Mixed long/short open lots"] = grouped["Symbol"].map(mixed_lots).fillna(False)
+    grouped.loc[grouped["Mixed long/short open lots"], "Average cost / share"] = np.nan
     grouped = grouped[
         [
             "Symbol",
@@ -807,6 +833,7 @@ def consolidated_holdings(
             "Alpha",
             "Beta",
             "Alpha/Beta observations",
+            "Mixed long/short open lots",
         ]
     ].sort_values("Symbol")
     return grouped, detail

@@ -413,6 +413,15 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
     )
     assert list(detail.columns) == expected_detail
     assert pd.api.types.is_numeric_dtype(detail["Shares"])
+    for column in (
+        "Avg/share",
+        "Confirmed price",
+        "Confirmed value",
+        "Latest symbol price",
+        "Latest/indicative value",
+        "Cost basis",
+    ):
+        assert pd.api.types.is_numeric_dtype(detail[column])
     assert any(
         "Current-lot unrealized custom change uses only open lots and price movement. It excludes "
         "sold lots and income and is not the portfolio Custom gain/loss measure." in item.value
@@ -421,5 +430,10 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
     assert any(
         "Monitoring overlay — mixed-date values are non-additive unless all symbol dates match."
         in item.value
+        for item in app.caption
+    )
+    assert any(
+        "Normalized quarterly income scales the selected period to 91.3125 days. It is not a "
+        "forecast and may be unstable for periods shorter than 30 days." in item.value
         for item in app.caption
     )
