@@ -10,6 +10,7 @@ from chat_alpaca.commands import (
     TransactionCommand,
     build_transaction_draft,
     calculated_trade_cash,
+    transaction_kind_label,
     validate_transaction_symbol,
 )
 from chat_alpaca.models import Portfolio
@@ -45,6 +46,18 @@ def test_sell_cash_reference_case_matches_ledger_identity() -> None:
 
     assert calculated_trade_cash("sell", 3, 12.50, 1.25) == pytest.approx(36.25)
     assert draft.cash_delta == Decimal("36.25000000")
+
+
+@pytest.mark.parametrize(
+    ("kind", "label"),
+    [
+        ("buy", "Buy"),
+        ("cash_adjustment", "Cash Adjustment"),
+        ("opening_position", "Opening Position"),
+    ],
+)
+def test_transaction_kind_label_replaces_underscores_and_title_cases(kind: str, label: str) -> None:
+    assert transaction_kind_label(kind) == label
 
 
 @pytest.mark.parametrize("invalid", [-1, float("nan"), float("inf"), float("-inf")])

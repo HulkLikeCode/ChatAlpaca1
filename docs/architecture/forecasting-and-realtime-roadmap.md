@@ -55,7 +55,10 @@ The earlier session-only planning projection is separately identified as
 `legacy_projection / 1.0.0`; it is not a bootstrap or parametric model. Its result contract retains
 the assumptions, seed, simulation count, common confirmed source valuation date or disclosed
 cost-basis fallback, valuation methodology, and generation timestamp. All numeric service inputs
-must be finite and non-Boolean before paths are generated.
+must be finite and non-Boolean before paths are generated. Presentation month zero uses the explicit
+source valuation date when available, otherwise the UTC generation date; modeled month `n` is
+labeled at the end of the `n`th following calendar month. Annual calendar-year labels come from the
+exact month-12 endpoints and never participate in simulation arithmetic.
 
 ## Phase 7 deterministic scenarios
 
@@ -236,7 +239,10 @@ contribution, symbol-consolidated largest movers, stale/missing symbols, assigne
 recent fills, symbol quote/trade detail, and controlled broad-market and sector proxy components.
 Daily, 1-month, 3-month, and 12-month returns require their full observation windows and disclose
 counts and endpoints; shorter windows remain unavailable. Drawdown is labeled from the
-available-window peak. The primary correlation output uses exactly 21 complete aligned daily-return
+available-window peak. The 50-day trend is a descriptive comparison of the final finite positive
+level with the arithmetic mean of the final 50 usable dated levels; equality is labeled above, and
+fewer than 50 levels is insufficient history. It is not a prediction or expanded technical-analysis
+model. The primary correlation output uses exactly 21 complete aligned daily-return
 pairs against SPY and discloses n/21 plus endpoints; missing SPY, insufficient pairs, zero variance,
 or nonfinite correlation is unavailable. A secondary `high` at 0.70 or above and `mixed` otherwise
 label is explicitly disclosed as a fixed descriptive heuristic, not a significance test. Phase 12
