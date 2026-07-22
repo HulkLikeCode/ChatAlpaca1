@@ -8,6 +8,7 @@ import pytest
 
 from chat_alpaca.analytics import (
     IncompleteValuationError,
+    adaptive_share_number_format,
     alpha_beta_from_returns,
     consolidated_holdings,
     normalized_growth,
@@ -388,4 +389,16 @@ def test_consolidated_holdings_sum_symbols_and_preserve_lot_breakdown() -> None:
     assert row["Market value"] == 125.0
     assert row["All-time gain/loss"] == 45.0
     assert row["Daily gain/loss"] == 15.0
+    assert row["Daily price dates"] == "1/2/26 → 1/3/26"
     assert row["Custom gain/loss"] == 41.0
+
+
+def test_adaptive_share_format_preserves_numeric_sorting_and_fractional_precision() -> None:
+    values = pd.Series([1.0, 1.25, 0.00000001], dtype=float)
+
+    assert adaptive_share_number_format([1]) == "%.0f"
+    assert adaptive_share_number_format([1.25]) == "%.2f"
+    assert adaptive_share_number_format([0.00000001]) == "%.8f"
+    assert adaptive_share_number_format(values) == "%.8f"
+    assert pd.api.types.is_numeric_dtype(values)
+    assert values.sort_values().tolist() == [0.00000001, 1.0, 1.25]

@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from chat_alpaca.analytics import (
+    adaptive_share_number_format,
     consolidated_holdings,
 )
 from chat_alpaca.bootstrap import initialize_application
@@ -741,9 +742,10 @@ def render_consolidated_holdings(
             "Total cost basis": "Cost basis",
             "Latest price": "Current",
             "Market value": "Value",
-            "All-time gain/loss": "All time",
-            "Daily gain/loss": "Day",
-            "Custom gain/loss": "Custom",
+            "All-time gain/loss": "Unrealized gain/loss",
+            "Daily gain/loss": "Latest close change",
+            "Daily price dates": "Change dates",
+            "Custom gain/loss": "Current-lot unrealized custom change",
             "Alpha": "Annualized market-model intercept, RF assumed 0%",
         }
         money_columns = (
@@ -751,9 +753,9 @@ def render_consolidated_holdings(
             "Current",
             "Cost basis",
             "Value",
-            "All time",
-            "Day",
-            "Custom",
+            "Unrealized gain/loss",
+            "Latest close change",
+            "Current-lot unrealized custom change",
         )
         if view == "Summary":
             summary_columns = [
@@ -762,9 +764,10 @@ def render_consolidated_holdings(
                 "Current",
                 "Cost basis",
                 "Value",
-                "All time",
-                "Day",
-                "Custom",
+                "Unrealized gain/loss",
+                "Latest close change",
+                "Change dates",
+                "Current-lot unrealized custom change",
                 "Annualized market-model intercept, RF assumed 0%",
                 "Beta",
                 "Alpha/Beta observations",
@@ -779,7 +782,9 @@ def render_consolidated_holdings(
                 width="stretch",
                 column_order=summary_columns,
                 column_config={
-                    "Shares": st.column_config.NumberColumn(format="%.0f"),
+                    "Shares": st.column_config.NumberColumn(
+                        format=adaptive_share_number_format(summary_view["Shares"])
+                    ),
                     "Annualized market-model intercept, RF assumed 0%": (
                         st.column_config.NumberColumn(format="%.2f%%")
                     ),
@@ -799,9 +804,10 @@ def render_consolidated_holdings(
                 "Current",
                 "Cost basis",
                 "Value",
-                "All time",
-                "Day",
-                "Custom",
+                "Unrealized gain/loss",
+                "Latest close change",
+                "Change dates",
+                "Current-lot unrealized custom change",
                 "Annualized market-model intercept, RF assumed 0%",
                 "Beta",
                 "Alpha/Beta observations",
@@ -817,7 +823,9 @@ def render_consolidated_holdings(
                 width="stretch",
                 column_order=detail_columns,
                 column_config={
-                    "Shares": st.column_config.NumberColumn(format="%.0f"),
+                    "Shares": st.column_config.NumberColumn(
+                        format=adaptive_share_number_format(detail_view["Shares"])
+                    ),
                     "Annualized market-model intercept, RF assumed 0%": (
                         st.column_config.NumberColumn(format="%.2f%%")
                     ),
@@ -836,6 +844,10 @@ def render_consolidated_holdings(
             "Holding Alpha/Beta uses daily price returns plus symbol-assigned ledger dividends "
             "against SPY total return. Unassigned dividends are excluded. "
             f"{len(insufficient)} holding(s) lack the required 60 overlapping daily returns."
+        )
+        st.caption(
+            "Current-lot unrealized custom change uses only open lots and price movement. It "
+            "excludes sold lots and income and is not the portfolio Custom gain/loss measure."
         )
 
 

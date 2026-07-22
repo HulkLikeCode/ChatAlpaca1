@@ -9,6 +9,9 @@ import pytest
 from sqlalchemy import func, select
 
 from chat_alpaca.hypothetical import (
+    CONCENTRATION_DISCLOSURE,
+    DRAWDOWN_DISCLOSURE,
+    EXPECTED_RETURN_DISCLOSURE,
     HypotheticalAssumptions,
     PortfolioBaseline,
     ProposedAction,
@@ -161,6 +164,9 @@ def test_multiple_trades_before_after_cash_weights_sectors_risk_and_forecast(ses
     assert result.after.depletion_probability is not None
     assert result.after.effective_number_of_holdings > result.before.effective_number_of_holdings
     assert "AAA" in result.after.benchmark_relative_exposure
+    assert CONCENTRATION_DISCLOSURE in result.warnings
+    assert DRAWDOWN_DISCLOSURE in result.warnings
+    assert EXPECTED_RETURN_DISCLOSURE in result.warnings
 
 
 def test_independent_weight_covariance_and_component_risk_reference_case() -> None:
