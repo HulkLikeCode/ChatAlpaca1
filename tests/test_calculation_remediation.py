@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -51,6 +53,15 @@ def _coverage(values: dict[str, list[float]], days: list[str]) -> HistoricalCove
         freshness={},
         usable=True,
         usability="reference case",
+    )
+
+
+def test_tax_002_google_sheets_formula_is_exactly_the_approved_validation_formula() -> None:
+    with Path("Calculations Audit.csv").open(newline="") as handle:
+        rows = {row["audit_id"]: row for row in csv.DictReader(handle)}
+
+    assert rows["TAX-002"]["google_sheets_formula_template"] == (
+        "'=TaxableBalance*(POWER(1+AnnualQualifiedDividendYield,1/12)-1)*DividendTaxRate"
     )
 
 
