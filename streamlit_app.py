@@ -11,8 +11,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from chat_alpaca.analytics import (
+    MIXED_BASIS_DISCLOSURE,
     adaptive_share_number_format,
     consolidated_holdings,
+    household_valuation,
 )
 from chat_alpaca.bootstrap import initialize_application
 from chat_alpaca.classification import (
@@ -76,6 +78,7 @@ from chat_alpaca.portfolio_service import (
 )
 from chat_alpaca.realtime import (
     BROAD_MARKET_PROXIES,
+    CORRELATION_HEURISTIC_DISCLOSURE,
     OPEN_ORDER_STATUSES,
     SECTOR_PROXIES,
     ActiveSessionMonitor,
@@ -740,8 +743,6 @@ def render_consolidated_holdings(
             "Average cost / share": "Avg/share",
             "Cost / share": "Avg/share",
             "Total cost basis": "Cost basis",
-            "Latest price": "Current",
-            "Market value": "Value",
             "All-time gain/loss": "Unrealized gain/loss",
             "Daily gain/loss": "Latest close change",
             "Daily price dates": "Change dates",
@@ -750,9 +751,11 @@ def render_consolidated_holdings(
         }
         money_columns = (
             "Avg/share",
-            "Current",
+            "Confirmed price",
+            "Latest symbol price",
             "Cost basis",
-            "Value",
+            "Confirmed value",
+            "Latest/indicative value",
             "Unrealized gain/loss",
             "Latest close change",
             "Current-lot unrealized custom change",
@@ -761,9 +764,13 @@ def render_consolidated_holdings(
             summary_columns = [
                 "Symbol",
                 "Avg/share",
-                "Current",
+                "Confirmed valuation date",
+                "Confirmed price",
+                "Confirmed value",
+                "Latest symbol price",
+                "Latest symbol date",
+                "Latest/indicative value",
                 "Cost basis",
-                "Value",
                 "Unrealized gain/loss",
                 "Latest close change",
                 "Change dates",
@@ -789,21 +796,28 @@ def render_consolidated_holdings(
                         st.column_config.NumberColumn(format="%.2f%%")
                     ),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
+                    "Confirmed valuation date": st.column_config.DateColumn(format="M/D/YY"),
+                    "Latest symbol date": st.column_config.DateColumn(format="M/D/YY"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.0f")
                         for column in money_columns
                     },
                     "Avg/share": st.column_config.NumberColumn(format="$%,.2f"),
-                    "Current": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Confirmed price": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Latest symbol price": st.column_config.NumberColumn(format="$%,.2f"),
                 },
             )
         else:
             detail_columns = [
                 "Symbol",
                 "Avg/share",
-                "Current",
+                "Confirmed valuation date",
+                "Confirmed price",
+                "Confirmed value",
+                "Latest symbol price",
+                "Latest symbol date",
+                "Latest/indicative value",
                 "Cost basis",
-                "Value",
                 "Unrealized gain/loss",
                 "Latest close change",
                 "Change dates",
@@ -831,12 +845,15 @@ def render_consolidated_holdings(
                     ),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
                     "Acquired": st.column_config.DateColumn(format="M/D/YY"),
+                    "Confirmed valuation date": st.column_config.DateColumn(format="M/D/YY"),
+                    "Latest symbol date": st.column_config.DateColumn(format="M/D/YY"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.0f")
                         for column in money_columns
                     },
                     "Avg/share": st.column_config.NumberColumn(format="$%,.2f"),
-                    "Current": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Confirmed price": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Latest symbol price": st.column_config.NumberColumn(format="$%,.2f"),
                 },
             )
         insufficient = summary[summary["Alpha"].isna()]
@@ -849,6 +866,12 @@ def render_consolidated_holdings(
             "Current-lot unrealized custom change uses only open lots and price movement. It "
             "excludes sold lots and income and is not the portfolio Custom gain/loss measure."
         )
+        st.caption(
+            "Monitoring overlay — mixed-date values are non-additive unless all symbol dates "
+            "match. Latest/indicative values are shown per symbol and are not totaled."
+        )
+        if summary["Mixed long/short open lots"].any():
+            st.caption(MIXED_BASIS_DISCLOSURE)
 
 
 def render_portfolio_income(
@@ -867,8 +890,9 @@ def render_portfolio_income(
         "Normalized quarterly average", dollars(summary.normalized_quarterly_average)
     )
     st.caption(
-        "Cash received from gross dividend and interest credits. The quarterly average "
-        "normalizes the selected range to 91.3125 days; it is not a forecast."
+        "Cash received from gross dividend and interest credits. Normalized quarterly income "
+        "scales the selected period to 91.3125 days. It is not a forecast and may be unstable "
+        "for periods shorter than 30 days."
     )
     if not events:
         st.caption("No dividend or interest income was received in the selected range.")
@@ -918,15 +942,20 @@ def render_portfolio_income(
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
 
     sources = (
-        income.groupby(["Portfolio", "Income type", "Source"], as_index=False)["Cash received"]
+        income.groupby(["Month", "Portfolio", "Income type", "Source"], as_index=False)[
+            "Cash received"
+        ]
         .sum()
-        .sort_values(["Portfolio", "Income type", "Source"])
+        .sort_values(["Month", "Portfolio", "Income type", "Source"])
     )
     st.dataframe(
         sources,
         hide_index=True,
         width="stretch",
-        column_config={"Cash received": st.column_config.NumberColumn(format="$%,.0f")},
+        column_config={
+            "Month": st.column_config.DateColumn(format="MMM YYYY"),
+            "Cash received": st.column_config.NumberColumn(format="$%,.0f"),
+        },
     )
 
 
@@ -1184,6 +1213,18 @@ def render_forecast(
     for warning in request.warnings:
         _render_warning(warning)
     result = cached_projection(request)
+    contract = result.contract
+    source_date = (
+        contract.source_valuation_date.strftime("%-m/%-d/%y")
+        if contract.source_valuation_date is not None
+        else "unavailable (disclosed fallback)"
+    )
+    st.caption(
+        f"Model {contract.model_type} / {contract.model_version} · seed {contract.seed} · "
+        f"{contract.simulation_count:,} simulations · source valuation date {source_date} · "
+        f"method {contract.source_valuation_methodology} · generated "
+        f"{contract.result_generated_at.isoformat()}."
+    )
     dates = pd.date_range(
         pd.Timestamp.today().normalize() + pd.offsets.MonthEnd(1),
         periods=horizon_years * 12,
@@ -2644,11 +2685,12 @@ def render_hypothetical_analysis(
                 raise ValueError(
                     "Confirmed market prices are required for hypothetical trade analysis."
                 )
-            prices = {
-                str(column).upper(): float(closes[column].dropna().iloc[-1])
-                for column in closes
-                if not closes[column].dropna().empty
-            }
+            household = household_valuation(portfolios, closes)
+            if not household.is_complete or household.common_valuation_date is None:
+                raise ValueError(
+                    "A common confirmed household valuation is required for hypothetical analysis."
+                )
+            prices = dict(household.confirmed_prices)
             proposed_symbols = {action.symbol for action in actions if action.symbol}
             expected = {symbol: expected_return / 100 for symbol in set(prices) | proposed_symbols}
             returns = closes.pct_change(fill_method=None)
@@ -2678,6 +2720,8 @@ def render_hypothetical_analysis(
                 assumptions,
                 market_data_as_of=as_of,
                 benchmark_returns=benchmark,
+                common_confirmed_valuation_date=household.common_valuation_date,
+                latest_symbol_dates=household.latest_symbol_dates,
             )
             st.session_state.hypothetical_result = (result, assumptions)
         except ValueError as exc:
@@ -3172,9 +3216,9 @@ def render_active_monitoring(
             "1M return",
             "3M return",
             "12M return",
-            "Drawdown",
+            "Drawdown from available-window peak",
             "Realized volatility",
-            "21-day SPY correlation",
+            "21-session SPY correlation",
         )
         context = context.copy()
         context[list(percentage_columns)] *= 100
@@ -3187,10 +3231,13 @@ def render_active_monitoring(
             },
         )
         st.caption(
-            "Components are disclosed individually: returns, 50-day trend, drawdown, 21-day "
-            "realized volatility, SPY correlation regime, and 21-day rolling SPY correlation. "
-            "No composite market score is used."
+            "Components are disclosed individually: horizon-specific returns and coverage, "
+            "50-day trend, drawdown from the available-window peak, 21-session realized "
+            "volatility, and raw 21-session SPY correlation with n/21 and aligned endpoint dates. "
+            "Unavailable horizons and correlations remain unavailable. No composite market score "
+            "is used."
         )
+        st.caption(CORRELATION_HEURISTIC_DISCLOSURE)
 
 
 def main() -> None:

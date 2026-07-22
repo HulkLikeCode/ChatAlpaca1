@@ -51,6 +51,12 @@ The retirement model will account for Traditional IRA, Roth IRA, and taxable-acc
 
 Each saved forecast run must retain model type and version, assumptions, data coverage, data sources, adjustment methods, simulation count, random seed, creation timestamp, and validation status.
 
+The earlier session-only planning projection is separately identified as
+`legacy_projection / 1.0.0`; it is not a bootstrap or parametric model. Its result contract retains
+the assumptions, seed, simulation count, common confirmed source valuation date or disclosed
+cost-basis fallback, valuation methodology, and generation timestamp. All numeric service inputs
+must be finite and non-Boolean before paths are generated.
+
 ## Phase 7 deterministic scenarios
 
 `chat_alpaca.scenarios` is the reusable Phase 7 boundary. It applies fixed, explicit assumptions to
@@ -83,6 +89,8 @@ planning projection's lognormal expected return.
 
 The simulation supports deterministic seeds, configurable counts, 1–10 year horizons, monthly
 contributions, constant inflation, annual fees, and monthly, quarterly, annual, or no rebalancing.
+Boolean and nonfinite numerical assumptions and starting values are rejected before sampling or
+nominal/real loss calculation.
 Insufficient holding histories require an explicit proxy with adequate overlapping history. Proxy
 substitution is disclosed and lowers sufficiency even when the joint history remains usable.
 
@@ -154,7 +162,7 @@ satisfaction, and December month-end timing. Inherited-account RMDs remain out o
 Taxable basis is approximated as remaining FIFO security basis plus taxable cash and may exceed
 market value; withdrawals reduce it proportionally. Social Security uses a fixed configured taxable
 fraction rather than provisional-income rules. Unspent outside income and net RMD surplus remain
-zero-return taxable household cash until the next configured rebalance. Model `1.2.0` keeps that
+zero-return taxable household cash until the next configured rebalance. Model `1.3.0` keeps that
 cash spendable: current net outside income and net RMD proceeds fund spending first, then prior
 retained cash, then additional withdrawals. RMDs are calculated, executed, taxed, and deposited net
 into household cash once before that additional-withdrawal loop. Retained cash remains in
@@ -174,6 +182,12 @@ Household assets reconcile separately from unpaid shortfall. Gross account withd
 transfers and therefore cancel from the household identity; withdrawal tax and spending actually
 funded reduce household assets. Unpaid shortfall equals required obligations less obligations
 actually funded and is not included in ending household value.
+
+Model `1.3.0` refuses withdrawal-sensitive results while any in-scope account remains `unknown`;
+the account must first be classified as taxable, Traditional IRA, or Roth IRA. Boolean and
+nonfinite numerical profile, account, tax, spending-event, income, fee, and return-assumption inputs
+are rejected. Each one-time event exposes its resolved nearest monthly model step and discloses that
+intra-month timing is not modeled. Existing saved `1.2.0` results retain their original version.
 
 ## Real-time monitoring
 
@@ -220,9 +234,13 @@ classification.
 The Monitor view presents an indicative IEX portfolio pulse, holding and portfolio daily
 contribution, symbol-consolidated largest movers, stale/missing symbols, assigned open orders and
 recent fills, symbol quote/trade detail, and controlled broad-market and sector proxy components.
-Returns, trend, drawdown, realized volatility, correlation regime, and 21-day rolling SPY
-correlation remain individually disclosed; Phase 12 does not create a proprietary composite market
-score.
+Daily, 1-month, 3-month, and 12-month returns require their full observation windows and disclose
+counts and endpoints; shorter windows remain unavailable. Drawdown is labeled from the
+available-window peak. The primary correlation output uses exactly 21 complete aligned daily-return
+pairs against SPY and discloses n/21 plus endpoints; missing SPY, insufficient pairs, zero variance,
+or nonfinite correlation is unavailable. A secondary `high` at 0.70 or above and `mixed` otherwise
+label is explicitly disclosed as a fixed descriptive heuristic, not a significance test. Phase 12
+does not create a proprietary composite market score.
 Cash-only selections retain their cash value. Holding share of net daily P/L is unavailable when
 the absolute net daily P/L denominator is below $0.01; exactly $0.01 remains calculable.
 
@@ -253,3 +271,11 @@ foreign-key or service path to transactions, lots, ledger entries, order allocat
 submission. A separate ticket-copy function requires explicit owner confirmation, an unchanged
 baseline, and a newly reviewed price inside the freshness window; it creates review data only and
 never submits an order.
+
+Hypothetical model `1.1.0` values both baseline and proposed snapshots from one common confirmed
+date across the selected household. Saved results retain that date, the confirmed prices, any
+included latest-symbol dates, and explicit metadata distinguishing the additive confirmed layer
+from the non-additive mixed-date monitoring overlay. Existing saved `1.0.0` results are read as
+their original snapshots and are not reinterpreted. Action quantities, prices, fees, cash amounts,
+baseline values, expected returns, targets, stress magnitudes, allocation inputs, and adjacent
+retirement assumptions must be finite and non-Boolean before analysis.

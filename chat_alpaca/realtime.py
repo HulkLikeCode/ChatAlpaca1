@@ -45,6 +45,11 @@ MARKET_CONTEXT_NAMES = {
     "XLU": "Utilities",
 }
 OPEN_ORDER_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "replaced"}
+CORRELATION_HEURISTIC_DISCLOSURE = (
+    "Heuristic correlation label based on a fixed 0.70 threshold; it is descriptive and is not "
+    "a statistical-significance test."
+)
+PERIOD_RETURN_OBSERVATIONS = {"Daily": 2, "1M": 22, "3M": 64, "12M": 253}
 
 
 class FreshnessStatus(str, Enum):
@@ -114,9 +119,11 @@ class QuoteRecord:
 
     @property
     def spread(self) -> float | None:
-        if self.bid is None or self.ask is None:
+        bid = _valid_quote_value(self.bid)
+        ask = _valid_quote_value(self.ask)
+        if bid is None or ask is None:
             return None
-        return self.ask - self.bid
+        return ask - bid
 
     @property
     def price(self) -> float | None:
@@ -963,52 +970,110 @@ def build_portfolio_pulse(
     )
 
 
+def correlation_heuristic(correlation: float | None) -> str | None:
+    """Apply the fixed descriptive threshold only when correlation is available."""
+    if correlation is None or not np.isfinite(correlation):
+        return None
+    return "high" if correlation >= 0.70 else "mixed"
+
+
+def sample_realized_volatility(returns: pd.Series, window: int = 21) -> float:
+    """Annualize sample volatility from up to the latest window of finite daily returns."""
+    finite = pd.to_numeric(returns, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    finite = finite.tail(window)
+    return float(finite.std(ddof=1) * np.sqrt(252)) if len(finite) >= 2 else np.nan
+
+
+def _usable_close_series(values: pd.Series) -> pd.Series:
+    series = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    series = series[series > 0].sort_index()
+    return series[~series.index.duplicated(keep="last")]
+
+
+def _period_return(
+    series: pd.Series, required_observations: int
+) -> tuple[float, str, object | None, object | None]:
+    selected = series.tail(required_observations)
+    count = len(selected)
+    first = selected.index[0].date() if count else None
+    last = selected.index[-1].date() if count else None
+    value = (
+        float(selected.iloc[-1] / selected.iloc[0] - 1)
+        if count == required_observations
+        else np.nan
+    )
+    return value, f"{count}/{required_observations}", first, last
+
+
+def _spy_correlation(
+    symbol_returns: pd.Series, spy_returns: pd.Series | None
+) -> tuple[float, str | None, str, object | None, object | None]:
+    if spy_returns is None:
+        return np.nan, None, "0/21", None, None
+    aligned = pd.concat(
+        [symbol_returns.rename("symbol"), spy_returns.rename("SPY")], axis=1, join="inner"
+    ).replace([np.inf, -np.inf], np.nan)
+    aligned = aligned.dropna().tail(21)
+    count = len(aligned)
+    first = aligned.index[0].date() if count else None
+    last = aligned.index[-1].date() if count else None
+    if count < 21:
+        return np.nan, None, f"{count}/21", first, last
+    symbol_values = aligned["symbol"].to_numpy(dtype=float)
+    spy_values = aligned["SPY"].to_numpy(dtype=float)
+    if np.var(symbol_values, ddof=1) == 0 or np.var(spy_values, ddof=1) == 0:
+        return np.nan, None, "21/21", first, last
+    correlation = float(np.corrcoef(symbol_values, spy_values)[0, 1])
+    if not np.isfinite(correlation):
+        return np.nan, None, "21/21", first, last
+    return correlation, correlation_heuristic(correlation), "21/21", first, last
+
+
 def market_context_metrics(closes: pd.DataFrame) -> pd.DataFrame:
     """Transparent proxy components; intentionally does not synthesize a market score."""
     rows: list[dict[str, object]] = []
+    series_by_symbol = {
+        str(symbol): _usable_close_series(closes[symbol]) for symbol in closes.columns
+    }
+    returns_by_symbol = {
+        symbol: series.pct_change(fill_method=None).dropna()
+        for symbol, series in series_by_symbol.items()
+    }
+    spy_returns = returns_by_symbol.get("SPY")
     for symbol in closes.columns:
-        series = closes[symbol].dropna().astype(float)
-        returns = series.pct_change(fill_method=None).dropna()
+        symbol = str(symbol)
+        series = series_by_symbol[symbol]
+        returns = returns_by_symbol[symbol]
         if series.empty:
             continue
         peak = series.cummax()
+        period_metrics = {
+            label: _period_return(series, observations)
+            for label, observations in PERIOD_RETURN_OBSERVATIONS.items()
+        }
+        correlation, heuristic, correlation_count, correlation_first, correlation_last = (
+            _spy_correlation(returns, spy_returns)
+        )
         row: dict[str, object] = {
             "Symbol": symbol,
             "Name": MARKET_CONTEXT_NAMES.get(symbol, symbol[:13]),
-            "Daily return": returns.iloc[-1] if len(returns) else np.nan,
-            "1M return": series.iloc[-1] / series.iloc[-min(22, len(series))] - 1
-            if len(series) > 1
-            else np.nan,
-            "3M return": series.iloc[-1] / series.iloc[-min(64, len(series))] - 1
-            if len(series) > 1
-            else np.nan,
-            "12M return": series.iloc[-1] / series.iloc[-min(253, len(series))] - 1
-            if len(series) > 1
-            else np.nan,
+            **{f"{label} return": values[0] for label, values in period_metrics.items()},
+            **{f"{label} observations": values[1] for label, values in period_metrics.items()},
+            **{f"{label} first date": values[2] for label, values in period_metrics.items()},
+            **{f"{label} last date": values[3] for label, values in period_metrics.items()},
             "Trend": "above 50-day average"
             if len(series) >= 50 and series.iloc[-1] >= series.tail(50).mean()
             else ("below 50-day average" if len(series) >= 50 else "insufficient history"),
-            "Drawdown": series.iloc[-1] / peak.iloc[-1] - 1,
-            "Realized volatility": returns.tail(21).std() * np.sqrt(252)
-            if len(returns) >= 2
-            else np.nan,
+            "Drawdown from available-window peak": series.iloc[-1] / peak.iloc[-1] - 1,
+            "Realized volatility": sample_realized_volatility(returns),
+            "21-session SPY correlation": correlation,
+            "Correlation observations": correlation_count,
+            "Correlation first date": correlation_first,
+            "Correlation last date": correlation_last,
+            "Correlation heuristic": heuristic,
         }
         rows.append(row)
-    frame = pd.DataFrame(rows)
-    if not frame.empty:
-        daily = closes.pct_change(fill_method=None).tail(21)
-        benchmark = daily["SPY"] if "SPY" in daily else None
-        frame["Correlation regime"] = frame["Symbol"].map(
-            lambda symbol: (
-                "high"
-                if benchmark is not None and daily[symbol].corr(benchmark) >= 0.7
-                else "mixed"
-            )
-        )
-        frame["21-day SPY correlation"] = frame["Symbol"].map(
-            lambda symbol: daily[symbol].corr(benchmark) if benchmark is not None else np.nan
-        )
-    return frame
+    return pd.DataFrame(rows)
 
 
 def position_risk_contributions(

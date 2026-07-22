@@ -19,6 +19,7 @@ from chat_alpaca.parametric_forecasting import (
     ParametricRequest,
     estimate_parameters,
 )
+from chat_alpaca.portfolio_service import TransactionDraft, record_transaction, replay_portfolio
 from chat_alpaca.realtime import FreshnessStatus, QuoteRecord, build_portfolio_pulse
 from chat_alpaca.reconstruction import ReconstructionRequest, reconstruct_from_coverage
 from chat_alpaca.retirement import (
@@ -56,6 +57,60 @@ def _coverage(values: dict[str, list[float]], days: list[str]) -> HistoricalCove
     )
 
 
+def test_ledger_003_fifo_uses_same_day_transaction_id_order(session) -> None:
+    portfolio = Portfolio(name="FIFO reference", cash=Decimal("0"), account_type="taxable")
+    session.add(portfolio)
+    session.flush()
+    transaction_date = date(2026, 1, 2)
+    drafts = (
+        TransactionDraft(
+            transaction_date,
+            "Buy",
+            "buy",
+            "AAA",
+            "First same-day lot",
+            Decimal("5"),
+            Decimal("10"),
+            None,
+            Decimal("-50"),
+        ),
+        TransactionDraft(
+            transaction_date,
+            "Buy",
+            "buy",
+            "AAA",
+            "Second same-day lot",
+            Decimal("5"),
+            Decimal("30"),
+            None,
+            Decimal("-150"),
+        ),
+        TransactionDraft(
+            transaction_date,
+            "Sell",
+            "sell",
+            "AAA",
+            "Same-day sale",
+            Decimal("6"),
+            Decimal("40"),
+            None,
+            Decimal("240"),
+        ),
+    )
+    for draft in drafts:
+        assert record_transaction(session, portfolio.id, draft)
+
+    replay_portfolio(session, portfolio.id)
+
+    ordered = sorted(portfolio.transactions, key=lambda item: item.id)
+    assert [item.kind for item in ordered] == ["buy", "buy", "sell"]
+    assert len({item.transaction_date for item in ordered}) == 1
+    remaining = [lot for lot in portfolio.holdings if lot.symbol == "AAA"]
+    assert [(lot.shares, lot.cost_basis) for lot in remaining] == [
+        (Decimal("4.00000000"), Decimal("30.000000"))
+    ]
+
+
 def test_tax_002_google_sheets_formula_is_exactly_the_approved_validation_formula() -> None:
     with Path("Calculations Audit.csv").open(newline="") as handle:
         rows = {row["audit_id"]: row for row in csv.DictReader(handle)}
@@ -63,6 +118,64 @@ def test_tax_002_google_sheets_formula_is_exactly_the_approved_validation_formul
     assert rows["TAX-002"]["google_sheets_formula_template"] == (
         "'=TaxableBalance*(POWER(1+AnnualQualifiedDividendYield,1/12)-1)*DividendTaxRate"
     )
+
+
+def test_phase_3_audit_csv_formulas_match_approved_scoped_methodologies() -> None:
+    with Path("Calculations Audit.csv").open(newline="") as handle:
+        rows = {row["audit_id"]: row for row in csv.DictReader(handle)}
+
+    expected = {
+        "LEDGER-002": (
+            "'=SUM(SUMIFS(Transactions!F:F,Transactions!A:A,SelectedPortfolio,"
+            'Transactions!E:E,Symbol,Transactions!D:D,{"Buy","Opening Position","Award"},'
+            'Transactions!B:B,"<="&AsOfDate))-SUMIFS(Transactions!F:F,Transactions!A:A,'
+            'SelectedPortfolio,Transactions!E:E,Symbol,Transactions!D:D,"Sell",'
+            'Transactions!B:B,"<="&AsOfDate)'
+        ),
+        "LEDGER-007": (
+            "'=SUMPRODUCT((Transactions!A:A=SelectedPortfolio)*(Transactions!B:B<="
+            'ValuationDate)*(Transactions!D:D="Opening Position")*Transactions!F:F*'
+            "Transactions!G:G)"
+        ),
+        "VALUE-001": (
+            "'=SharesCell*INDEX(FILTER(Prices!C:C,Prices!A:A=Symbol,Prices!B:B=MAX("
+            "FILTER(Prices!B:B,Prices!A:A=Symbol,Prices!B:B<=CommonValuationDate))),1)"
+        ),
+        "INCOME-005": (
+            "'=QUERY(Transactions!A:J,\"select year(B),month(B),A,D,E,sum(J) where A = '\"&"
+            'SelectedPortfolio&"\' and B >= date \'"&TEXT(SelectedStart,"yyyy-mm-dd")&'
+            '"\' and B <= date \'"&TEXT(SelectedEnd,"yyyy-mm-dd")&"\' and (D = '
+            "'Dividend' or D = 'Interest') group by year(B),month(B),A,D,E\",1)"
+        ),
+        "HOLD-004": (
+            "'=LET(ConfirmedDate,CommonHouseholdDate,ConfirmedPrice,INDEX(FILTER(Prices!C:C,"
+            "Prices!A:A=Symbol,Prices!B:B=MAX(FILTER(Prices!B:B,Prices!A:A=Symbol,Prices!B:B"
+            "<=ConfirmedDate))),1),LatestDate,MAX(FILTER(Prices!B:B,Prices!A:A=Symbol,Prices!B:B"
+            "<=AsOfDate)),LatestPrice,INDEX(FILTER(Prices!C:C,Prices!A:A=Symbol,Prices!B:B="
+            "LatestDate),1),HSTACK(ConfirmedPrice,ConfirmedDate,LatestPrice,LatestDate))"
+        ),
+        "FORECAST-004": ("'=PERCENTILE(FILTER(Simulations!B:B,Simulations!A:A=MonthIndex),0.05)"),
+        "MON-012": (
+            "'=LET(Pairs,TAKE(FILTER(HSTACK(ProxyReturns,SPYReturns,ReturnDates),ISNUMBER("
+            "ProxyReturns),ISNUMBER(SPYReturns)),-21),N,ROWS(Pairs),Proxy,CHOOSECOLS(Pairs,1),"
+            "Spy,CHOOSECOLS(Pairs,2),Corr,IF(AND(N=21,STDEV.S(Proxy)>0,STDEV.S(Spy)>0),"
+            'CORREL(Proxy,Spy),NA()),HSTACK(Corr,N&"/21",INDEX(Pairs,1,3),INDEX(Pairs,N,3),'
+            'IF(ISNA(Corr),"",IF(Corr>=0.7,"high","mixed"))))'
+        ),
+        "HYPO-003": (
+            "'=ConfirmedCash+SUMPRODUCT(ScenarioLots!Shares,"
+            "ScenarioLots!ConfirmedPriceAtCommonDate)"
+        ),
+        "BOOT-004": (
+            '\'=HSTACK(COUNTIF(TerminalRange,"<"&TotalNominalContributed)/COUNT('
+            'TerminalRange),COUNTIF(RealTerminalRange,"<"&RealContributedCapital)/COUNT('
+            "RealTerminalRange))"
+        ),
+    }
+
+    assert {
+        audit_id: rows[audit_id]["google_sheets_formula_template"] for audit_id in expected
+    } == expected
 
 
 def _retirement_request(

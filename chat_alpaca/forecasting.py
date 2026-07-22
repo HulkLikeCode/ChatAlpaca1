@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from numbers import Integral, Real
 
 import numpy as np
 import pandas as pd
 
-from chat_alpaca.analytics import portfolio_valuation
+from chat_alpaca.analytics import household_valuation
 from chat_alpaca.bootstrap_forecasting import (
     BOOTSTRAP_MODEL_TYPE as BOOTSTRAP_MODEL_TYPE,
 )
@@ -106,6 +108,28 @@ from chat_alpaca.parametric_forecasting import (
 from chat_alpaca.portfolio_service import money, portfolio_cost
 
 PERCENTILES = (5, 25, 50, 75, 95)
+LEGACY_FORECAST_MODEL_TYPE = "legacy_projection"
+LEGACY_FORECAST_MODEL_VERSION = "1.0.0"
+LEGACY_FORECAST_DEFAULT_SIMULATIONS = 10_000
+LEGACY_FORECAST_DEFAULT_SEED = 20260719
+
+
+def _finite_real(name: str, value: object) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite number and cannot be Boolean.")
+    normalized = float(value)
+    if not np.isfinite(normalized):
+        raise ValueError(f"{name} must be finite.")
+    return normalized
+
+
+def _positive_integer(name: str, value: object) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"{name} must be a positive integer and cannot be Boolean.")
+    normalized = int(value)
+    if normalized < 1:
+        raise ValueError(f"{name} must be at least one.")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -115,6 +139,7 @@ class ProjectionResult:
     monthly_percentiles: pd.DataFrame
     annual_percentiles: pd.DataFrame
     target_probability: float | None
+    contract: LegacyForecastContract
 
 
 @dataclass(frozen=True)
@@ -125,6 +150,30 @@ class ForecastAssumptions:
     horizon_years: int
     target_value: float | None = None
 
+    def __post_init__(self) -> None:
+        _validate_forecast_inputs(
+            current_value=1.0,
+            annual_return=self.annual_return,
+            annual_volatility=self.annual_volatility,
+            monthly_contribution=self.monthly_contribution,
+            horizon_years=self.horizon_years,
+            target_value=self.target_value,
+            simulations=1,
+            seed=0,
+        )
+
+
+@dataclass(frozen=True)
+class LegacyForecastContract:
+    model_type: str
+    model_version: str
+    seed: int
+    simulation_count: int
+    assumptions: ForecastAssumptions
+    source_valuation_date: date | None
+    source_valuation_methodology: str
+    result_generated_at: datetime
+
 
 @dataclass(frozen=True)
 class ForecastRequest:
@@ -133,6 +182,9 @@ class ForecastRequest:
     valuation_basis: str
     warnings: tuple[str, ...] = ()
     coverage: str = ""
+    source_valuation_date: date | None = None
+    seed: int = LEGACY_FORECAST_DEFAULT_SEED
+    simulation_count: int = LEGACY_FORECAST_DEFAULT_SIMULATIONS
 
 
 def build_forecast_request(
@@ -153,8 +205,10 @@ def build_forecast_request(
         )
         valuation_basis = "cost_basis_plus_cash"
         coverage = "Market-price coverage unavailable; cost basis fallback disclosed."
+        source_valuation_date = None
     else:
-        valuations = [portfolio_valuation(portfolio, closes) for portfolio in portfolios]
+        household = household_valuation(portfolios, closes)
+        valuations = household.valuations
         incomplete = [
             portfolio.name
             for portfolio, valuation in zip(portfolios, valuations, strict=True)
@@ -165,12 +219,7 @@ def build_forecast_request(
                 "A projection is unavailable until every held symbol has a usable price. "
                 "Incomplete portfolios: " + ", ".join(incomplete) + "."
             )
-        current_value = float(
-            sum(
-                (valuation.total_calculated_value for valuation in valuations),
-                start=money(0),
-            )
-        )
+        current_value = float(household.total_calculated_value)
         warnings = tuple(
             sorted(
                 {
@@ -180,7 +229,11 @@ def build_forecast_request(
             )
         )
         valuation_basis = "confirmed_market_value"
-        coverage = f"Complete valuations: {len(valuations)} of {len(valuations)} portfolios."
+        coverage = (
+            f"Common confirmed household valuation date: {household.common_valuation_date}; "
+            f"complete valuations: {len(valuations)} of {len(valuations)} portfolios."
+        )
+        source_valuation_date = household.common_valuation_date
     if current_value <= 0:
         raise ValueError("A projection requires a selected portfolio with a positive value.")
     return ForecastRequest(
@@ -189,6 +242,7 @@ def build_forecast_request(
         valuation_basis,
         warnings,
         coverage,
+        source_valuation_date,
     )
 
 
@@ -201,7 +255,47 @@ def run_forecast(request: ForecastRequest) -> ProjectionResult:
         monthly_contribution=assumptions.monthly_contribution,
         horizon_years=assumptions.horizon_years,
         target_value=assumptions.target_value,
+        simulations=request.simulation_count,
+        seed=request.seed,
+        source_valuation_date=request.source_valuation_date,
+        source_valuation_methodology=request.valuation_basis,
     )
+
+
+def _validate_forecast_inputs(
+    *,
+    current_value: object,
+    annual_return: object,
+    annual_volatility: object,
+    monthly_contribution: object,
+    horizon_years: object,
+    target_value: object | None,
+    simulations: object,
+    seed: object,
+) -> None:
+    current = _finite_real("Current portfolio value", current_value)
+    annual = _finite_real("Annual return", annual_return)
+    volatility = _finite_real("Annual volatility", annual_volatility)
+    contribution = _finite_real("Monthly contribution", monthly_contribution)
+    horizon = _positive_integer("Forecast horizon", horizon_years)
+    simulation_count = _positive_integer("Simulation count", simulations)
+    if isinstance(seed, (bool, np.bool_)) or not isinstance(seed, Integral) or int(seed) < 0:
+        raise ValueError("Forecast seed must be a nonnegative integer and cannot be Boolean.")
+    target = _finite_real("Target value", target_value) if target_value is not None else None
+    if current <= 0:
+        raise ValueError("Current portfolio value must be greater than zero.")
+    if annual <= -1:
+        raise ValueError("Annual return must be greater than -100%.")
+    if volatility < 0:
+        raise ValueError("Annual volatility cannot be negative.")
+    if contribution < 0:
+        raise ValueError("Monthly contribution cannot be negative.")
+    if horizon > 10:
+        raise ValueError("Forecast horizon must be between 1 and 10 years.")
+    if simulation_count < 1:
+        raise ValueError("At least one simulation is required.")
+    if target is not None and target <= 0:
+        raise ValueError("Target value must be greater than zero.")
 
 
 def simulate_portfolio_projection(
@@ -211,8 +305,10 @@ def simulate_portfolio_projection(
     monthly_contribution: float,
     horizon_years: int,
     target_value: float | None = None,
-    simulations: int = 10_000,
-    seed: int = 20260719,
+    simulations: int = LEGACY_FORECAST_DEFAULT_SIMULATIONS,
+    seed: int = LEGACY_FORECAST_DEFAULT_SEED,
+    source_valuation_date: date | None = None,
+    source_valuation_methodology: str = "direct_inputs",
 ) -> ProjectionResult:
     """Project monthly portfolio values with a lognormal return model.
 
@@ -220,20 +316,16 @@ def simulate_portfolio_projection(
     added at each month-end in today's dollars. Results are planning scenarios,
     not forecasts inferred from the portfolio's short transaction history.
     """
-    if current_value <= 0:
-        raise ValueError("Current portfolio value must be greater than zero.")
-    if annual_return <= -1:
-        raise ValueError("Annual return must be greater than -100%.")
-    if annual_volatility < 0:
-        raise ValueError("Annual volatility cannot be negative.")
-    if monthly_contribution < 0:
-        raise ValueError("Monthly contribution cannot be negative.")
-    if not 1 <= horizon_years <= 10:
-        raise ValueError("Forecast horizon must be between 1 and 10 years.")
-    if simulations < 1:
-        raise ValueError("At least one simulation is required.")
-    if target_value is not None and target_value <= 0:
-        raise ValueError("Target value must be greater than zero.")
+    _validate_forecast_inputs(
+        current_value=current_value,
+        annual_return=annual_return,
+        annual_volatility=annual_volatility,
+        monthly_contribution=monthly_contribution,
+        horizon_years=horizon_years,
+        target_value=target_value,
+        simulations=simulations,
+        seed=seed,
+    )
 
     months = horizon_years * 12
     monthly_step = 1 / 12
@@ -249,6 +341,8 @@ def simulate_portfolio_projection(
     for month in range(1, months + 1):
         paths[:, month] = paths[:, month - 1] * gross_returns[:, month - 1]
         paths[:, month] += monthly_contribution
+    if not np.isfinite(paths).all():
+        raise ValueError("Forecast inputs produced nonfinite simulated values.")
 
     month_index = pd.RangeIndex(0, months + 1, name="Month")
     monthly_percentiles = pd.DataFrame(
@@ -261,4 +355,21 @@ def simulate_portfolio_projection(
     target_probability = (
         float(np.mean(paths[:, -1] >= target_value)) if target_value is not None else None
     )
-    return ProjectionResult(monthly_percentiles, annual_percentiles, target_probability)
+    assumptions = ForecastAssumptions(
+        annual_return,
+        annual_volatility,
+        monthly_contribution,
+        horizon_years,
+        target_value,
+    )
+    contract = LegacyForecastContract(
+        LEGACY_FORECAST_MODEL_TYPE,
+        LEGACY_FORECAST_MODEL_VERSION,
+        int(seed),
+        int(simulations),
+        assumptions,
+        source_valuation_date,
+        source_valuation_methodology,
+        datetime.now(timezone.utc),
+    )
+    return ProjectionResult(monthly_percentiles, annual_percentiles, target_probability, contract)

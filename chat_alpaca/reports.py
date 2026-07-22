@@ -10,9 +10,9 @@ import pandas as pd
 from chat_alpaca.analytics import (
     alpha_beta_from_levels,
     combined_performance_growth,
+    household_valuation,
     performance_growth,
     portfolio_gain_loss,
-    portfolio_valuation,
     rebase_comparison_series,
     summary_metrics,
 )
@@ -157,13 +157,14 @@ def assemble_portfolio_card_reports(
 ) -> tuple[PortfolioCardReport, ...]:
     if selected_start > selected_end:
         raise ValueError("The portfolio card start date must be on or before the end date.")
+    household = household_valuation(portfolios, closes) if not closes.empty else None
     reports = []
-    for portfolio in portfolios:
+    for index, portfolio in enumerate(portfolios):
         if closes.empty:
             value_label = f"Cost basis ${float(portfolio_cost(portfolio)):,.0f}"
             warnings: tuple[str, ...] = ()
         else:
-            valuation = portfolio_valuation(portfolio, closes)
+            valuation = household.valuations[index]
             value_label = (
                 f"${float(valuation.total_calculated_value):,.0f}"
                 if valuation.is_complete
@@ -223,15 +224,9 @@ def assemble_combined_performance_report(
             coverage="Market-price coverage unavailable.",
         )
 
-    valuations = [portfolio_valuation(portfolio, closes) for portfolio in portfolios]
-    total_value = (
-        sum(
-            (valuation.total_calculated_value for valuation in valuations),
-            start=money(0),
-        )
-        if all(valuation.is_complete for valuation in valuations)
-        else None
-    )
+    household = household_valuation(portfolios, closes)
+    valuations = household.valuations
+    total_value = household.total_calculated_value
     gain_loss = [
         portfolio_gain_loss(portfolio, closes, custom_start, custom_end) for portfolio in portfolios
     ]
@@ -293,7 +288,12 @@ def assemble_combined_performance_report(
         alpha_beta_observations=combined_risk.observations if combined_risk else 0,
         rows=rows,
         warnings=tuple(warnings),
-        coverage=f"Complete valuations: {complete_count} of {len(valuations)} portfolios.",
+        coverage=(
+            f"Confirmed household date: {household.common_valuation_date}; complete valuations: "
+            f"{complete_count} of {len(valuations)} portfolios."
+            if household.common_valuation_date is not None
+            else f"Complete valuations: {complete_count} of {len(valuations)} portfolios."
+        ),
     )
 
 

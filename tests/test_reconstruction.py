@@ -130,6 +130,75 @@ def test_multiple_portfolios_remain_separate_and_combine() -> None:
     assert result.combined.positions.columns.names == ["portfolio", "symbol"]
 
 
+def test_quantity_award_changes_position_shares_at_recorded_fair_value() -> None:
+    portfolio = Portfolio(id=1, name="Award", cash=Decimal("0"))
+    portfolio.transactions = [
+        _transaction(
+            1,
+            date(2026, 1, 2),
+            "award",
+            "0",
+            symbol="ABC",
+            quantity="2",
+            price="50",
+        )
+    ]
+
+    result = reconstruct_from_coverage(
+        [portfolio],
+        ReconstructionRequest((1,), date(2026, 1, 2), date(2026, 1, 2)),
+        _coverage({"ABC": [60]}, ["2026-01-02"]),
+    )
+
+    assert result.portfolios[1].daily.positions.loc["2026-01-02", "ABC"] == 2
+    assert result.portfolios[1].daily.external_cash_flows.loc["2026-01-02"] == 100
+
+
+def test_opening_asset_flow_is_scoped_by_portfolio_type_and_as_of_date() -> None:
+    selected = Portfolio(id=1, name="Selected", cash=Decimal("0"))
+    selected.transactions = [
+        _transaction(
+            1,
+            date(2026, 1, 2),
+            "opening_position",
+            "0",
+            symbol="ABC",
+            quantity="2",
+            price="10",
+        ),
+        _transaction(
+            3,
+            date(2026, 1, 10),
+            "opening_position",
+            "0",
+            symbol="ABC",
+            quantity="1",
+            price="99",
+        ),
+    ]
+    unselected = Portfolio(id=2, name="Unselected", cash=Decimal("0"))
+    unselected.transactions = [
+        _transaction(
+            2,
+            date(2026, 1, 2),
+            "opening_position",
+            "0",
+            symbol="XYZ",
+            quantity="1",
+            price="100",
+        )
+    ]
+
+    result = reconstruct_from_coverage(
+        [selected, unselected],
+        ReconstructionRequest((1,), date(2026, 1, 2), date(2026, 1, 5)),
+        _coverage({"ABC": [10, 11]}, ["2026-01-02", "2026-01-05"]),
+    )
+
+    assert result.combined.external_cash_flows.sum() == 20
+    assert result.combined.positions.iloc[-1, 0] == 2
+
+
 def test_combined_returns_exclude_a_new_years_day_cash_adjustment() -> None:
     existing = Portfolio(id=1, name="Existing", cash=Decimal("0"))
     existing.transactions = [_transaction(1, date(2025, 12, 31), "transfer", "100")]

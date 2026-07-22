@@ -107,6 +107,53 @@ def test_contributions_inflation_and_fees() -> None:
     assert inflation.probability_real_loss == 1
 
 
+def test_boot_003_multi_holding_fee_allocation_matches_direct_reference() -> None:
+    annual_fee = 0.12
+    monthly_fee = 1 - (1 - annual_fee) ** (1 / 12)
+    result = run_block_bootstrap(
+        _request(
+            _returns(36, AAA=0.10, BBB=-0.05),
+            values={"AAA": 60.0, "BBB": 40.0},
+            assumptions=BootstrapAssumptions(
+                1,
+                simulations=5,
+                seed=2,
+                annual_fee=annual_fee,
+                rebalancing="never",
+                minimum_history_months=24,
+            ),
+        )
+    )
+    expected_aaa = 60.0 * ((1 + 0.10) * (1 - monthly_fee)) ** 12
+    expected_bbb = 40.0 * ((1 - 0.05) * (1 - monthly_fee)) ** 12
+
+    assert result.terminal_values == pytest.approx(np.full(5, expected_aaa + expected_bbb))
+
+
+@pytest.mark.parametrize(
+    "assumptions",
+    [
+        lambda: BootstrapAssumptions(1, annual_inflation=float("nan")),
+        lambda: BootstrapAssumptions(1, annual_inflation=float("inf")),
+        lambda: BootstrapAssumptions(1, annual_inflation=True),
+        lambda: BootstrapAssumptions(1, monthly_contribution=float("nan")),
+        lambda: BootstrapAssumptions(1, annual_fee=True),
+        lambda: BootstrapAssumptions(True),
+        lambda: BootstrapAssumptions(1, simulations=True),
+        lambda: BootstrapAssumptions(1, target_value=float("inf")),
+    ],
+)
+def test_bootstrap_assumptions_reject_boolean_and_nonfinite_values(assumptions) -> None:
+    with pytest.raises(ValueError):
+        assumptions()
+
+
+@pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
+def test_bootstrap_request_rejects_invalid_holding_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        run_block_bootstrap(_request(_returns(36, AAA=0.0), values={"AAA": value}))
+
+
 def test_rebalancing_changes_holding_level_outcomes() -> None:
     a = np.tile([1.0, 0.0, 0.0], 12)
     b = np.tile([0.0, 1.0, 0.0], 12)

@@ -43,7 +43,10 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Market and limit orders, cancellation, fill synchronization, and an auditable internal transaction ledger
 - Tiered active-session monitoring for fewer than 400 held symbols, with capped IEX streaming,
   batched snapshot fallback, reconnect gap backfill, explicit freshness, portfolio pulse, market
-  context, and symbol detail; no closed-app monitoring claim or persistent worker
+  context, and symbol detail; period returns require their full horizon, drawdown is measured from
+  the available-window peak, and raw 21-session SPY correlation requires 21 complete pairs before
+  its secondary fixed-threshold heuristic is shown; no closed-app monitoring claim or persistent
+  worker
 - Automatic persistence through SQLite locally or hosted PostgreSQL in production
 - Architecture hooks for strategies, short positions, options, and separately gated live trading
 - Dark black/blue/purple/white theme with no green or red status colors
@@ -228,6 +231,10 @@ warnings, and `chat_alpaca.forecasting` constructs explicit forecast requests. W
 are unavailable, a planning scenario may retain the existing cost-basis-plus-cash workflow only
 with that fallback and its coverage disclosed. Application database migration, seeding, and initial
 portfolio loading are coordinated by `chat_alpaca.bootstrap.initialize_application` outside the UI.
+The session-only legacy planning projection has the explicit contract `legacy_projection / 1.0.0`.
+Each result records its assumptions, seed, simulation count, common confirmed source valuation date
+or disclosed fallback, valuation methodology, and generation timestamp. Boolean and nonfinite
+numeric inputs are rejected before simulation.
 
 Phase 7 adds deterministic scenario analysis in `chat_alpaca.scenarios`. It supports broad-market,
 holding, sector, dividend, contribution, inflation, low-return, lost-decade, retirement-date, and
@@ -252,6 +259,8 @@ and real loss probabilities, terminal distributions, downside percentiles, and h
 downside contribution. Holdings with inadequate histories require explicit documented proxies;
 proxy use lowers forecast sufficiency and joint row sampling preserves the proxy's observed market
 relationships.
+Boolean and nonfinite bootstrap assumptions, starting values, cash, inflation, fees, contributions,
+targets, counts, and seeds are rejected before sampling or loss-probability calculation.
 
 Circular sampling preserves within-block order and cross-asset row dependence and wraps from the
 end of observed history to its beginning; that boundary is a modeling assumption, not a claim that
@@ -315,8 +324,12 @@ sequence diagnostics, and worst-decile scenarios. Sensitivity covers retirement 
 inflation, Social Security timing, contributions, expected returns, tax rates, and withdrawal order.
 Rolling historical sequence replay is validation evidence only and never self-validates the model.
 Saved runs retain summaries and annual bands but exclude raw paths and per-scenario arrays.
-Retirement model version `1.2.0` reports separate household-asset and unpaid-shortfall
-reconciliations; unpaid shortfall is an unmet obligation and is never counted as an asset.
+Retirement model version `1.3.0` reports separate household-asset and unpaid-shortfall
+reconciliations; unpaid shortfall is an unmet obligation and is never counted as an asset. It
+refuses withdrawal and tax calculations until every in-scope account is classified as taxable,
+Traditional IRA, or Roth IRA. One-time spending outputs retain the resolved nearest monthly model
+step and disclose that intra-month timing is not modeled. Boolean and nonfinite numerical profile
+inputs are rejected. Existing saved `1.2.0` results retain their original version and outputs.
 
 Phase 11 adds non-executable hypothetical trade analysis in `chat_alpaca.hypothetical`. It copies
 ledger-derived cash and FIFO lots into isolated in-memory state, applies any number of proposed
@@ -335,10 +348,20 @@ confirmation, an unchanged ledger hash, and a newly reviewed non-stale market pr
 reviewed ticket data and does not submit an order.
 
 Exact Holdings combines the same symbol across every selected portfolio. It shows total shares to
-zero display decimals, weighted-average cost, total basis, market value, and all-time/daily/custom
-gain or loss. Currency values also use zero display decimals; stored shares, prices, and calculations
-retain their full precision. Its Summary and By Portfolio / Lot views preserve each acquisition date
-and original cost basis without nesting collapsible sections.
+zero display decimals, weighted-average cost, total basis, and all-time/daily/custom gain or loss.
+Confirmed prices and values use one additive common date across the selected household. A separate
+latest-symbol monitoring layer shows each symbol's latest date, price, and indicative value without
+summing mixed-date values. Currency values also use zero display decimals; stored shares, prices,
+and calculations retain their full precision. Its Summary and By Portfolio / Lot views preserve
+each acquisition date and original cost basis without nesting collapsible sections. Saved
+hypothetical model `1.1.0` records the common confirmed date, confirmed prices, latest-symbol dates,
+and the valuation-layer semantics; saved `1.0.0` records remain unchanged.
+Hypothetical actions, baselines, prices, assumptions, stress magnitudes, and adjacent retirement
+inputs reject Boolean and nonfinite numerical values at the reusable service boundary.
+When a symbol has both positive and negative open lots, Exact Holdings preserves those lot rows but
+keeps average cost per share numerically unavailable instead of netting a misleading signed value.
+Normalized quarterly income scales the selected period to 91.3125 days and is disclosed as a
+non-forecast that may be unstable for periods shorter than 30 days.
 
 ## Portfolio configuration and classification
 
