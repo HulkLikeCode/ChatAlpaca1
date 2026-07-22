@@ -253,6 +253,27 @@ def test_valuation_uses_common_as_of_and_reports_stale_symbols() -> None:
     assert result.is_complete
 
 
+def test_confirmed_valuation_selects_maximum_eligible_date_from_unsorted_rows() -> None:
+    portfolio = Portfolio(id=1, name="Unsorted", cash=Decimal("0"))
+    portfolio.holdings = [
+        HoldingLot(
+            symbol="AAA",
+            shares=Decimal("2"),
+            acquired_on=date(2026, 1, 1),
+            cost_basis=Decimal("80"),
+        )
+    ]
+    closes = pd.DataFrame(
+        {"AAA": [110.0, 100.0]},
+        index=pd.to_datetime(["2026-01-03", "2026-01-02"]),
+    )
+
+    result = portfolio_valuation(portfolio, closes)
+
+    assert result.common_valuation_date == date(2026, 1, 3)
+    assert result.market_value == Decimal("220.0")
+
+
 def test_custom_gain_loss_requires_a_prior_trading_close() -> None:
     portfolio = Portfolio(id=1, name="Baseline", cash=Decimal("100"))
     closes = pd.DataFrame({"ABC": [10.0]}, index=pd.to_datetime(["2026-01-05"]))

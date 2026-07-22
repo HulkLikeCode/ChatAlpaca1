@@ -437,3 +437,17 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "forecast and may be unstable for periods shorter than 30 days." in item.value
         for item in app.caption
     )
+
+
+def test_income_source_table_groups_by_month_portfolio_type_and_source() -> None:
+    app = viewer_app()
+
+    sources = next(
+        item.value
+        for item in app.dataframe
+        if list(item.value.columns)
+        == ["Month", "Portfolio", "Income type", "Source", "Cash received"]
+    )
+
+    assert not sources.empty
+    assert not sources.duplicated(["Month", "Portfolio", "Income type", "Source"]).any()

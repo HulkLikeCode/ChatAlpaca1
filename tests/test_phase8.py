@@ -107,6 +107,29 @@ def test_contributions_inflation_and_fees() -> None:
     assert inflation.probability_real_loss == 1
 
 
+def test_boot_003_multi_holding_fee_allocation_matches_direct_reference() -> None:
+    annual_fee = 0.12
+    monthly_fee = 1 - (1 - annual_fee) ** (1 / 12)
+    result = run_block_bootstrap(
+        _request(
+            _returns(36, AAA=0.10, BBB=-0.05),
+            values={"AAA": 60.0, "BBB": 40.0},
+            assumptions=BootstrapAssumptions(
+                1,
+                simulations=5,
+                seed=2,
+                annual_fee=annual_fee,
+                rebalancing="never",
+                minimum_history_months=24,
+            ),
+        )
+    )
+    expected_aaa = 60.0 * ((1 + 0.10) * (1 - monthly_fee)) ** 12
+    expected_bbb = 40.0 * ((1 - 0.05) * (1 - monthly_fee)) ** 12
+
+    assert result.terminal_values == pytest.approx(np.full(5, expected_aaa + expected_bbb))
+
+
 @pytest.mark.parametrize(
     "assumptions",
     [

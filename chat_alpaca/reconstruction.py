@@ -613,6 +613,15 @@ def reconstruct_from_coverage(
     benchmark_coverages: Mapping[str, HistoricalCoverageResult] | None = None,
 ) -> ReconstructionResult:
     """Pure reconstruction entry point for callers that already resolved confirmed closes."""
+    portfolios_by_id = {portfolio.id: portfolio for portfolio in portfolios}
+    missing_ids = [
+        portfolio_id
+        for portfolio_id in request.portfolio_ids
+        if portfolio_id not in portfolios_by_id
+    ]
+    if missing_ids:
+        raise ValueError(f"Unknown portfolio IDs: {', '.join(map(str, missing_ids))}.")
+    portfolios = [portfolios_by_id[portfolio_id] for portfolio_id in request.portfolio_ids]
     prices = coverage.data.copy()
     prices.index = pd.to_datetime(prices.index).normalize()
     per_portfolio: dict[int, PortfolioReconstruction] = {}

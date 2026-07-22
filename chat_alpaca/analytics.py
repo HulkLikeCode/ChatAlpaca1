@@ -526,7 +526,7 @@ def _last_price_dates(closes: pd.DataFrame, symbols: set[str]) -> dict[str, date
         if symbol in recorded:
             dates[symbol] = recorded[symbol]
         elif symbol in closes and not closes[symbol].dropna().empty:
-            dates[symbol] = closes[symbol].dropna().index[-1].date()
+            dates[symbol] = closes[symbol].dropna().index.max().date()
     return dates
 
 
@@ -664,7 +664,7 @@ def _price_on_or_before(
             prices = prices[prices.index.date < cutoff]
         else:
             prices = prices[prices.index.date <= cutoff]
-    return float(prices.iloc[-1]) if not prices.empty else None
+    return float(prices.sort_index().iloc[-1]) if not prices.empty else None
 
 
 def consolidated_holdings(

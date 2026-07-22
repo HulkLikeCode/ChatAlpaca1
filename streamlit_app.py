@@ -942,15 +942,20 @@ def render_portfolio_income(
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
 
     sources = (
-        income.groupby(["Portfolio", "Income type", "Source"], as_index=False)["Cash received"]
+        income.groupby(["Month", "Portfolio", "Income type", "Source"], as_index=False)[
+            "Cash received"
+        ]
         .sum()
-        .sort_values(["Portfolio", "Income type", "Source"])
+        .sort_values(["Month", "Portfolio", "Income type", "Source"])
     )
     st.dataframe(
         sources,
         hide_index=True,
         width="stretch",
-        column_config={"Cash received": st.column_config.NumberColumn(format="$%,.0f")},
+        column_config={
+            "Month": st.column_config.DateColumn(format="MMM YYYY"),
+            "Cash received": st.column_config.NumberColumn(format="$%,.0f"),
+        },
     )
 
 

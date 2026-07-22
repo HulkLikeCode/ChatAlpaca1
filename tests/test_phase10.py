@@ -103,6 +103,41 @@ def test_fixed_real_spending_inflation_and_real_nominal_reporting() -> None:
     assert inflation.nominal_annual_percentiles.index.name == "Year"
 
 
+def test_ret_002_effective_monthly_fee_conversion_and_boundaries() -> None:
+    starting_value = 500_000.0
+    annual_fee = 0.12
+    result = run_retirement_forecast(
+        _request(
+            spending=0,
+            accounts=(RetirementAccount("Roth", "roth_ira", starting_value),),
+            assumptions=RetirementAssumptions(
+                simulations=4,
+                seed=3,
+                minimum_history_months=24,
+                annual_fee=annual_fee,
+            ),
+        )
+    )
+    no_fee = run_retirement_forecast(
+        _request(
+            spending=0,
+            accounts=(RetirementAccount("Roth", "roth_ira", starting_value),),
+            assumptions=RetirementAssumptions(
+                simulations=4, seed=3, minimum_history_months=24, annual_fee=0
+            ),
+        )
+    )
+    monthly_fee = 1 - (1 - annual_fee) ** (1 / 12)
+    expected = starting_value * (1 - monthly_fee) ** (20 * 12)
+
+    assert result.terminal_values == pytest.approx(np.full(4, expected))
+    assert no_fee.terminal_values == pytest.approx(np.full(4, starting_value))
+    with pytest.raises(ValueError):
+        RetirementAssumptions(annual_fee=-0.000001)
+    with pytest.raises(ValueError):
+        RetirementAssumptions(annual_fee=1.0)
+
+
 def test_social_security_and_pension_reduce_portfolio_withdrawals() -> None:
     baseline = run_retirement_forecast(_request())
     income = run_retirement_forecast(
