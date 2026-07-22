@@ -430,6 +430,9 @@ credential-free Streamlit render.
 
 The merged Phase 2 calculation-remediation evidence is preserved in the
 [Phase 2 acceptance record](docs/manual-tests/phase-2-calculation-remediation.md).
+The completed 127-row calculation audit, final evidence, limitations, and acceptance boundary are
+preserved in the
+[final calculation-audit acceptance record](docs/manual-tests/final-calculation-audit-acceptance.md).
 
 ## Deliberately deferred
 
