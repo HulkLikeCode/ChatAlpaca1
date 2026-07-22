@@ -373,7 +373,10 @@ def assemble_comparison_report(
     normalized = tuple(item for item in rebase_comparison_series(candidates) if not item.empty)
     rows = []
     for item in normalized:
-        metrics = {key: value * 100 for key, value in summary_metrics(item).items()}
+        calculated = summary_metrics(item)
+        metrics = {
+            key: value * 100 if value is not None else None for key, value in calculated.items()
+        }
         rows.append({"Series": item.name, **metrics})
     warnings = {
         *portfolio_closes.attrs.get("warnings", ()),
@@ -381,6 +384,16 @@ def assemble_comparison_report(
     }
     if missing_benchmarks:
         warnings.add("Comparison data is incomplete for: " + ", ".join(missing_benchmarks) + ".")
+    unavailable = [
+        item.name
+        for item in normalized
+        if all(value is None for value in summary_metrics(item).values())
+    ]
+    if unavailable:
+        warnings.add(
+            "Comparison metrics are unavailable for series with fewer than two valid "
+            "observations: " + ", ".join(unavailable) + "."
+        )
     requested_count = len(portfolios) + 1 + len(benchmark_symbols)
     return ComparisonReport(
         normalized,

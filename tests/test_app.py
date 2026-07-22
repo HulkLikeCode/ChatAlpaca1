@@ -111,7 +111,7 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
             "All-time gain/loss",
             "Daily gain/loss",
             "Custom gain/loss",
-            "Annualized Alpha",
+            "Annualized market-model intercept, RF assumed 0%",
             "Beta",
             "Observations",
         ]
@@ -187,7 +187,7 @@ def test_monitor_consolidates_movers_and_simplifies_freshness() -> None:
     movers = next(
         item.value
         for item in app.dataframe
-        if "Daily change" in item.value and "Contribution" in item.value
+        if "Daily change" in item.value and "Share of net daily P/L" in item.value
     )
     assert "Portfolio" not in movers
     assert movers["Symbol"].is_unique
@@ -369,7 +369,7 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "All time",
         "Day",
         "Custom",
-        "Annualized Alpha",
+        "Annualized market-model intercept, RF assumed 0%",
         "Beta",
         "Alpha/Beta observations",
         "Shares",
@@ -390,7 +390,7 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "All time",
         "Day",
         "Custom",
-        "Annualized Alpha",
+        "Annualized market-model intercept, RF assumed 0%",
         "Beta",
         "Alpha/Beta observations",
         "Shares",

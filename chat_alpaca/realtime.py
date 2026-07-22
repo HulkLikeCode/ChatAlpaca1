@@ -806,6 +806,8 @@ class PortfolioPulse:
     by_portfolio: Mapping[str, float | None]
     portfolio_freshness: Mapping[str, bool]
     stale_or_missing: tuple[str, ...]
+    indicative_as_of: datetime | None = None
+    indicative_provenance: str | None = None
 
 
 def build_portfolio_pulse(
@@ -869,9 +871,7 @@ def build_portfolio_pulse(
             )
         )
     market_value = sum(row.value for row in rows if row.value is not None)
-    total = (
-        cash_total + market_value if rows and all(row.value is not None for row in rows) else None
-    )
+    total = cash_total + market_value if all(row.value is not None for row in rows) else None
     total_change = (
         sum(row.daily_change for row in rows if row.daily_change is not None)
         if rows and all(row.daily_change is not None for row in rows)
@@ -880,7 +880,11 @@ def build_portfolio_pulse(
     changed_rows = tuple(
         replace(
             row,
-            contribution=(row.daily_change / total_change if total_change else None),
+            contribution=(
+                row.daily_change / total_change
+                if total_change is not None and abs(total_change) >= 0.01
+                else None
+            ),
         )
         for row in rows
     )
@@ -898,6 +902,22 @@ def build_portfolio_pulse(
             }
         )
     )
+    overlay_quotes = [
+        quotes[row.symbol]
+        for row in changed_rows
+        if row.daily_change is not None and row.symbol in quotes
+    ]
+    indicative_as_of = max(
+        (quote.as_of_time for quote in overlay_quotes if quote.as_of_time is not None),
+        default=None,
+    )
+    sources = sorted({quote.source for quote in overlay_quotes if quote.source != "unavailable"})
+    feeds = sorted({quote.feed.upper() for quote in overlay_quotes if quote.feed})
+    indicative_provenance = (
+        "Alpaca " + ("/".join(feeds) + " " if feeds else "") + "/".join(sources or ["quote"])
+        if overlay_quotes
+        else None
+    )
     return PortfolioPulse(
         total,
         total_change,
@@ -905,6 +925,8 @@ def build_portfolio_pulse(
         portfolio_changes,
         portfolio_freshness,
         stale,
+        indicative_as_of,
+        indicative_provenance,
     )
 
 

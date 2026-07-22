@@ -12,7 +12,7 @@ from chat_alpaca.historical_data import HistoricalCoverageResult
 from chat_alpaca.models import Portfolio, PortfolioTransaction
 from chat_alpaca.reconstruction import ReconstructionRequest, reconstruct_from_coverage
 
-EXTERNAL_CASH_FLOW_KINDS = {"transfer", "cash_adjustment"}
+EXTERNAL_CASH_FLOW_KINDS = {"transfer", "cash_adjustment", "award"}
 
 
 @dataclass(frozen=True)
@@ -194,12 +194,16 @@ def portfolio_gain_loss(
     custom_end_value = _value_on_or_before(series, custom_end)
     baseline = series[series.index.date < custom_start].dropna()
     warnings = list(valuation.warnings)
+    if typed is not None:
+        warnings.extend(typed.warnings)
     custom = None
     if baseline.empty:
         warnings.append(
             "Custom gain/loss is unavailable because no confirmed prior trading close exists."
         )
-    elif custom_end_value is not None:
+    elif custom_end_value is not None and not (
+        typed is not None and typed.portfolios[portfolio.id].daily.calculation_warnings
+    ):
         if typed is not None:
             typed_gain = typed.portfolios[portfolio.id].daily.gain_loss
             selected = typed_gain[
@@ -300,25 +304,25 @@ def combined_performance_growth(portfolios: Iterable[Portfolio], closes: pd.Data
     )
 
 
-def summary_metrics(series: pd.Series) -> dict[str, float]:
+def summary_metrics(series: pd.Series) -> dict[str, float | None]:
     values = series.replace([np.inf, -np.inf], np.nan).dropna()
     if len(values) < 2 or values.iloc[0] == 0:
         return {
-            "Total return": 0.0,
-            "Annualized return": 0.0,
-            "Volatility": 0.0,
-            "Max drawdown": 0.0,
+            "Total return": None,
+            "Annualized return": None,
+            "Volatility": None,
+            "Max drawdown": None,
         }
     daily_returns = values.pct_change().dropna()
     total_return = values.iloc[-1] / values.iloc[0] - 1
     years = max((values.index[-1] - values.index[0]).days / 365.25, 1 / 365.25)
     annualized = (values.iloc[-1] / values.iloc[0]) ** (1 / years) - 1
-    volatility = daily_returns.std() * np.sqrt(252) if len(daily_returns) > 1 else 0.0
+    volatility = daily_returns.std() * np.sqrt(252) if len(daily_returns) > 1 else None
     drawdown = values / values.cummax() - 1
     return {
         "Total return": float(total_return),
         "Annualized return": float(annualized),
-        "Volatility": float(volatility),
+        "Volatility": float(volatility) if volatility is not None else None,
         "Max drawdown": float(drawdown.min()),
     }
 

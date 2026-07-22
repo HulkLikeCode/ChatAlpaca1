@@ -71,3 +71,23 @@ deductions, RMDs, filing status, state/local law, detailed future lots, and Soci
 provisional-income calculations require facts and legal scope the application does not possess.
 Keeping rates, realization, withdrawal order, and limitations visible is more reproducible than
 implying tax-return precision.
+
+## ADR-012: Approved calculation-remediation contracts
+
+**Decision:** Treat awards as external contributions; keep confirmed all-time performance
+independent of custom dates and separate from timestamped indicative overlays; use unavailable
+semantics for insufficient history; and use the exact approved metric and shrinkage names.
+
+**Rationale:** These contracts prevent user controls, missing data, or presentation labels from
+silently changing the economic meaning of reported performance and risk.
+
+## ADR-013: Owner RMD and retained-surplus approximation
+
+**Decision:** Model owner Traditional IRA RMDs at December month-end using date-of-birth-dependent
+starting ages and versioned IRS lifetime tables. Assume no Traditional IRA basis and qualified Roth
+withdrawals. Retain net RMD and outside-income surplus as taxable cash until the next rebalance.
+Taxable aggregate basis equals remaining FIFO security basis plus cash and is reduced proportionally.
+
+**Rationale:** This implements the approved reproducible planning convention while keeping inherited
+accounts, provisional-income Social Security taxation, qualification dates, detailed future lots,
+and tax optimization explicitly outside scope.

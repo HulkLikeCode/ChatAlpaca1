@@ -324,7 +324,13 @@ def render_master_controls(
 def get_prices(
     portfolios: list[Portfolio], report_start: date, report_end: date
 ) -> tuple[pd.DataFrame, str | None]:
-    request = portfolio_acquisition_request(portfolios, report_start, report_end)
+    inception_candidates = [
+        transaction.transaction_date
+        for portfolio in portfolios
+        for transaction in portfolio.transactions
+    ] + [lot.acquired_on for portfolio in portfolios for lot in portfolio.holdings]
+    confirmed_start = min([report_start, *inception_candidates])
+    request = portfolio_acquisition_request(portfolios, confirmed_start, date.today())
     if not request.symbols:
         return pd.DataFrame(), None
     try:
@@ -557,7 +563,11 @@ def render_performance_summary(
         )
         _render_metric(
             metrics[1],
-            "All-time gain/loss",
+            (
+                "All-time gain/loss (indicative overlay)"
+                if pulse is not None and available_count > 0
+                else "All-time gain/loss (confirmed)"
+            ),
             _metric_dollars(report.all_time),
             key=f"{key_prefix}_all_time",
             stale=bool(
@@ -593,7 +603,7 @@ def render_performance_summary(
             ),
         )
         metrics[4].metric(
-            "Annualized Alpha",
+            "Annualized market-model intercept, RF assumed 0%",
             f"{report.alpha:.2%}" if report.alpha is not None else "—",
         )
         metrics[5].metric("Beta", f"{report.beta:.2f}" if report.beta is not None else "—")
@@ -619,6 +629,16 @@ def render_performance_summary(
             if available_count < len(portfolios):
                 quote_status += f" · {len(portfolios) - available_count} confirmed-close fallback"
             status_parts.append(quote_status + " · 30s refresh")
+        if pulse is not None and available_count > 0:
+            timestamp = (
+                format_eastern_timestamp(pulse.indicative_as_of)
+                if pulse.indicative_as_of is not None
+                else "timestamp unavailable"
+            )
+            status_parts.append(
+                f"Indicative overlay: {pulse.indicative_provenance or 'quote source unavailable'} "
+                f"· {timestamp}"
+            )
         if custom_end != date.today():
             status_parts.append(f"Custom fixed at {custom_end:%-m/%-d/%y}")
         st.markdown(
@@ -639,7 +659,9 @@ def render_performance_summary(
                     "All-time gain/loss": row.all_time,
                     "Daily gain/loss": row.daily,
                     "Custom gain/loss": row.custom,
-                    "Annualized Alpha": row.alpha * 100 if row.alpha is not None else None,
+                    "Annualized market-model intercept, RF assumed 0%": (
+                        row.alpha * 100 if row.alpha is not None else None
+                    ),
                     "Beta": row.beta,
                     "Observations": row.alpha_beta_observations,
                     "_stale": regular_market_hours
@@ -673,14 +695,19 @@ def render_performance_summary(
                 )
             }
             | {
-                "Annualized Alpha": st.column_config.NumberColumn(format="%.2f%%"),
+                "Annualized market-model intercept, RF assumed 0%": (
+                    st.column_config.NumberColumn(format="%.2f%%")
+                ),
                 "Beta": st.column_config.NumberColumn(format="%.2f"),
                 "Observations": st.column_config.NumberColumn(format="%d"),
             },
             key=f"{key_prefix}_portfolio_gain_loss",
         )
         st.caption(
-            "Gain/loss excludes transfers, cash adjustments, and contributed opening positions. "
+            "Confirmed all-time gain/loss runs from inception through the latest complete confirmed "
+            "valuation date and is independent of Custom End. Any live amount is separately labeled "
+            "as an indicative overlay with quote provenance and time. Gain/loss excludes transfers, "
+            "cash adjustments, awards, and contributed opening positions. "
             "Daily uses the two latest market closes. Alpha/Beta uses daily ledger-aware returns "
             "against SPY total return over the applied range and requires 60 overlapping days."
         )
@@ -717,7 +744,7 @@ def render_consolidated_holdings(
             "All-time gain/loss": "All time",
             "Daily gain/loss": "Day",
             "Custom gain/loss": "Custom",
-            "Alpha": "Annualized Alpha",
+            "Alpha": "Annualized market-model intercept, RF assumed 0%",
         }
         money_columns = (
             "Avg/share",
@@ -738,14 +765,14 @@ def render_consolidated_holdings(
                 "All time",
                 "Day",
                 "Custom",
-                "Annualized Alpha",
+                "Annualized market-model intercept, RF assumed 0%",
                 "Beta",
                 "Alpha/Beta observations",
                 "Shares",
                 "Portfolios",
             ]
             summary_view = summary.rename(columns=common_renames)[summary_columns].copy()
-            summary_view["Annualized Alpha"] *= 100
+            summary_view["Annualized market-model intercept, RF assumed 0%"] *= 100
             st.dataframe(
                 summary_view,
                 hide_index=True,
@@ -753,7 +780,9 @@ def render_consolidated_holdings(
                 column_order=summary_columns,
                 column_config={
                     "Shares": st.column_config.NumberColumn(format="%.0f"),
-                    "Annualized Alpha": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Annualized market-model intercept, RF assumed 0%": (
+                        st.column_config.NumberColumn(format="%.2f%%")
+                    ),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.0f")
@@ -773,7 +802,7 @@ def render_consolidated_holdings(
                 "All time",
                 "Day",
                 "Custom",
-                "Annualized Alpha",
+                "Annualized market-model intercept, RF assumed 0%",
                 "Beta",
                 "Alpha/Beta observations",
                 "Shares",
@@ -781,7 +810,7 @@ def render_consolidated_holdings(
                 "Acquired",
             ]
             detail_view = detail.rename(columns=common_renames)[detail_columns].copy()
-            detail_view["Annualized Alpha"] *= 100
+            detail_view["Annualized market-model intercept, RF assumed 0%"] *= 100
             st.dataframe(
                 detail_view,
                 hide_index=True,
@@ -789,7 +818,9 @@ def render_consolidated_holdings(
                 column_order=detail_columns,
                 column_config={
                     "Shares": st.column_config.NumberColumn(format="%.0f"),
-                    "Annualized Alpha": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Annualized market-model intercept, RF assumed 0%": (
+                        st.column_config.NumberColumn(format="%.2f%%")
+                    ),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
                     "Acquired": st.column_config.DateColumn(format="M/D/YY"),
                     **{
@@ -1938,38 +1969,50 @@ def render_add_transaction(
             manual_price = 0.0
             manual_fees = 0.0
             value_row = st.columns(4)
-            if kind in TRADE_KINDS:
+            if kind in TRADE_KINDS or kind == "award":
                 manual_quantity = value_row[0].number_input(
-                    "Quantity",
+                    "Quantity" if kind in TRADE_KINDS else "Award quantity (optional)",
                     min_value=0.0,
                     value=0.0,
                     format="%.2f",
                     key="add_transaction_quantity",
                 )
                 manual_price = value_row[1].number_input(
-                    "Price",
+                    "Price" if kind in TRADE_KINDS else "Recorded fair value / share",
                     min_value=0.0,
                     value=0.0,
                     format="%.6f",
                     key="add_transaction_price",
                 )
-                manual_fees = value_row[2].number_input(
-                    "Fees",
-                    min_value=0.0,
-                    value=0.0,
-                    format="%.4f",
-                    key="add_transaction_fees",
-                )
-                st.session_state.add_transaction_calculated_cash = calculated_trade_cash(
-                    kind, manual_quantity, manual_price, manual_fees
-                )
-                cash_delta = value_row[3].number_input(
-                    "Cash change",
-                    key="add_transaction_calculated_cash",
-                    format="%.4f",
-                    disabled=True,
-                    help="Calculated from quantity, price, and fees.",
-                )
+                if kind in TRADE_KINDS:
+                    manual_fees = value_row[2].number_input(
+                        "Fees",
+                        min_value=0.0,
+                        value=0.0,
+                        format="%.4f",
+                        key="add_transaction_fees",
+                    )
+                    st.session_state.add_transaction_calculated_cash = calculated_trade_cash(
+                        kind, manual_quantity, manual_price, manual_fees
+                    )
+                    cash_delta = value_row[3].number_input(
+                        "Cash change",
+                        key="add_transaction_calculated_cash",
+                        format="%.4f",
+                        disabled=True,
+                        help="Calculated from quantity, price, and fees.",
+                    )
+                else:
+                    value_row[2].caption(
+                        "A quantity award requires this stored fair value; no market price is inferred."
+                    )
+                    cash_delta = value_row[3].number_input(
+                        "Cash award amount",
+                        value=0.0,
+                        step=1.0,
+                        format="%.4f",
+                        key="add_transaction_cash",
+                    )
             else:
                 cash_delta = value_row[3].number_input(
                     "Cash change",
@@ -2707,14 +2750,20 @@ def render_hypothetical_analysis(
                 before.forecast_target_probability,
                 after.forecast_target_probability,
             ),
-            "Retirement success probability": (
-                before.retirement_success_probability,
-                after.retirement_success_probability,
+            "Depletion Probability": (
+                before.depletion_probability,
+                after.depletion_probability,
             ),
         }
         st.dataframe(
             pd.DataFrame.from_dict(risk_rows, orient="index", columns=["Before", "After"]),
             width="stretch",
+        )
+        st.caption(
+            "Depletion Probability is from the adjacent simplified hypothetical model: fixed "
+            "monthly spending and seeded lognormal returns only. It omits inflation, taxes, "
+            "outside income, fees, contributions, account types, and withdrawal ordering and is "
+            "not the full retirement engine."
         )
         st.dataframe(
             pd.DataFrame(
@@ -2927,7 +2976,7 @@ def render_active_monitoring(
                 "Price": row.price,
                 "Value": row.value,
                 "Daily change": row.daily_change,
-                "Contribution": row.contribution,
+                "Share of net daily P/L": row.contribution,
                 "Freshness": freshness_label(row.status),
                 "As of": format_eastern_timestamp(records[row.symbol].as_of_time),
                 "Feed": records[row.symbol].feed,
@@ -2942,7 +2991,7 @@ def render_active_monitoring(
     )
     if not holding_rows.empty:
         st.markdown("#### Largest movers and holding contribution")
-        holding_rows["Contribution"] *= 100
+        holding_rows["Share of net daily P/L"] *= 100
         holding_rows["_absolute mover"] = pd.to_numeric(
             holding_rows["Daily change"], errors="coerce"
         ).abs()
@@ -2954,7 +3003,7 @@ def render_active_monitoring(
             _style_stale_values(
                 holding_rows,
                 stale_holding_rows,
-                ("Price", "Value", "Daily change", "Contribution"),
+                ("Price", "Value", "Daily change", "Share of net daily P/L"),
             )
             if hours.is_regular_hours
             else holding_rows
@@ -2967,7 +3016,7 @@ def render_active_monitoring(
                 "Price": st.column_config.NumberColumn(format="$%,.2f"),
                 "Value": st.column_config.NumberColumn(format="$%,.0f"),
                 "Daily change": st.column_config.NumberColumn(format="$%,.0f"),
-                "Contribution": st.column_config.NumberColumn(format="%.0f%%"),
+                "Share of net daily P/L": st.column_config.NumberColumn(format="%.0f%%"),
             },
         )
     portfolio_rows = pd.DataFrame(

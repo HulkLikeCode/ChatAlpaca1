@@ -102,9 +102,10 @@ of freedom. Both models expose compatible percentile bands, terminal summaries, 
 probabilities, benchmark comparison, downside percentiles, and holding-level downside attribution,
 so their results can be shown in one comparison table without ranking either model universally.
 
-Historical expected returns are annualized from mean log returns and shrunk toward the
-cross-sectional median. They are not raw historical arithmetic means. Historical covariance uses
-diagonal shrinkage before conversion to marginal volatilities and correlation. Owner-entered or
+Historical expected returns are annualized from mean log returns using `cross-sectional median
+shrinkage`. They are not raw historical arithmetic means. Historical covariance uses `fixed
+diagonal covariance shrinkage` before conversion to marginal volatilities and correlation.
+Owner-entered or
 CSV-imported published capital-market assumptions can be blended with historical return and
 volatility estimates using explicit weights, while field-level user overrides take precedence.
 Every non-historical assumption retains source, publication, and as-of disclosure. A paid data
@@ -137,14 +138,20 @@ spending, one-time spending, inflation, fees, rebalancing, Social Security, pens
 and optional estate targets expressed in real dollars. It does not add guardrail or
 percentage-spending strategies.
 
-Account balances retain Traditional IRA, Roth IRA, taxable, and unknown classifications from the
-shared portfolio configuration. Withdrawal order is explicit and configurable. Roth withdrawals
-are tax free; Traditional IRA and unknown-account withdrawals use configured ordinary-rate
-assumptions; taxable withdrawals use aggregate embedded gains when cost basis is supplied and a
-configured realization fraction otherwise. Dividend and outside-income tax assumptions are also
-explicit. This is a transparent planning estimate, not tax advice. Brackets, deductions, RMDs,
-filing status, state/local rules, detailed future tax lots, loss harvesting, and unsupported
-jurisdiction-specific rules remain out of scope.
+Account balances retain Traditional IRA, Roth IRA, taxable, and unknown classifications and may use
+account-specific allocations. Contributions post at month-end; annual amounts are split into 12
+equal deposits. Roth withdrawals assume qualified tax-free treatment, and Traditional IRAs assume
+no nondeductible basis. Owner Traditional IRA RMDs use the date-of-birth-dependent federal starting
+age, versioned IRS Publication 590-B Table III by default and Table II only for a sole-beneficiary
+spouse more than 10 years younger, each IRA's prior December 31 balance, aggregate owner-IRA
+satisfaction, and December month-end timing. Inherited-account RMDs remain out of scope.
+
+Taxable basis is approximated as remaining FIFO security basis plus taxable cash and may exceed
+market value; withdrawals reduce it proportionally. Social Security uses a fixed configured taxable
+fraction rather than provisional-income rules. Unspent outside income and net RMD surplus remain
+taxable household cash until the next configured rebalance. This is a transparent planning
+estimate, not tax advice; brackets, deductions, filing status, state/local rules, detailed future
+lots, loss harvesting, and unsupported jurisdiction-specific rules remain out of scope.
 
 Results disclose funding and depletion probabilities, depletion ages, nominal and real percentile
 paths, retirement-date value, lifetime taxes, withdrawals by account type, outside-income funding,
@@ -183,7 +190,9 @@ Durable split-adjusted closes provide previous-close fallback through the existi
 repository. Abandoned leases are reaped on active reruns and explicit logout stops the connection;
 there is no persistent background worker and no uninterrupted closed-app or sleeping-device claim.
 Complete per-portfolio indicative quote changes may be overlaid on ledger-derived close-based
-all-time and daily gain/loss without waiting for every selected portfolio to become fresh. A
+all-time and daily gain/loss without waiting for every selected portfolio to become fresh. The
+overlay is separately labeled indicative with timestamp and provenance and never alters the
+confirmed inception-through-latest-complete-valuation series. A
 complete stale quote move may remain visible; muted blue applies only during regular market hours.
 After-hours values may continue to reflect extended-hours trades against the previous completed
 session close, while weekends and holidays retain the most recent completed session without stale
@@ -198,6 +207,8 @@ recent fills, symbol quote/trade detail, and controlled broad-market and sector 
 Returns, trend, drawdown, realized volatility, correlation regime, and 21-day rolling SPY
 correlation remain individually disclosed; Phase 12 does not create a proprietary composite market
 score.
+Cash-only selections retain their cash value. Holding share of net daily P/L is unavailable when
+the absolute net daily P/L denominator is below $0.01; exactly $0.01 remains calculable.
 
 ## Benchmarks and hypothetical trades
 

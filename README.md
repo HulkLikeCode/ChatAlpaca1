@@ -33,8 +33,9 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Sticky, batched portfolio and master-date controls shared by Overview, Compare, and Manage
 - Compact portfolio-income reporting for realized dividends and interest, with master-end-aware
   YTD, trailing-365-day, selected-range, normalized-quarterly, monthly, and source views
-- Transaction-aware all-time, daily, and custom-range portfolio gain/loss excluding contributions,
-  with an indicative active-session IEX overlay and historical custom-end protection
+- Transaction-aware confirmed all-time, daily, and custom-range portfolio gain/loss excluding
+  contributions and awards, with a separately labeled, timestamped, provenance-disclosed
+  indicative active-session IEX overlay and all-time independence from Custom Start/End
 - Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, and lot drilldown
 - Selected-portfolio total value in both Overview and Compare
 - Selected-range cumulative dividends on portfolio value cards
@@ -174,8 +175,10 @@ source and values; deletion audits retain the complete removed transaction snaps
 
 Historical portfolio values are reconstructed from dated transactions and adjusted daily market
 closes rather than projecting today's cash and holdings backward. Portfolio gain/loss excludes
-external transfers, cash adjustments, and the cost basis of contributed opening positions; market
-movement, dividends, interest, and awards remain part of performance. Daily gain/loss compares the
+external transfers, cash adjustments, awards, and the fair value of contributed opening positions;
+market movement, dividends, and interest remain part of performance. A quantity award requires an
+explicit stored fair value; no close or quote is inferred, and affected gain/return outputs are
+unavailable with a warning when it is absent. Daily gain/loss compares the
 two latest market closes, while custom gain/loss uses the close before the applied master start date
 through the master end date. The same range controls dividend custom totals, Compare charts and
 metrics, exact holdings, and transaction filtering.
@@ -189,6 +192,11 @@ Extended-hours trades continue to compare with the previous completed session cl
 metrics may therefore contain fresh, stale, and fallback portfolio rows, with compact coverage
 disclosing that mix. Custom gain/loss receives the overlay only when the applied master end date is
 today; a historical end date remains fixed.
+Confirmed all-time performance always runs from inception through the latest complete confirmed
+valuation date and is not truncated by Custom Start or Custom End. Any permitted live overlay is
+separately labeled indicative with its timestamp and provenance and does not alter the confirmed
+historical series. Comparison metrics are unavailable, rather than numeric zero, when history is
+insufficient. Alpha is labeled `Annualized market-model intercept, RF assumed 0%`.
 Missing quote moves remain unavailable rather than zero. Overview keeps its zero-decimal portfolio
 value cards directly below the gain/loss metrics and summarizes valuation, Alpha/Beta, quote, and
 custom-end coverage in one compact status strip.
@@ -234,6 +242,10 @@ downside contribution. Holdings with inadequate histories require explicit docum
 proxy use lowers forecast sufficiency and joint row sampling preserves the proxy's observed market
 relationships.
 
+Circular sampling preserves within-block order and cross-asset row dependence and wraps from the
+end of observed history to its beginning; that boundary is a modeling assumption, not a claim that
+the historical endpoints were economically adjacent.
+
 Rolling-origin backtests report 5th–95th percentile interval coverage, median forecast bias,
 downside-band coverage, and valid, invalid, and insufficient windows. Passing configured criteria
 makes a model eligible for review, never automatically validated. Saved runs retain model/version,
@@ -244,8 +256,9 @@ simulated paths and terminal samples are not persisted.
 Phase 9 adds correlated parametric Monte Carlo in `chat_alpaca.parametric_forecasting` alongside,
 not in place of, the bootstrap model. Multivariate normal and variance-normalized multivariate
 Student's t returns share the bootstrap model's core output contract. Expected returns use
-annualized compounded log-return estimates with cross-sectional shrinkage rather than unquestioned
-raw arithmetic means. Covariance estimates use diagonal shrinkage, and every external or override
+annualized compounded log-return estimates with `cross-sectional median shrinkage` rather than
+unquestioned raw arithmetic means. Covariance estimates use `fixed diagonal covariance shrinkage`,
+and every external or override
 correlation matrix is checked for labels, dimensions, finite values, symmetry, unit diagonal,
 bounded entries, and positive semidefiniteness.
 
@@ -265,13 +278,20 @@ pre-retirement contributions, fixed inflation-adjusted real spending, one-time s
 Social Security, pensions, other outside income, fees, rebalancing, and an optional real target
 estate value.
 
-Traditional IRA, Roth IRA, taxable, and unknown balances remain explicit. Configurable withdrawal
-ordering applies tax-free Roth, ordinary-income Traditional IRA, taxable realization/capital-gain,
-dividend, and conservative unknown-account assumptions. The tax calculation is a transparent first
-planning estimate, not tax advice or a tax-return calculation. It intentionally excludes tax
-brackets, deductions, required minimum distributions, state/local rules, filing status, detailed
-tax lots, loss harvesting, and jurisdiction-specific complexity. Social Security uses a configured
-taxable fraction rather than provisional-income rules.
+Traditional IRA, Roth IRA, taxable, and unknown balances remain explicit, with optional
+account-specific allocations. Monthly contributions are deposited at month-end; configured annual
+amounts are divided into 12 equal month-end deposits. Roth withdrawals are assumed qualified and
+tax free. Traditional IRAs assume no nondeductible basis. Owner RMD starting age is selected from
+date of birth (70½, 72, 73, or 75), uses versioned IRS Publication 590-B Table III by default and
+Table II only for a sole-beneficiary spouse more than 10 years younger, calculates each owner IRA
+from its prior December 31 balance, permits aggregate satisfaction across owner IRAs, and posts at
+December month-end. Inherited-account RMDs remain out of scope. Social Security uses a fixed
+configured taxable fraction rather than provisional-income rules.
+
+Taxable basis is the aggregate approximation of remaining FIFO security basis plus taxable cash,
+which can exceed market value, and is reduced proportionally on withdrawals. Unspent outside income
+and net RMD surplus remain taxable household cash and are invested only at the next configured
+rebalance. The tax calculation is a transparent planning estimate, not tax advice.
 
 Outputs include nominal and real percentile paths, retirement-date and terminal distributions,
 full-horizon funding and depletion probabilities, depletion ages, lifetime taxes, withdrawals by
@@ -285,8 +305,10 @@ Phase 11 adds non-executable hypothetical trade analysis in `chat_alpaca.hypothe
 ledger-derived cash and FIFO lots into isolated in-memory state, applies any number of proposed
 buys, sells, cash changes, or internal portfolio reassignments, and compares allocation, basis,
 look-through sectors, benchmark-relative exposure, concentration, historical risk, assumptions,
-forecast downside and target probability, deterministic stress loss, and optional retirement
-success probability. Named saved scenarios retain creator/time, portfolio scope, exact baseline
+forecast downside and target probability, deterministic stress loss, and optional `Depletion
+Probability`. That adjacent simplified metric uses only fixed spending and seeded lognormal returns
+and omits the full retirement engine's inflation, taxes, income, fees, contributions, account types,
+and withdrawal order. Named saved scenarios retain creator/time, portfolio scope, exact baseline
 ledger hash, market-data as-of time, assumptions, proposals, and summarized results. Loading a
 scenario recomputes the ledger hash and warns when its baseline is stale.
 

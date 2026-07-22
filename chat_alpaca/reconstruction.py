@@ -21,8 +21,8 @@ from chat_alpaca.historical_data import (
 from chat_alpaca.market_calendar import market_session_index
 from chat_alpaca.models import Instrument, Portfolio, PortfolioTransaction, ProxyAssignment
 
-EXTERNAL_FLOW_KINDS = {"transfer", "cash_adjustment"}
-POSITION_KINDS = {"buy", "sell", "opening_position"}
+EXTERNAL_FLOW_KINDS = {"transfer", "cash_adjustment", "award"}
+POSITION_KINDS = {"buy", "sell", "opening_position", "award"}
 INCOME_KINDS = {"dividend", "interest"}
 
 
@@ -99,6 +99,7 @@ class DailyReconstruction:
     total_return: pd.Series
     time_weighted_return: pd.Series
     gain_loss: pd.Series
+    calculation_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,14 @@ def _opening_asset_flow(transaction: PortfolioTransaction) -> float:
     return 0.0
 
 
+def _award_asset_flow(transaction: PortfolioTransaction) -> float | None:
+    if transaction.kind != "award" or transaction.quantity is None:
+        return 0.0
+    if transaction.price is None or transaction.price <= 0:
+        return None
+    return float(transaction.quantity * transaction.price)
+
+
 def _daily_for_portfolio(
     portfolio: Portfolio,
     prices: pd.DataFrame,
@@ -265,6 +274,9 @@ def _daily_for_portfolio(
         timestamp = _event_timestamp(transaction.transaction_date, external.index)
         if timestamp in external.index:
             external.loc[timestamp] += _opening_asset_flow(transaction)
+            award_flow = _award_asset_flow(transaction)
+            if award_flow is not None:
+                external.loc[timestamp] += award_flow
     dividends = _event_series(transactions, calculation_index, {"dividend"}, "dividends")
     interest = _event_series(transactions, calculation_index, {"interest"}, "interest")
     fees = _event_series(transactions, calculation_index, {"fee"}, "fees")
@@ -274,6 +286,17 @@ def _daily_for_portfolio(
             fees.loc[timestamp] -= abs(float(transaction.fees))
     taxes = _event_series(transactions, calculation_index, {"tax"}, "taxes")
     awards = _event_series(transactions, calculation_index, {"award"}, "awards")
+    missing_award_values = [
+        transaction
+        for transaction in transactions
+        if transaction.kind == "award"
+        and transaction.quantity is not None
+        and _award_asset_flow(transaction) is None
+    ]
+    unavailable_award_dates = {
+        _event_timestamp(transaction.transaction_date, calculation_index)
+        for transaction in missing_award_values
+    }
 
     total_return = pd.Series(np.nan, index=calculation_index, name="total_return", dtype=float)
     income_return = pd.Series(np.nan, index=calculation_index, name="income_return", dtype=float)
@@ -293,7 +316,6 @@ def _daily_for_portfolio(
                 + interest.loc[timestamp]
                 + fees.loc[timestamp]
                 + taxes.loc[timestamp]
-                + awards.loc[timestamp]
             )
             gain = current - previous_value - external_flow
             gain_loss.loc[timestamp] = gain
@@ -308,6 +330,14 @@ def _daily_for_portfolio(
         previous_value = current
 
     twr = (1.0 + total_return.fillna(0.0)).cumprod() - 1.0
+    if missing_award_values:
+        for timestamp in unavailable_award_dates:
+            if timestamp is not None:
+                gain_loss.loc[timestamp] = np.nan
+                total_return.loc[timestamp] = np.nan
+                income_return.loc[timestamp] = np.nan
+                price_return.loc[timestamp] = np.nan
+        twr.loc[:] = np.nan
     twr.name = "time_weighted_return"
     selected = calculation_index[calculation_index.date >= start]
     return DailyReconstruction(
@@ -325,6 +355,14 @@ def _daily_for_portfolio(
         total_return=total_return.loc[selected],
         time_weighted_return=twr.loc[selected],
         gain_loss=gain_loss.loc[selected],
+        calculation_warnings=(
+            (
+                "Gain and return outputs are unavailable because a quantity award lacks an "
+                "explicitly recorded fair value; no market price was inferred."
+            ),
+        )
+        if missing_award_values
+        else (),
     )
 
 
@@ -401,9 +439,14 @@ def _combine_daily(
     gain = value.diff() - external
     total = gain / value.shift(1).replace(0, np.nan)
     income = (dividends + interest) / value.shift(1).replace(0, np.nan)
-    non_price = dividends + interest + fees + taxes + awards
+    non_price = dividends + interest + fees + taxes
     price = total - non_price / value.shift(1).replace(0, np.nan)
     twr = (1.0 + total.fillna(0.0)).cumprod() - 1.0
+    calculation_warnings = tuple(
+        dict.fromkeys(warning for item in items for warning in item.calculation_warnings)
+    )
+    if calculation_warnings:
+        twr.loc[:] = np.nan
     return DailyReconstruction(
         portfolio_value=value,
         cash=summed("cash"),
@@ -419,6 +462,7 @@ def _combine_daily(
         total_return=total.rename("total_return"),
         time_weighted_return=twr.rename("time_weighted_return"),
         gain_loss=gain.rename("gain_loss"),
+        calculation_warnings=calculation_warnings,
     )
 
 
@@ -582,7 +626,11 @@ def reconstruct_from_coverage(
             daily=daily,
             money_weighted_return=xirr,
             xirr=xirr,
-            gain_loss=float(valid_gain.sum()) if not valid_gain.empty else None,
+            gain_loss=(
+                float(valid_gain.sum())
+                if not daily.calculation_warnings and not valid_gain.empty
+                else None
+            ),
         )
     combined = _combine_daily([item.daily for item in per_portfolio.values()], tuple(per_portfolio))
     combined_xirr = _money_weighted_return(combined, request.start, request.end)
@@ -630,6 +678,9 @@ def reconstruct_from_coverage(
         request.end,
     )
     warnings = list(coverage.warnings)
+    warnings.extend(
+        warning for item in per_portfolio.values() for warning in item.daily.calculation_warnings
+    )
     if missing:
         warnings.append("Missing confirmed prices for held symbols: " + ", ".join(missing) + ".")
     if stale:
@@ -664,7 +715,7 @@ def reconstruct_from_coverage(
         "Explicit dividends and interest remain ledger cash and are not embedded in valuation prices.",
         "Transactions are applied before the close on their transaction date.",
         "No missing price is forward-filled or valued at zero.",
-        "Daily TWR removes external transfers, cash adjustments, and contributed opening assets.",
+        "Daily TWR removes external transfers, cash adjustments, awards, and contributed opening assets.",
         "XIRR annualizes dated investor cash flows and the terminal confirmed portfolio value.",
     )
     return ReconstructionResult(
@@ -673,7 +724,9 @@ def reconstruct_from_coverage(
         combined=combined,
         money_weighted_return=combined_xirr,
         xirr=combined_xirr,
-        gain_loss=float(gain.sum()) if not gain.empty else None,
+        gain_loss=(
+            float(gain.sum()) if not combined.calculation_warnings and not gain.empty else None
+        ),
         benchmarks=benchmarks,
         data_coverage=data_coverage,
         common_as_of_date=common,
