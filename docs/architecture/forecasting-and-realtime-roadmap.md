@@ -264,4 +264,6 @@ Hypothetical model `1.1.0` values both baseline and proposed snapshots from one 
 date across the selected household. Saved results retain that date, the confirmed prices, any
 included latest-symbol dates, and explicit metadata distinguishing the additive confirmed layer
 from the non-additive mixed-date monitoring overlay. Existing saved `1.0.0` results are read as
-their original snapshots and are not reinterpreted.
+their original snapshots and are not reinterpreted. Action quantities, prices, fees, cash amounts,
+baseline values, expected returns, targets, stress magnitudes, allocation inputs, and adjacent
+retirement assumptions must be finite and non-Boolean before analysis.

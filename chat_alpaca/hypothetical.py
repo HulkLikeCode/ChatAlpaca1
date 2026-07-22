@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
+from numbers import Integral, Real
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,25 @@ EXPECTED_RETURN_DISCLOSURE = (
 )
 
 
+def _finite_number(name: str, value: object) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite number and cannot be Boolean.")
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise ValueError(f"{name} must be finite.")
+    return normalized
+
+
+def _positive_integer(name: str, value: object, *, allow_zero: bool = False) -> int:
+    minimum = 0 if allow_zero else 1
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"{name} must be an integer and cannot be Boolean.")
+    normalized = int(value)
+    if normalized < minimum:
+        raise ValueError(f"{name} must be at least {minimum}.")
+    return normalized
+
+
 class HypotheticalActionType(str, Enum):
     BUY = "buy"
     SELL = "sell"
@@ -52,7 +72,10 @@ class BaselineLot:
     acquired_ordinal: int = 0
 
     def __post_init__(self) -> None:
-        if self.shares < 0 or self.unit_cost_basis < 0:
+        shares = _finite_number("Baseline shares", self.shares)
+        unit_basis = _finite_number("Baseline unit cost basis", self.unit_cost_basis)
+        _positive_integer("Baseline acquisition order", self.acquired_ordinal, allow_zero=True)
+        if shares < 0 or unit_basis < 0:
             raise ValueError("Hypothetical baselines support nonnegative long lots only.")
 
 
@@ -62,6 +85,9 @@ class PortfolioBaseline:
     portfolio_name: str
     cash: float
     lots: tuple[BaselineLot, ...]
+
+    def __post_init__(self) -> None:
+        _finite_number("Baseline cash", self.cash)
 
 
 @dataclass(frozen=True)
@@ -79,7 +105,17 @@ class ProposedAction:
         object.__setattr__(self, "action", HypotheticalActionType(self.action))
         symbol = self.symbol.strip().upper() if self.symbol else None
         object.__setattr__(self, "symbol", symbol)
-        if self.fees < 0:
+        for field_name, label in (
+            ("quantity", "Hypothetical quantity"),
+            ("price", "Hypothetical price"),
+            ("amount", "Hypothetical cash amount"),
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(self, field_name, _finite_number(label, value))
+        fees = _finite_number("Hypothetical fees", self.fees)
+        object.__setattr__(self, "fees", fees)
+        if fees < 0:
             raise ValueError("Hypothetical fees cannot be negative.")
         if self.action in {HypotheticalActionType.BUY, HypotheticalActionType.SELL}:
             if not symbol or not self.quantity or self.quantity <= 0:
@@ -109,9 +145,13 @@ class RetirementAnalysisAssumptions:
     seed: int = 20260720
 
     def __post_init__(self) -> None:
-        if not 1 <= self.horizon_years <= 40:
+        horizon = _positive_integer("Retirement horizon", self.horizon_years)
+        spending = _finite_number("Retirement annual spending", self.annual_spending)
+        _positive_integer("Retirement simulation count", self.simulations)
+        _positive_integer("Retirement seed", self.seed, allow_zero=True)
+        if horizon > 40:
             raise ValueError("Retirement horizon must be between 1 and 40 years.")
-        if self.annual_spending < 0 or self.simulations < 1:
+        if spending < 0:
             raise ValueError("Retirement spending cannot be negative and simulations must run.")
 
 
@@ -126,13 +166,34 @@ class HypotheticalAssumptions:
     retirement: RetirementAnalysisAssumptions | None = None
 
     def __post_init__(self) -> None:
-        if not 1 <= self.forecast_horizon_years <= 10:
+        horizon = _positive_integer("Hypothetical forecast horizon", self.forecast_horizon_years)
+        if horizon > 10:
             raise ValueError("Forecast horizon must be between 1 and 10 years.")
-        if self.forecast_target is not None and self.forecast_target <= 0:
-            raise ValueError("Forecast target must be positive.")
-        if any(value <= -1 for value in self.expected_returns.values()):
+        if self.forecast_target is not None:
+            target = _finite_number("Hypothetical forecast target", self.forecast_target)
+            if target <= 0:
+                raise ValueError("Forecast target must be positive.")
+        expected_returns = [
+            _finite_number(f"Expected return for {symbol}", value)
+            for symbol, value in self.expected_returns.items()
+        ]
+        if any(value <= -1 for value in expected_returns):
             raise ValueError("Expected returns must be greater than -100%.")
-        if any(value < -1 or value > 1 for value in self.stress_shocks.values()):
+        for symbol, value in self.benchmark_weights.items():
+            weight = _finite_number(f"Benchmark weight for {symbol}", value)
+            if weight < 0:
+                raise ValueError("Benchmark weights cannot be negative.")
+        for symbol, sector in self.sectors.items():
+            if isinstance(sector, Mapping):
+                for sector_name, value in sector.items():
+                    weight = _finite_number(f"Sector weight for {symbol} / {sector_name}", value)
+                    if weight < 0:
+                        raise ValueError("Sector weights cannot be negative.")
+        stress_shocks = [
+            _finite_number(f"Stress shock for {name}", value)
+            for name, value in self.stress_shocks.items()
+        ]
+        if any(value < -1 or value > 1 for value in stress_shocks):
             raise ValueError("Stress shocks must be between -100% and 100%.")
 
 
@@ -521,7 +582,10 @@ def analyze_hypothetical_scenario(
         raise ValueError("Select at least one portfolio for hypothetical analysis.")
     if not actions:
         raise ValueError("Add at least one proposed action.")
-    normalized_prices = {str(key).upper(): float(value) for key, value in prices.items()}
+    normalized_prices = {
+        str(key).upper(): _finite_number(f"Hypothetical-analysis price for {key}", value)
+        for key, value in prices.items()
+    }
     if any(value <= 0 for value in normalized_prices.values()):
         raise ValueError("Hypothetical-analysis prices must be positive.")
     names = {item.portfolio_id: item.portfolio_name for item in baselines}
@@ -707,7 +771,12 @@ def prepare_order_ticket_transfer(
         raise PermissionError("Fresh owner review and confirmation are required.")
     if current_ledger_hash != scenario_ledger_hash:
         raise ValueError("The scenario baseline is stale; rerun it before preparing an order.")
-    if reviewed_market_price is None or reviewed_market_price <= 0 or reviewed_price_as_of is None:
+    if reviewed_market_price is None or reviewed_price_as_of is None:
+        raise ValueError(
+            "A freshly reviewed market price is required; scenario prices are ignored."
+        )
+    reviewed_price = _finite_number("Reviewed market price", reviewed_market_price)
+    if reviewed_price <= 0:
         raise ValueError(
             "A freshly reviewed market price is required; scenario prices are ignored."
         )
@@ -722,7 +791,7 @@ def prepare_order_ticket_transfer(
         str(action.symbol),
         action.action.value,
         float(action.quantity),
-        float(reviewed_market_price),
+        reviewed_price,
         reviewed_price_as_of,
         source_scenario_id,
     )

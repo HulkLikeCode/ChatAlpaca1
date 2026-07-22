@@ -347,6 +347,8 @@ and calculations retain their full precision. Its Summary and By Portfolio / Lot
 each acquisition date and original cost basis without nesting collapsible sections. Saved
 hypothetical model `1.1.0` records the common confirmed date, confirmed prices, latest-symbol dates,
 and the valuation-layer semantics; saved `1.0.0` records remain unchanged.
+Hypothetical actions, baselines, prices, assumptions, stress magnitudes, and adjacent retirement
+inputs reject Boolean and nonfinite numerical values at the reusable service boundary.
 
 ## Portfolio configuration and classification
 

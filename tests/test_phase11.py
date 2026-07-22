@@ -292,6 +292,89 @@ def test_sell_uses_fifo_basis_and_assignment_preserves_basis() -> None:
     assert result.after.cost_basis == pytest.approx(120)
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        lambda: ProposedAction("buy", 1, symbol="AAA", quantity=True, price=10),
+        lambda: ProposedAction("buy", 1, symbol="AAA", quantity=float("inf"), price=10),
+        lambda: ProposedAction("buy", 1, symbol="AAA", quantity=1, price=float("nan")),
+        lambda: ProposedAction("buy", 1, symbol="AAA", quantity=1, price=10, fees=True),
+        lambda: ProposedAction("sell", 1, symbol="AAA", quantity=1, price=10, fees=float("inf")),
+        lambda: ProposedAction("add_cash", 1, amount=float("nan")),
+        lambda: ProposedAction("remove_cash", 1, amount=True),
+    ],
+)
+def test_hypothetical_actions_reject_boolean_and_nonfinite_numbers(action) -> None:
+    with pytest.raises(ValueError):
+        action()
+
+
+@pytest.mark.parametrize(
+    "assumptions",
+    [
+        lambda: HypotheticalAssumptions(
+            {"AAA": float("nan")}, {"AAA": "Technology"}, {"AAA": 1}, {}
+        ),
+        lambda: HypotheticalAssumptions({"AAA": True}, {"AAA": "Technology"}, {"AAA": 1}, {}),
+        lambda: HypotheticalAssumptions(
+            {"AAA": 0.05}, {"AAA": "Technology"}, {"AAA": float("inf")}, {}
+        ),
+        lambda: HypotheticalAssumptions(
+            {"AAA": 0.05}, {"AAA": {"Technology": float("nan")}}, {"AAA": 1}, {}
+        ),
+        lambda: HypotheticalAssumptions(
+            {"AAA": 0.05}, {"AAA": "Technology"}, {"AAA": 1}, {"AAA": float("nan")}
+        ),
+        lambda: HypotheticalAssumptions(
+            {"AAA": 0.05},
+            {"AAA": "Technology"},
+            {"AAA": 1},
+            {},
+            forecast_target=float("inf"),
+        ),
+        lambda: RetirementAnalysisAssumptions(20, float("nan")),
+        lambda: RetirementAnalysisAssumptions(True, 100),
+        lambda: RetirementAnalysisAssumptions(20, 100, simulations=True),
+    ],
+)
+def test_hypothetical_assumptions_reject_boolean_and_nonfinite_numbers(assumptions) -> None:
+    with pytest.raises(ValueError):
+        assumptions()
+
+
+@pytest.mark.parametrize("price", [True, float("nan"), float("inf")])
+def test_hypothetical_analysis_rejects_invalid_current_prices(price: object) -> None:
+    baseline = PortfolioBaseline(
+        1,
+        "Taxable",
+        100,
+        (baseline_lot(1, "Taxable", "AAA", 1, 10, 1),),
+    )
+    assumptions = HypotheticalAssumptions({"AAA": 0.05}, {"AAA": "Technology"}, {"AAA": 1}, {})
+
+    with pytest.raises(ValueError):
+        analyze_hypothetical_scenario(
+            (baseline,),
+            (ProposedAction("add_cash", 1, amount=1),),
+            {"AAA": price},
+            pd.DataFrame({"AAA": [0.01, -0.01]}),
+            assumptions,
+            market_data_as_of=datetime.now(timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    "lot",
+    [
+        lambda: baseline_lot(1, "Taxable", "AAA", True, 10, 1),
+        lambda: baseline_lot(1, "Taxable", "AAA", 1, float("nan"), 1),
+    ],
+)
+def test_hypothetical_baselines_reject_invalid_numbers(lot) -> None:
+    with pytest.raises(ValueError):
+        lot()
+
+
 def baseline_lot(
     portfolio_id: int,
     portfolio_name: str,
