@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
+from numbers import Integral, Real
 from typing import Literal
 
 import numpy as np
@@ -21,6 +22,24 @@ BOOTSTRAP_PERCENTILES = (5, 10, 25, 50, 75, 90, 95)
 REBALANCE_FREQUENCIES = {"monthly": 1, "quarterly": 3, "annual": 12, "never": None}
 
 
+def _finite_number(name: str, value: object) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite number and cannot be Boolean.")
+    normalized = float(value)
+    if not np.isfinite(normalized):
+        raise ValueError(f"{name} must be finite.")
+    return normalized
+
+
+def _integer(name: str, value: object, *, minimum: int = 1) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"{name} must be an integer and cannot be Boolean.")
+    normalized = int(value)
+    if normalized < minimum:
+        raise ValueError(f"{name} must be at least {minimum}.")
+    return normalized
+
+
 @dataclass(frozen=True)
 class BootstrapAssumptions:
     horizon_years: int
@@ -36,25 +55,33 @@ class BootstrapAssumptions:
     minimum_history_months: int = 24
 
     def __post_init__(self) -> None:
-        if not 1 <= self.horizon_years <= 10:
+        horizon = _integer("Forecast horizon", self.horizon_years)
+        block_length = _integer("Block length", self.block_length)
+        _integer("Simulation count", self.simulations)
+        _integer("Forecast seed", self.seed, minimum=0)
+        contribution = _finite_number("Monthly contribution", self.monthly_contribution)
+        inflation = _finite_number("Annual inflation", self.annual_inflation)
+        annual_fee = _finite_number("Annual fee", self.annual_fee)
+        if horizon > 10:
             raise ValueError("Forecast horizon must be between 1 and 10 years.")
-        if self.block_length not in {3, 6, 12}:
+        if block_length not in {3, 6, 12}:
             raise ValueError("Block length must be 3, 6, or 12 months.")
-        if self.simulations < 1:
-            raise ValueError("At least one simulation is required.")
-        if self.monthly_contribution < 0:
+        if contribution < 0:
             raise ValueError("Monthly contribution cannot be negative.")
-        if self.annual_inflation <= -1:
+        if inflation <= -1:
             raise ValueError("Annual inflation must be greater than -100%.")
-        if self.annual_fee < 0 or self.annual_fee >= 1:
+        if annual_fee < 0 or annual_fee >= 1:
             raise ValueError("Annual fee must be between 0% and 100%.")
         if self.rebalancing not in REBALANCE_FREQUENCIES:
             raise ValueError("Rebalancing must be monthly, quarterly, annual, or never.")
         if self.sampling_level not in {"holding", "portfolio"}:
             raise ValueError("Sampling level must be holding or portfolio.")
-        if self.target_value is not None and self.target_value <= 0:
-            raise ValueError("Target value must be greater than zero.")
-        if self.minimum_history_months < self.block_length:
+        if self.target_value is not None:
+            target = _finite_number("Target value", self.target_value)
+            if target <= 0:
+                raise ValueError("Target value must be greater than zero.")
+        minimum_history = _integer("Minimum history months", self.minimum_history_months)
+        if minimum_history < block_length:
             raise ValueError("Minimum history cannot be shorter than the selected block.")
 
 
@@ -159,10 +186,13 @@ def sample_block_indices(
     seed: int,
 ) -> np.ndarray:
     """Sample circular contiguous blocks; columns within each block remain adjacent."""
+    history_length = _integer("History length", history_length)
+    horizon_months = _integer("Horizon months", horizon_months)
+    block_length = _integer("Block length", block_length)
+    simulations = _integer("Simulation count", simulations)
+    seed = _integer("Forecast seed", seed, minimum=0)
     if history_length < block_length:
         raise ValueError("History is shorter than the selected block length.")
-    if horizon_months < 1 or simulations < 1:
-        raise ValueError("Horizon and simulation count must be positive.")
     rng = np.random.default_rng(seed)
     blocks = (horizon_months + block_length - 1) // block_length
     starts = rng.integers(0, history_length, size=(simulations, blocks))
@@ -172,7 +202,10 @@ def sample_block_indices(
 
 
 def _normalized_values(values: Mapping[str, float]) -> tuple[tuple[str, ...], np.ndarray]:
-    normalized = {str(symbol).strip().upper(): float(value) for symbol, value in values.items()}
+    normalized = {
+        str(symbol).strip().upper(): _finite_number(f"Holding value for {symbol}", value)
+        for symbol, value in values.items()
+    }
     if not normalized or any(value < 0 for value in normalized.values()):
         raise ValueError("Holding values must include nonnegative values for at least one symbol.")
     symbols = tuple(sorted(symbol for symbol, value in normalized.items() if value > 0))
@@ -247,7 +280,8 @@ def run_block_bootstrap(request: BootstrapRequest) -> BootstrapResult:
     """Bootstrap observed joint monthly returns; no expected return is imposed."""
     assumptions = request.assumptions
     symbols, starting_holdings = _normalized_values(request.holding_values)
-    if request.cash < 0:
+    starting_cash = _finite_number("Cash", request.cash)
+    if starting_cash < 0:
         raise ValueError("Cash cannot be negative.")
     returns, benchmark, proxies, warnings = _prepare_returns(request, symbols)
     months = assumptions.horizon_years * 12
@@ -257,10 +291,10 @@ def run_block_bootstrap(request: BootstrapRequest) -> BootstrapResult:
     sampled = returns.to_numpy(dtype=float)[indices]
     target_weights = starting_holdings / starting_holdings.sum()
     holdings = np.broadcast_to(starting_holdings, (assumptions.simulations, len(symbols))).copy()
-    total_start = float(starting_holdings.sum() + request.cash)
+    total_start = float(starting_holdings.sum() + starting_cash)
     if total_start <= 0:
         raise ValueError("The forecast requires a positive starting value.")
-    cash = np.full(assumptions.simulations, float(request.cash))
+    cash = np.full(assumptions.simulations, starting_cash)
     paths = np.empty((assumptions.simulations, months + 1), dtype=float)
     paths[:, 0] = total_start
     holding_return_pnl = np.zeros_like(holdings)
@@ -287,6 +321,8 @@ def run_block_bootstrap(request: BootstrapRequest) -> BootstrapResult:
         if rebalance_every is not None and (month + 1) % rebalance_every == 0:
             holdings = holdings.sum(axis=1)[:, None] * target_weights
         paths[:, month + 1] = holdings.sum(axis=1) + cash
+    if not np.isfinite(paths).all():
+        raise ValueError("Bootstrap assumptions produced nonfinite simulated values.")
 
     columns = [f"P{percentile}" for percentile in BOOTSTRAP_PERCENTILES]
     monthly_percentiles = pd.DataFrame(

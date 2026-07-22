@@ -107,6 +107,30 @@ def test_contributions_inflation_and_fees() -> None:
     assert inflation.probability_real_loss == 1
 
 
+@pytest.mark.parametrize(
+    "assumptions",
+    [
+        lambda: BootstrapAssumptions(1, annual_inflation=float("nan")),
+        lambda: BootstrapAssumptions(1, annual_inflation=float("inf")),
+        lambda: BootstrapAssumptions(1, annual_inflation=True),
+        lambda: BootstrapAssumptions(1, monthly_contribution=float("nan")),
+        lambda: BootstrapAssumptions(1, annual_fee=True),
+        lambda: BootstrapAssumptions(True),
+        lambda: BootstrapAssumptions(1, simulations=True),
+        lambda: BootstrapAssumptions(1, target_value=float("inf")),
+    ],
+)
+def test_bootstrap_assumptions_reject_boolean_and_nonfinite_values(assumptions) -> None:
+    with pytest.raises(ValueError):
+        assumptions()
+
+
+@pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
+def test_bootstrap_request_rejects_invalid_holding_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        run_block_bootstrap(_request(_returns(36, AAA=0.0), values={"AAA": value}))
+
+
 def test_rebalancing_changes_holding_level_outcomes() -> None:
     a = np.tile([1.0, 0.0, 0.0], 12)
     b = np.tile([0.0, 1.0, 0.0], 12)

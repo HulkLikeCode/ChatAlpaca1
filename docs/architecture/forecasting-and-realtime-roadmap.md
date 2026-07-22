@@ -89,6 +89,8 @@ planning projection's lognormal expected return.
 
 The simulation supports deterministic seeds, configurable counts, 1–10 year horizons, monthly
 contributions, constant inflation, annual fees, and monthly, quarterly, annual, or no rebalancing.
+Boolean and nonfinite numerical assumptions and starting values are rejected before sampling or
+nominal/real loss calculation.
 Insufficient holding histories require an explicit proxy with adequate overlapping history. Proxy
 substitution is disclosed and lowers sufficiency even when the joint history remains usable.
 
@@ -160,7 +162,7 @@ satisfaction, and December month-end timing. Inherited-account RMDs remain out o
 Taxable basis is approximated as remaining FIFO security basis plus taxable cash and may exceed
 market value; withdrawals reduce it proportionally. Social Security uses a fixed configured taxable
 fraction rather than provisional-income rules. Unspent outside income and net RMD surplus remain
-zero-return taxable household cash until the next configured rebalance. Model `1.2.0` keeps that
+zero-return taxable household cash until the next configured rebalance. Model `1.3.0` keeps that
 cash spendable: current net outside income and net RMD proceeds fund spending first, then prior
 retained cash, then additional withdrawals. RMDs are calculated, executed, taxed, and deposited net
 into household cash once before that additional-withdrawal loop. Retained cash remains in
@@ -180,6 +182,12 @@ Household assets reconcile separately from unpaid shortfall. Gross account withd
 transfers and therefore cancel from the household identity; withdrawal tax and spending actually
 funded reduce household assets. Unpaid shortfall equals required obligations less obligations
 actually funded and is not included in ending household value.
+
+Model `1.3.0` refuses withdrawal-sensitive results while any in-scope account remains `unknown`;
+the account must first be classified as taxable, Traditional IRA, or Roth IRA. Boolean and
+nonfinite numerical profile, account, tax, spending-event, income, fee, and return-assumption inputs
+are rejected. Each one-time event exposes its resolved nearest monthly model step and discloses that
+intra-month timing is not modeled. Existing saved `1.2.0` results retain their original version.
 
 ## Real-time monitoring
 

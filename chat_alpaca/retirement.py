@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import date
+from numbers import Integral, Real
 from typing import Literal
 
 import numpy as np
@@ -36,13 +37,39 @@ from chat_alpaca.rmd_tables import RMD_TABLE_VERSION, lifetime_divisor
 from chat_alpaca.scenarios import DatasetReference, ledger_state_hash
 
 RETIREMENT_MODEL_TYPE = "long_horizon_retirement"
-RETIREMENT_MODEL_VERSION = "1.2.0"
+RETIREMENT_MODEL_VERSION = "1.3.0"
 ACCOUNT_TYPES = ("traditional_ira", "roth_ira", "taxable", "unknown")
+UNKNOWN_ACCOUNT_ERROR = (
+    "Retirement withdrawal and tax calculations require every in-scope account to be classified "
+    "as taxable, Traditional IRA, or Roth IRA."
+)
+SPENDING_EVENT_TIMING_DISCLOSURE = (
+    "One-time spending events are assigned to the nearest monthly model step; intra-month timing "
+    "is not modeled."
+)
 RETAINED_CASH_DISCLOSURE = (
     "Retained net outside-income and RMD surplus remains zero-return household cash until the "
     "next configured rebalance, but remains available to fund subsequent spending before account "
     "withdrawals."
 )
+
+
+def _finite_number(name: str, value: object) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite number and cannot be Boolean.")
+    normalized = float(value)
+    if not np.isfinite(normalized):
+        raise ValueError(f"{name} must be finite.")
+    return normalized
+
+
+def _integer(name: str, value: object, *, minimum: int = 1) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"{name} must be an integer and cannot be Boolean.")
+    normalized = int(value)
+    if normalized < minimum:
+        raise ValueError(f"{name} must be at least {minimum}.")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -62,30 +89,36 @@ class RetirementProfile:
     spouse_is_sole_beneficiary: bool = False
 
     def __post_init__(self) -> None:
-        if self.current_age < 0:
+        current_age = _finite_number("Current age", self.current_age)
+        horizon = _integer("Retirement planning horizon", self.planning_horizon_years)
+        spending = _finite_number("Fixed real annual spending", self.fixed_real_annual_spending)
+        inflation = _finite_number("Annual inflation", self.annual_inflation)
+        contribution = _finite_number("Contribution amount", self.contribution_amount)
+        if current_age < 0:
             raise ValueError("Current age cannot be negative.")
-        if not 20 <= self.planning_horizon_years <= 40:
+        if not 20 <= horizon <= 40:
             raise ValueError("Retirement planning horizon must be between 20 and 40 years.")
         if (self.planned_retirement_age is None) == (self.planned_retirement_date is None):
             raise ValueError("Provide either a planned retirement age or date, but not both.")
-        if (
-            self.planned_retirement_age is not None
-            and self.planned_retirement_age < self.current_age
-        ):
-            raise ValueError("Planned retirement age cannot precede current age.")
+        if self.planned_retirement_age is not None:
+            retirement_age = _finite_number("Planned retirement age", self.planned_retirement_age)
+            if retirement_age < current_age:
+                raise ValueError("Planned retirement age cannot precede current age.")
         if (
             self.planned_retirement_date is not None
             and self.planned_retirement_date < self.as_of_date
         ):
             raise ValueError("Planned retirement date cannot precede the as-of date.")
-        if self.fixed_real_annual_spending < 0 or self.contribution_amount < 0:
+        if spending < 0 or contribution < 0:
             raise ValueError("Spending and contributions cannot be negative.")
-        if self.annual_inflation <= -1:
+        if inflation <= -1:
             raise ValueError("Inflation must be greater than -100%.")
         if self.contribution_frequency not in {"monthly", "annual"}:
             raise ValueError("Contribution frequency must be monthly or annual.")
-        if self.target_estate_value is not None and self.target_estate_value < 0:
-            raise ValueError("Target estate value cannot be negative.")
+        if self.target_estate_value is not None:
+            target = _finite_number("Target estate value", self.target_estate_value)
+            if target < 0:
+                raise ValueError("Target estate value cannot be negative.")
         if self.spouse_is_sole_beneficiary and self.spouse_date_of_birth is None:
             raise ValueError("A sole-beneficiary spouse requires the spouse's date of birth.")
 
@@ -115,19 +148,27 @@ class RetirementAccount:
     def __post_init__(self) -> None:
         if self.account_type not in ACCOUNT_TYPES:
             raise ValueError(f"Unsupported account type: {self.account_type}.")
-        if self.balance < 0:
+        balance = _finite_number("Account balance", self.balance)
+        if balance < 0:
             raise ValueError("Account balances cannot be negative.")
         if self.taxable_cost_basis is not None:
             if self.account_type != "taxable":
                 raise ValueError("Taxable cost basis applies only to taxable accounts.")
-            if self.taxable_cost_basis < 0:
+            if _finite_number("Taxable cost basis", self.taxable_cost_basis) < 0:
                 raise ValueError("Taxable cost basis cannot be negative.")
-        if self.prior_december_31_balance is not None and self.prior_december_31_balance < 0:
-            raise ValueError("Prior December 31 balance cannot be negative.")
-        if self.allocation is not None and (
-            not self.allocation or any(value < 0 for value in self.allocation.values())
-        ):
-            raise ValueError("Account allocation weights must be nonnegative and nonempty.")
+        if self.prior_december_31_balance is not None:
+            prior_balance = _finite_number(
+                "Prior December 31 balance", self.prior_december_31_balance
+            )
+            if prior_balance < 0:
+                raise ValueError("Prior December 31 balance cannot be negative.")
+        if self.allocation is not None:
+            weights = [
+                _finite_number(f"Account allocation weight for {symbol}", value)
+                for symbol, value in self.allocation.items()
+            ]
+            if not weights or any(value < 0 for value in weights):
+                raise ValueError("Account allocation weights must be nonnegative and nonempty.")
 
 
 @dataclass(frozen=True)
@@ -144,22 +185,31 @@ class OutsideIncome:
     def __post_init__(self) -> None:
         if self.kind not in {"social_security", "pension", "other"}:
             raise ValueError("Outside income kind must be social_security, pension, or other.")
-        if self.annual_real_amount < 0:
+        amount = _finite_number("Outside income annual real amount", self.annual_real_amount)
+        if amount < 0:
             raise ValueError("Outside income cannot be negative.")
         if (self.start_age is None) == (self.start_date is None):
             raise ValueError("Provide either an outside-income start age or date, but not both.")
-        if self.start_age is not None and self.start_age < 0:
-            raise ValueError("Outside-income start age cannot be negative.")
-        if (
-            self.end_age is not None
-            and self.start_age is not None
-            and self.end_age < self.start_age
-        ):
+        if self.start_age is not None:
+            start_age = _finite_number("Outside-income start age", self.start_age)
+            if start_age < 0:
+                raise ValueError("Outside-income start age cannot be negative.")
+        if self.end_age is not None:
+            end_age = _finite_number("Outside-income end age", self.end_age)
+        else:
+            end_age = None
+        if self.end_age is not None and self.start_age is not None and end_age < self.start_age:
             raise ValueError("Outside-income end age cannot precede its start age.")
-        if self.annual_cola is not None and self.annual_cola <= -1:
-            raise ValueError("Outside-income COLA must be greater than -100%.")
-        if self.taxable_fraction is not None and not 0 <= self.taxable_fraction <= 1:
-            raise ValueError("Outside-income taxable fraction must be between zero and one.")
+        if self.annual_cola is not None:
+            cola = _finite_number("Outside-income COLA", self.annual_cola)
+            if cola <= -1:
+                raise ValueError("Outside-income COLA must be greater than -100%.")
+        if self.taxable_fraction is not None:
+            taxable_fraction = _finite_number(
+                "Outside-income taxable fraction", self.taxable_fraction
+            )
+            if not 0 <= taxable_fraction <= 1:
+                raise ValueError("Outside-income taxable fraction must be between zero and one.")
 
 
 @dataclass(frozen=True)
@@ -169,8 +219,18 @@ class SpendingEvent:
     age: float
 
     def __post_init__(self) -> None:
-        if self.real_amount < 0 or self.age < 0:
+        amount = _finite_number("One-time spending amount", self.real_amount)
+        age = _finite_number("One-time spending age", self.age)
+        if amount < 0 or age < 0:
             raise ValueError("One-time spending amount and age cannot be negative.")
+
+    def resolved_model_month(self, profile: RetirementProfile) -> int:
+        month = round((self.age - profile.current_age) * 12)
+        if not 0 <= month < profile.planning_horizon_years * 12:
+            raise ValueError(
+                f"One-time spending event {self.name} must fall within the planning horizon."
+            )
+        return month
 
 
 @dataclass(frozen=True)
@@ -185,7 +245,8 @@ class RetirementTaxAssumptions:
 
     def __post_init__(self) -> None:
         for name, value in asdict(self).items():
-            if not 0 <= value <= 1:
+            rate = _finite_number(name.replace("_", " ").title(), value)
+            if not 0 <= rate <= 1:
                 raise ValueError(f"{name.replace('_', ' ').title()} must be between zero and one.")
 
 
@@ -201,7 +262,6 @@ class RetirementAssumptions:
     withdrawal_order: tuple[str, ...] = (
         "taxable",
         "traditional_ira",
-        "unknown",
         "roth_ira",
     )
     distribution: Literal["normal", "student_t"] = "normal"
@@ -214,13 +274,25 @@ class RetirementAssumptions:
     def __post_init__(self) -> None:
         if self.engine not in {"historical_block_bootstrap", "parametric"}:
             raise ValueError("Retirement engine must be historical_block_bootstrap or parametric.")
-        if self.simulations < 1:
-            raise ValueError("At least one simulation is required.")
-        if self.block_length not in {3, 6, 12}:
+        _integer("Retirement simulation count", self.simulations)
+        _integer("Retirement seed", self.seed, minimum=0)
+        block_length = _integer("Retirement block length", self.block_length)
+        minimum_history = _integer("Retirement minimum history", self.minimum_history_months)
+        annual_fee = _finite_number("Retirement annual fee", self.annual_fee)
+        expected_shift = _finite_number(
+            "Retirement expected-return shift", self.expected_return_shift
+        )
+        volatility_multiplier = _finite_number(
+            "Retirement volatility multiplier", self.volatility_multiplier
+        )
+        correlation_multiplier = _finite_number(
+            "Retirement correlation multiplier", self.correlation_multiplier
+        )
+        if block_length not in {3, 6, 12}:
             raise ValueError("Block length must be 3, 6, or 12 months.")
-        if self.minimum_history_months < self.block_length:
+        if minimum_history < block_length:
             raise ValueError("Minimum history cannot be shorter than the selected block.")
-        if not 0 <= self.annual_fee < 1:
+        if not 0 <= annual_fee < 1:
             raise ValueError("Annual fee must be between zero and one.")
         if self.rebalancing not in REBALANCE_FREQUENCIES:
             raise ValueError("Unsupported rebalancing frequency.")
@@ -231,11 +303,16 @@ class RetirementAssumptions:
         if any(item not in ACCOUNT_TYPES for item in self.withdrawal_order):
             raise ValueError("Withdrawal order contains an unsupported account type.")
         if self.distribution == "student_t":
-            if self.degrees_of_freedom is None or self.degrees_of_freedom <= 2:
+            if (
+                self.degrees_of_freedom is None
+                or _finite_number("Student's t degrees of freedom", self.degrees_of_freedom) <= 2
+            ):
                 raise ValueError("Student's t degrees of freedom must be greater than two.")
         elif self.degrees_of_freedom is not None:
             raise ValueError("Degrees of freedom apply only to Student's t returns.")
-        if self.volatility_multiplier <= 0 or not 0 <= self.correlation_multiplier <= 1:
+        if expected_shift <= -1:
+            raise ValueError("Expected-return shift must be greater than -100%.")
+        if volatility_multiplier <= 0 or not 0 <= correlation_multiplier <= 1:
             raise ValueError("Volatility must be positive and correlation multiplier 0–1.")
 
 
@@ -255,6 +332,17 @@ class RetirementRequest:
     user_overrides: Mapping[str, CapitalMarketAssumption | Mapping[str, object]] | None = None
     dataset_ids: tuple[int, ...] = ()
     source_coverage: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        for symbol, value in self.holding_values.items():
+            _finite_number(f"Retirement holding value for {symbol}", value)
+        if self.contribution_allocation is not None:
+            for account_type, value in self.contribution_allocation.items():
+                weight = _finite_number(f"Contribution allocation weight for {account_type}", value)
+                if weight < 0:
+                    raise ValueError("Contribution allocation weights cannot be negative.")
+        for event in self.spending_events:
+            event.resolved_model_month(self.profile)
 
 
 @dataclass(frozen=True)
@@ -512,17 +600,25 @@ def aggregate_taxable_basis(portfolio: Portfolio, cash_balance: float | None = N
     return security_basis + (float(portfolio.cash) if cash_balance is None else float(cash_balance))
 
 
+def _require_classified_accounts(accounts: Sequence[RetirementAccount]) -> None:
+    if any(account.account_type == "unknown" for account in accounts):
+        raise ValueError(UNKNOWN_ACCOUNT_ERROR)
+
+
 def _simulate(
     request: RetirementRequest, sampled: np.ndarray, symbols: Sequence[str]
 ) -> RetirementResult:
     profile = request.profile
     assumptions = request.assumptions
     taxes = request.tax_assumptions
+    _require_classified_accounts(request.accounts)
     if not request.accounts or sum(account.balance for account in request.accounts) <= 0:
         raise ValueError("At least one retirement account must have a positive balance.")
     months = profile.planning_horizon_years * 12
     if sampled.ndim != 3 or sampled.shape[1:] != (months, len(symbols)):
         raise ValueError("Sampled returns do not match the retirement horizon and holdings.")
+    if not np.isfinite(sampled).all():
+        raise ValueError("Retirement return inputs must be finite.")
     simulations = sampled.shape[0]
     accounts = request.accounts
     balances = np.broadcast_to(
@@ -715,7 +811,7 @@ def _simulate(
             one_time_spending = 0.0
             age = profile.current_age + month / 12
             for event in request.spending_events:
-                event_month = round((event.age - profile.current_age) * 12)
+                event_month = event.resolved_model_month(profile)
                 if event_month == month:
                     one_time_spending += event.real_amount * inflation_factor
             spending = recurring_spending + one_time_spending
@@ -773,7 +869,7 @@ def _simulate(
                         gain_fraction = np.where(has_basis, embedded_gain, assumed)
                         effective_rate = taxes.capital_gains_rate * gain_fraction
                     else:
-                        effective_rate = np.full(simulations, taxes.unknown_account_withdrawal_rate)
+                        raise ValueError(UNKNOWN_ACCOUNT_ERROR)
                     required_gross = remaining / np.maximum(1 - effective_rate, 1e-12)
                     gross = np.minimum(balances[:, index], required_gross)
                     tax = gross * effective_rate
@@ -927,7 +1023,10 @@ def _simulate(
         "tax": asdict(taxes),
         "accounts": [asdict(account) for account in accounts],
         "outside_income": [asdict(item) for item in request.outside_income],
-        "spending_events": [asdict(item) for item in request.spending_events],
+        "spending_events": [
+            {**asdict(item), "resolved_model_month": item.resolved_model_month(profile)}
+            for item in request.spending_events
+        ],
         "contribution_allocation": dict(request.contribution_allocation or {}),
     }
     limitations = (
@@ -943,6 +1042,7 @@ def _simulate(
         RETAINED_CASH_DISCLOSURE,
         "Account-specific allocations are supported; accounts without one use the household allocation.",
         "Fixed real spending is inflation adjusted; no guardrail or percentage-spending strategy is modeled.",
+        SPENDING_EVENT_TIMING_DISCLOSURE,
         "Return history and parametric assumptions may not represent future regimes or unprecedented events.",
     )
     return RetirementResult(
@@ -1000,6 +1100,7 @@ def _simulate(
 
 def run_retirement_forecast(request: RetirementRequest) -> RetirementResult:
     """Run a 20–40 year account-aware accumulation and fixed-real-spending forecast."""
+    _require_classified_accounts(request.accounts)
     sampled, symbols, history, proxies, warnings = _return_paths(request)
     result = _simulate(request, sampled, symbols)
     coverage = {
@@ -1191,6 +1292,7 @@ def retirement_sensitivity(
 
 def historical_sequence_replay(request: RetirementRequest) -> HistoricalReplayResult:
     """Replay every complete rolling historical sequence without random resampling."""
+    _require_classified_accounts(request.accounts)
     symbols, _ = _normalized_values(request.holding_values)
     common = BootstrapRequest(
         request.holding_values,

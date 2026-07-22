@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from chat_alpaca.models import MarketDataset, Portfolio
 from chat_alpaca.retirement import (
     RETIREMENT_MODEL_TYPE,
+    SPENDING_EVENT_TIMING_DISCLOSURE,
+    UNKNOWN_ACCOUNT_ERROR,
     OutsideIncome,
     RetirementAccount,
     RetirementAssumptions,
@@ -88,7 +90,7 @@ def test_accumulation_period_and_retirement_transition() -> None:
     assert result.nominal_monthly_percentiles.loc[119, "P50"] == pytest.approx(111_900)
     assert result.retirement_date_value_distribution["P50"] == pytest.approx(112_000)
     assert result.nominal_monthly_percentiles.loc[121, "P50"] == pytest.approx(111_000)
-    assert result.model_version == "1.2.0"
+    assert result.model_version == "1.3.0"
 
 
 def test_fixed_real_spending_inflation_and_real_nominal_reporting() -> None:
@@ -142,36 +144,19 @@ def test_retirement_and_social_security_support_calendar_dates() -> None:
     assert result.terminal_values == pytest.approx(np.full(4, 512_000))
 
 
-def test_traditional_roth_taxable_and_withdrawal_ordering() -> None:
+def test_unknown_account_refuses_withdrawal_sensitive_calculation() -> None:
     accounts = (
         RetirementAccount("Traditional", "traditional_ira", 100_000),
         RetirementAccount("Roth", "roth_ira", 100_000),
         RetirementAccount("Taxable", "taxable", 100_000),
         RetirementAccount("Unknown", "unknown", 100_000),
     )
-    result = run_retirement_forecast(
-        _request(
-            spending=12_000,
-            accounts=accounts,
-            taxes=RetirementTaxAssumptions(
-                ordinary_income_rate=0.20,
-                capital_gains_rate=0.10,
-                dividend_tax_rate=0,
-                taxable_realization_fraction=0.50,
-                unknown_account_withdrawal_rate=0.25,
-            ),
-            assumptions=RetirementAssumptions(
-                simulations=4,
-                withdrawal_order=("taxable", "traditional_ira", "unknown", "roth_ira"),
-            ),
-        )
-    )
+    request = _request(spending=12_000, accounts=accounts)
 
-    assert result.withdrawals_by_account_type["taxable"]["mean"] == pytest.approx(100_000)
-    assert result.withdrawals_by_account_type["traditional_ira"]["mean"] == pytest.approx(100_000)
-    assert result.withdrawals_by_account_type["unknown"]["mean"] > 0
-    assert result.withdrawals_by_account_type["roth_ira"]["mean"] == pytest.approx(0)
-    assert result.lifetime_taxes_estimate["mean"] > 0
+    with pytest.raises(ValueError, match=UNKNOWN_ACCOUNT_ERROR):
+        run_retirement_forecast(request)
+    with pytest.raises(ValueError, match=UNKNOWN_ACCOUNT_ERROR):
+        historical_sequence_replay(request)
 
 
 def test_roth_is_tax_free_and_traditional_withdrawals_are_tax_deferred_then_ordinary() -> None:
@@ -216,6 +201,51 @@ def test_one_time_spending_target_estate_and_worst_decile_outputs() -> None:
     assert {"early_retirement_return", "terminal_real", "total_shortfall"} <= set(
         result.worst_decile_scenarios
     )
+    assert result.assumptions["spending_events"] == [
+        {"name": "Roof", "real_amount": 20_000, "age": 70, "resolved_model_month": 60}
+    ]
+    assert SPENDING_EVENT_TIMING_DISCLOSURE in result.limitations
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        lambda: RetirementProfile(float("nan"), 20, 12_000, planned_retirement_age=65),
+        lambda: RetirementProfile(65, 20, float("inf"), planned_retirement_age=65),
+        lambda: RetirementProfile(65, 20, 12_000, planned_retirement_age=65, annual_inflation=True),
+        lambda: RetirementProfile(
+            65, 20, 12_000, planned_retirement_age=65, contribution_amount=float("nan")
+        ),
+    ],
+)
+def test_retirement_profile_rejects_boolean_and_nonfinite_inputs(profile) -> None:
+    with pytest.raises(ValueError):
+        profile()
+
+
+@pytest.mark.parametrize(
+    "input_factory",
+    [
+        lambda: RetirementAccount("Taxable", "taxable", float("nan")),
+        lambda: RetirementAccount("Taxable", "taxable", 100, taxable_cost_basis=True),
+        lambda: OutsideIncome("Pension", "pension", float("inf"), 65),
+        lambda: OutsideIncome("Pension", "pension", 100, True),
+        lambda: SpendingEvent("Roof", float("nan"), 70),
+        lambda: SpendingEvent("Roof", 100, float("inf")),
+        lambda: RetirementTaxAssumptions(ordinary_income_rate=float("nan")),
+        lambda: RetirementAssumptions(simulations=True),
+        lambda: RetirementAssumptions(annual_fee=float("inf")),
+        lambda: RetirementAssumptions(expected_return_shift=float("nan")),
+    ],
+)
+def test_retirement_nested_inputs_reject_boolean_and_nonfinite_values(input_factory) -> None:
+    with pytest.raises(ValueError):
+        input_factory()
+
+
+def test_one_time_spending_event_must_resolve_inside_model_horizon() -> None:
+    with pytest.raises(ValueError, match="within the planning horizon"):
+        _request(events=(SpendingEvent("Past", 1_000, 64),))
 
 
 def test_seed_reproducibility_and_sequence_risk_diagnostics() -> None:

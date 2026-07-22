@@ -256,6 +256,8 @@ and real loss probabilities, terminal distributions, downside percentiles, and h
 downside contribution. Holdings with inadequate histories require explicit documented proxies;
 proxy use lowers forecast sufficiency and joint row sampling preserves the proxy's observed market
 relationships.
+Boolean and nonfinite bootstrap assumptions, starting values, cash, inflation, fees, contributions,
+targets, counts, and seeds are rejected before sampling or loss-probability calculation.
 
 Circular sampling preserves within-block order and cross-asset row dependence and wraps from the
 end of observed history to its beginning; that boundary is a modeling assumption, not a claim that
@@ -319,8 +321,12 @@ sequence diagnostics, and worst-decile scenarios. Sensitivity covers retirement 
 inflation, Social Security timing, contributions, expected returns, tax rates, and withdrawal order.
 Rolling historical sequence replay is validation evidence only and never self-validates the model.
 Saved runs retain summaries and annual bands but exclude raw paths and per-scenario arrays.
-Retirement model version `1.2.0` reports separate household-asset and unpaid-shortfall
-reconciliations; unpaid shortfall is an unmet obligation and is never counted as an asset.
+Retirement model version `1.3.0` reports separate household-asset and unpaid-shortfall
+reconciliations; unpaid shortfall is an unmet obligation and is never counted as an asset. It
+refuses withdrawal and tax calculations until every in-scope account is classified as taxable,
+Traditional IRA, or Roth IRA. One-time spending outputs retain the resolved nearest monthly model
+step and disclose that intra-month timing is not modeled. Boolean and nonfinite numerical profile
+inputs are rejected. Existing saved `1.2.0` results retain their original version and outputs.
 
 Phase 11 adds non-executable hypothetical trade analysis in `chat_alpaca.hypothetical`. It copies
 ledger-derived cash and FIFO lots into isolated in-memory state, applies any number of proposed
