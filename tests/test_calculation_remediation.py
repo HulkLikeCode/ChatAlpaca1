@@ -20,12 +20,14 @@ from chat_alpaca.parametric_forecasting import (
 from chat_alpaca.realtime import FreshnessStatus, QuoteRecord, build_portfolio_pulse
 from chat_alpaca.reconstruction import ReconstructionRequest, reconstruct_from_coverage
 from chat_alpaca.retirement import (
+    RETAINED_CASH_DISCLOSURE,
     OutsideIncome,
     RetirementAccount,
     RetirementAssumptions,
     RetirementProfile,
     RetirementRequest,
     RetirementTaxAssumptions,
+    SpendingEvent,
     _simulate,
     aggregate_taxable_basis,
     applicable_rmd_start_age,
@@ -340,6 +342,152 @@ def test_excess_outside_income_is_retained_as_cash_until_rebalance() -> None:
     assert result.terminal_values[0] == pytest.approx(119_200)
     assert result.retained_household_cash["mean"] == pytest.approx(19_200)
     assert result.outside_income_contribution["mean"] == 0
+
+
+def test_retained_cash_funds_later_spending_before_any_account_withdrawal() -> None:
+    profile = RetirementProfile(65, 20, 0, planned_retirement_age=65, annual_inflation=0)
+    request = _retirement_request(
+        profile,
+        (RetirementAccount("Roth", "roth_ira", 100_000),),
+        outside=(OutsideIncome("Pension", "pension", 1_200, 65, end_age=66, taxable_fraction=0),),
+    )
+    request = RetirementRequest(
+        **{
+            **request.__dict__,
+            "spending_events": (SpendingEvent("Retained-cash spending", 1_200, 66),),
+        }
+    )
+
+    result = _simulate(request, np.zeros((1, 240, 2)), ("UP", "DOWN"))
+
+    assert result.nominal_monthly_percentiles.loc[12, "P50"] == pytest.approx(101_200)
+    assert result.nominal_monthly_percentiles.loc[13, "P50"] == pytest.approx(100_000)
+    assert result.withdrawals_by_account_type["roth_ira"]["mean"] == 0
+    assert result.lifetime_taxes_estimate["mean"] == 0
+    assert result.shortfall_distribution["P50"] == 0
+
+
+def test_retained_cash_earns_zero_return_until_rebalance() -> None:
+    profile = RetirementProfile(65, 20, 0, planned_retirement_age=65, annual_inflation=0)
+    request = _retirement_request(
+        profile,
+        (RetirementAccount("Roth", "roth_ira", 100_000),),
+        outside=(
+            OutsideIncome(
+                "One-month pension",
+                "pension",
+                1_200,
+                65,
+                end_age=65 + 1 / 12,
+                taxable_fraction=0,
+            ),
+        ),
+    )
+    sampled = np.zeros((1, 240, 2))
+    sampled[:, 1, :] = 1.0
+
+    result = _simulate(request, sampled, ("UP", "DOWN"))
+
+    # Only the invested account doubles in month two; the retained $100 does not.
+    assert result.nominal_monthly_percentiles.loc[2, "P50"] == pytest.approx(200_100)
+    assert RETAINED_CASH_DISCLOSURE in result.limitations
+
+
+def test_rmd_net_cash_covers_spending_once_without_an_additional_withdrawal() -> None:
+    profile = RetirementProfile(
+        current_age=75,
+        planned_retirement_age=75,
+        planning_horizon_years=20,
+        fixed_real_annual_spending=0,
+        as_of_date=date(2035, 1, 1),
+        annual_inflation=0,
+        owner_date_of_birth=date(1960, 1, 1),
+    )
+    account = RetirementAccount(
+        "Traditional",
+        "traditional_ira",
+        1_000,
+        prior_december_31_balance=24_600,
+    )
+    request = _retirement_request(profile, (account,))
+    request = RetirementRequest(
+        **{
+            **request.__dict__,
+            "spending_events": (SpendingEvent("December spending", 800, 75 + 11 / 12),),
+        }
+    )
+
+    result = _simulate(request, np.zeros((1, 240, 2)), ("UP", "DOWN"))
+
+    assert result.rmd_withdrawals["mean"] == pytest.approx(1_000)
+    assert result.withdrawals_by_account_type["traditional_ira"]["mean"] == pytest.approx(1_000)
+    assert result.cash_flow_reconciliation["gross_additional_withdrawals_mean"] == pytest.approx(0)
+    assert result.cash_flow_reconciliation["rmd_withdrawal_tax_mean"] == pytest.approx(200)
+    assert result.cash_flow_reconciliation["additional_withdrawal_tax_mean"] == 0
+    assert result.nominal_monthly_percentiles.loc[12, "P50"] == pytest.approx(0, abs=1e-8)
+    assert result.retained_household_cash["mean"] == pytest.approx(0, abs=1e-8)
+    assert result.shortfall_distribution["P50"] == 0
+    assert result.lifetime_taxes_estimate["mean"] == pytest.approx(200)
+
+
+def test_retirement_date_value_includes_spendable_retained_cash() -> None:
+    profile = RetirementProfile(
+        current_age=75,
+        planned_retirement_age=76,
+        planning_horizon_years=20,
+        fixed_real_annual_spending=0,
+        as_of_date=date(2035, 1, 1),
+        annual_inflation=0,
+        owner_date_of_birth=date(1960, 1, 1),
+    )
+    account = RetirementAccount(
+        "Traditional",
+        "traditional_ira",
+        1_000,
+        prior_december_31_balance=24_600,
+    )
+
+    result = _simulate(
+        _retirement_request(profile, (account,)),
+        np.zeros((1, 240, 2)),
+        ("UP", "DOWN"),
+    )
+
+    assert result.retirement_date_value_distribution["P50"] == pytest.approx(800)
+    assert result.terminal_values[0] == pytest.approx(800)
+
+
+def test_household_asset_and_shortfall_reconciliations_are_independent() -> None:
+    profile = RetirementProfile(65, 20, 1_200, planned_retirement_age=65, annual_inflation=0)
+    request = _retirement_request(
+        profile,
+        (RetirementAccount("Traditional", "traditional_ira", 10_000),),
+    )
+
+    result = _simulate(request, np.zeros((1, 240, 2)), ("UP", "DOWN"))
+    assets = result.cash_flow_reconciliation
+    shortfall = result.shortfall_reconciliation
+
+    reconciled_ending_assets = (
+        assets["beginning_household_assets_mean"]
+        + assets["investment_return_mean"]
+        - assets["fees_mean"]
+        - assets["dividend_tax_drag_mean"]
+        + assets["contributions_mean"]
+        + assets["gross_outside_income_mean"]
+        - assets["outside_income_tax_mean"]
+        - assets["recurring_spending_funded_mean"]
+        - assets["one_time_spending_funded_mean"]
+        - assets["withdrawal_tax_mean"]
+    )
+    ending_assets = assets["ending_invested_balances_mean"] + assets["ending_retained_cash_mean"]
+
+    assert reconciled_ending_assets == pytest.approx(ending_assets, abs=0.01)
+    assert assets["maximum_absolute_residual"] < 0.01
+    assert shortfall["required_spending_obligations_mean"] - shortfall[
+        "spending_obligations_funded_mean"
+    ] == pytest.approx(shortfall["unpaid_shortfall_mean"], abs=0.01)
+    assert shortfall["maximum_absolute_residual"] < 0.01
 
 
 def test_fixed_social_security_taxable_fraction_is_applied() -> None:

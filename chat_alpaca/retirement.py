@@ -36,8 +36,13 @@ from chat_alpaca.rmd_tables import RMD_TABLE_VERSION, lifetime_divisor
 from chat_alpaca.scenarios import DatasetReference, ledger_state_hash
 
 RETIREMENT_MODEL_TYPE = "long_horizon_retirement"
-RETIREMENT_MODEL_VERSION = "1.1.0"
+RETIREMENT_MODEL_VERSION = "1.2.0"
 ACCOUNT_TYPES = ("traditional_ira", "roth_ira", "taxable", "unknown")
+RETAINED_CASH_DISCLOSURE = (
+    "Retained net outside-income and RMD surplus remains zero-return household cash until the "
+    "next configured rebalance, but remains available to fund subsequent spending before account "
+    "withdrawals."
+)
 
 
 @dataclass(frozen=True)
@@ -273,6 +278,8 @@ class RetirementResult:
     outside_income_contribution: Mapping[str, float]
     retained_household_cash: Mapping[str, float]
     rmd_withdrawals: Mapping[str, float]
+    cash_flow_reconciliation: Mapping[str, float]
+    shortfall_reconciliation: Mapping[str, float]
     shortfall_distribution: Mapping[str, object]
     target_estate_probability: float | None
     sequence_risk_diagnostics: Mapping[str, object]
@@ -296,6 +303,8 @@ class RetirementResult:
             "outside_income_contribution": dict(self.outside_income_contribution),
             "retained_household_cash": dict(self.retained_household_cash),
             "rmd_withdrawals": dict(self.rmd_withdrawals),
+            "cash_flow_reconciliation": dict(self.cash_flow_reconciliation),
+            "shortfall_reconciliation": dict(self.shortfall_reconciliation),
             "shortfall_distribution": dict(self.shortfall_distribution),
             "target_estate_probability": self.target_estate_probability,
             "sequence_risk_diagnostics": dict(self.sequence_risk_diagnostics),
@@ -539,11 +548,25 @@ def _simulate(
     account_assets = balances[:, :, None] * account_asset_weights[None, :, :]
     paths = np.empty((simulations, months + 1))
     paths[:, 0] = balances.sum(axis=1)
+    beginning_household_assets = balances.sum(axis=1).copy()
     total_shortfall = np.zeros(simulations)
     lifetime_taxes = np.zeros(simulations)
     outside_used = np.zeros(simulations)
     retained_cash = np.zeros(simulations)
     total_rmd_withdrawals = np.zeros(simulations)
+    total_additional_withdrawals = np.zeros(simulations)
+    total_investment_return = np.zeros(simulations)
+    total_fees = np.zeros(simulations)
+    total_dividend_tax_drag = np.zeros(simulations)
+    total_contributions = np.zeros(simulations)
+    total_gross_outside_income = np.zeros(simulations)
+    total_outside_income_tax = np.zeros(simulations)
+    total_rmd_tax = np.zeros(simulations)
+    total_additional_withdrawal_tax = np.zeros(simulations)
+    total_recurring_spending_required = np.zeros(simulations)
+    total_one_time_spending_required = np.zeros(simulations)
+    total_recurring_spending_funded = np.zeros(simulations)
+    total_one_time_spending_funded = np.zeros(simulations)
     withdrawals = {kind: np.zeros(simulations) for kind in ACCOUNT_TYPES}
     first_depletion_month = np.full(simulations, np.nan)
     retirement_values: np.ndarray | None = None
@@ -586,12 +609,14 @@ def _simulate(
         month_end = pd.Timestamp(profile.as_of_date) + pd.offsets.MonthEnd(month + 1)
         surplus_this_month = np.zeros(simulations)
         if month == profile.retirement_month:
-            retirement_values = balances.sum(axis=1).copy()
+            retirement_values = balances.sum(axis=1) + retained_cash
         prior_total = balances.sum(axis=1)
         account_assets *= 1 + sampled[:, month, None, :]
         balances = account_assets.sum(axis=2)
+        investment_return = balances.sum(axis=1) - prior_total
+        total_investment_return += investment_return
         portfolio_return = np.divide(
-            balances.sum(axis=1) - prior_total,
+            investment_return,
             prior_total,
             out=np.zeros(simulations),
             where=prior_total > 0,
@@ -602,6 +627,8 @@ def _simulate(
             < profile.retirement_month + retirement_returns.shape[1]
         ):
             retirement_returns[:, month - profile.retirement_month] = portfolio_return
+        fee_amount = account_assets.sum(axis=(1, 2)) * monthly_fee
+        total_fees += fee_amount
         account_assets *= 1 - monthly_fee
         balances = account_assets.sum(axis=2)
         taxable_indices = [
@@ -614,6 +641,7 @@ def _simulate(
                 * taxes.dividend_tax_rate
             )
             lifetime_taxes += dividend_tax
+            total_dividend_tax_drag += dividend_tax
             taxable_total = balances[:, taxable_indices].sum(axis=1)
             for index in taxable_indices:
                 reduction = dividend_tax * np.divide(
@@ -656,6 +684,7 @@ def _simulate(
                 remaining_rmd = np.maximum(remaining_rmd - gross, 0)
                 tax = gross * taxes.ordinary_income_rate
                 lifetime_taxes += tax
+                total_rmd_tax += tax
                 withdrawals["traditional_ira"] += gross
                 total_rmd_withdrawals += gross
                 rmd_net += gross - tax
@@ -667,6 +696,7 @@ def _simulate(
                 else profile.contribution_amount / 12
             )
             balances += contribution * contribution_weights
+            total_contributions += contribution
             account_assets += (
                 contribution
                 * contribution_weights[None, :, None]
@@ -681,12 +711,16 @@ def _simulate(
             surplus_this_month = rmd_net
         else:
             inflation_factor = (1 + monthly_inflation) ** month
-            spending = profile.fixed_real_annual_spending / 12 * inflation_factor
+            recurring_spending = profile.fixed_real_annual_spending / 12 * inflation_factor
+            one_time_spending = 0.0
             age = profile.current_age + month / 12
             for event in request.spending_events:
                 event_month = round((event.age - profile.current_age) * 12)
                 if event_month == month:
-                    spending += event.real_amount * inflation_factor
+                    one_time_spending += event.real_amount * inflation_factor
+            spending = recurring_spending + one_time_spending
+            total_recurring_spending_required += recurring_spending
+            total_one_time_spending_required += one_time_spending
             outside_net = np.zeros(simulations)
             for income in request.outside_income:
                 start_month = _income_start_month(profile, income)
@@ -709,11 +743,16 @@ def _simulate(
                 )
                 income_tax = gross * fraction * taxes.ordinary_income_rate
                 lifetime_taxes += income_tax
+                total_gross_outside_income += gross
+                total_outside_income_tax += income_tax
                 outside_net += gross - income_tax
-            available_income = outside_net + rmd_net
+            current_cash = outside_net + rmd_net
             outside_used += np.minimum(outside_net, spending)
-            surplus_this_month = np.maximum(available_income - spending, 0)
-            remaining = np.maximum(spending - available_income, 0)
+            surplus_this_month = np.maximum(current_cash - spending, 0)
+            remaining = np.maximum(spending - current_cash, 0)
+            retained_used = np.minimum(retained_cash, remaining)
+            retained_cash -= retained_used
+            remaining = np.where(remaining - retained_used > 1e-8, remaining - retained_used, 0)
             for kind in order:
                 for index, account in enumerate(accounts):
                     if account.account_type != kind:
@@ -754,9 +793,16 @@ def _simulate(
                             out=np.zeros(simulations),
                             where=prior_balance > 0,
                         )
-                    remaining = np.maximum(remaining - net, 0)
+                    remaining = np.where(remaining - net > 1e-8, remaining - net, 0)
                     lifetime_taxes += tax
+                    total_additional_withdrawal_tax += tax
+                    total_additional_withdrawals += gross
                     withdrawals[kind] += gross
+            spending_funded = spending - remaining
+            recurring_funded = np.minimum(spending_funded, recurring_spending)
+            one_time_funded = np.maximum(spending_funded - recurring_funded, 0)
+            total_recurring_spending_funded += recurring_funded
+            total_one_time_spending_funded += one_time_funded
             depleted = (remaining > 1e-8) & np.isnan(first_depletion_month)
             first_depletion_month[depleted] = month
             total_shortfall += remaining
@@ -796,6 +842,47 @@ def _simulate(
     real_paths = paths / inflation_factors[None, :]
     terminal = paths[:, -1].copy()
     real_terminal = real_paths[:, -1]
+    total_spending_funded = total_recurring_spending_funded + total_one_time_spending_funded
+    total_spending_required = total_recurring_spending_required + total_one_time_spending_required
+    total_withdrawal_tax = total_rmd_tax + total_additional_withdrawal_tax
+    reconciled_assets = (
+        beginning_household_assets
+        + total_investment_return
+        - total_fees
+        - total_dividend_tax_drag
+        + total_contributions
+        + total_gross_outside_income
+        - total_outside_income_tax
+        - total_spending_funded
+        - total_withdrawal_tax
+    )
+    asset_residual = reconciled_assets - terminal
+    shortfall_residual = total_spending_required - total_spending_funded - total_shortfall
+    cash_flow_reconciliation = {
+        "beginning_household_assets_mean": float(beginning_household_assets.mean()),
+        "investment_return_mean": float(total_investment_return.mean()),
+        "fees_mean": float(total_fees.mean()),
+        "dividend_tax_drag_mean": float(total_dividend_tax_drag.mean()),
+        "contributions_mean": float(total_contributions.mean()),
+        "gross_outside_income_mean": float(total_gross_outside_income.mean()),
+        "outside_income_tax_mean": float(total_outside_income_tax.mean()),
+        "recurring_spending_funded_mean": float(total_recurring_spending_funded.mean()),
+        "one_time_spending_funded_mean": float(total_one_time_spending_funded.mean()),
+        "withdrawal_tax_mean": float(total_withdrawal_tax.mean()),
+        "rmd_withdrawal_tax_mean": float(total_rmd_tax.mean()),
+        "additional_withdrawal_tax_mean": float(total_additional_withdrawal_tax.mean()),
+        "gross_rmd_withdrawals_mean": float(total_rmd_withdrawals.mean()),
+        "gross_additional_withdrawals_mean": float(total_additional_withdrawals.mean()),
+        "ending_invested_balances_mean": float(balances.sum(axis=1).mean()),
+        "ending_retained_cash_mean": float(retained_cash.mean()),
+        "maximum_absolute_residual": float(np.max(np.abs(asset_residual))),
+    }
+    shortfall_reconciliation = {
+        "required_spending_obligations_mean": float(total_spending_required.mean()),
+        "spending_obligations_funded_mean": float(total_spending_funded.mean()),
+        "unpaid_shortfall_mean": float(total_shortfall.mean()),
+        "maximum_absolute_residual": float(np.max(np.abs(shortfall_residual))),
+    }
     funded = total_shortfall <= 1e-8
     depletion_ages = (
         profile.current_age + first_depletion_month[~np.isnan(first_depletion_month)] / 12
@@ -853,7 +940,7 @@ def _simulate(
         "Roth IRA withdrawals are assumed qualified and tax free; qualification-date calculations are not modeled.",
         "Taxable withdrawals use aggregate FIFO security basis plus taxable cash when supplied; basis may exceed value and is reduced proportionally because detailed projected lots are not modeled.",
         "Social Security taxation uses the configured fixed taxable fraction rather than provisional-income rules.",
-        "Unspent outside income and net RMD surplus remain taxable household cash and are invested only at the next configured rebalance.",
+        RETAINED_CASH_DISCLOSURE,
         "Account-specific allocations are supported; accounts without one use the household allocation.",
         "Fixed real spending is inflation adjusted; no guardrail or percentage-spending strategy is modeled.",
         "Return history and parametric assumptions may not represent future regimes or unprecedented events.",
@@ -884,6 +971,8 @@ def _simulate(
             **_distribution_percentiles(total_rmd_withdrawals),
             "mean": float(total_rmd_withdrawals.mean()),
         },
+        cash_flow_reconciliation,
+        shortfall_reconciliation,
         {**_distribution(total_shortfall), **_distribution_percentiles(total_shortfall)},
         (
             float(np.mean(real_terminal >= profile.target_estate_value))
