@@ -262,6 +262,28 @@ def run_forecast(request: ForecastRequest) -> ProjectionResult:
     )
 
 
+def projection_calendar_dates(contract: LegacyForecastContract) -> pd.DatetimeIndex:
+    """Return timezone-free calendar labels for every modeled monthly step.
+
+    Month zero is the explicit confirmed valuation date when one exists. Otherwise, the UTC
+    generation date is the disclosed fallback. Each later modeled month is labeled at the end of
+    the corresponding following calendar month; labels do not participate in the simulation.
+    """
+    generated_at = contract.result_generated_at
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    fallback_date = generated_at.astimezone(timezone.utc).date()
+    starting_date = contract.source_valuation_date or fallback_date
+    starting_timestamp = pd.Timestamp(starting_date)
+    starting_period = starting_timestamp.to_period("M")
+    months = contract.assumptions.horizon_years * 12
+    month_ends = [
+        (starting_period + month).to_timestamp(how="end").normalize()
+        for month in range(1, months + 1)
+    ]
+    return pd.DatetimeIndex([starting_timestamp, *month_ends], name="Month date")
+
+
 def _validate_forecast_inputs(
     *,
     current_value: object,

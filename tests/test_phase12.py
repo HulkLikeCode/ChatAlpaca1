@@ -635,6 +635,41 @@ def test_market_context_discloses_components_without_a_score() -> None:
     assert not any("score" in column.lower() for column in result)
 
 
+@pytest.mark.parametrize(
+    ("levels", "expected"),
+    [
+        ([100.0] * 49, "insufficient history"),
+        ([100.0] * 49 + [50.0], "below 50-day average"),
+        ([100.0] * 50, "above 50-day average"),
+        ([100.0] * 49 + [150.0], "above 50-day average"),
+        ([10_000.0] + [100.0] * 49 + [150.0], "above 50-day average"),
+    ],
+)
+def test_market_context_trend_independent_boundaries(levels: list[float], expected: str) -> None:
+    # Independent reference arithmetic for the 50-level cases:
+    # below: (49*100 + 50)/50 = 99 and 50 < 99;
+    # equality: (50*100)/50 = 100 and the audited >= convention classifies equality as above;
+    # above: (49*100 + 150)/50 = 101 and 150 > 101. The 51-level case has the same
+    # 101 rolling mean only when the oldest 10,000 level is excluded from the final 50.
+    index = pd.bdate_range("2026-01-02", periods=len(levels))
+
+    result = market_context_metrics(pd.DataFrame({"SPY": levels}, index=index)).iloc[0]
+
+    assert result["Trend"] == expected
+
+
+def test_market_context_trend_uses_sorted_finite_positive_levels_and_dates() -> None:
+    index = pd.bdate_range("2026-01-02", periods=56)
+    levels = [np.nan, np.inf, -np.inf, 0.0, -1.0, 10_000.0, *([100.0] * 49), 150.0]
+    frame = pd.DataFrame({"SPY": levels}, index=index).iloc[::-1]
+
+    result = market_context_metrics(frame).iloc[0]
+
+    # The five missing/nonfinite/nonpositive observations are unavailable, the oldest usable
+    # level is outside the final 50 dated observations, and (49*100 + 150)/50 = 101 < 150.
+    assert result["Trend"] == "above 50-day average"
+
+
 def test_market_context_short_history_does_not_reuse_one_return_for_long_horizons() -> None:
     index = pd.to_datetime(["2026-01-02", "2026-01-05"])
 
