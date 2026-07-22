@@ -36,6 +36,7 @@ from chat_alpaca.forecasting import (
     ForecastRequest,
     ProjectionResult,
     build_forecast_request,
+    projection_calendar_dates,
     run_forecast,
 )
 from chat_alpaca.hypothetical import (
@@ -1225,11 +1226,7 @@ def render_forecast(
         f"method {contract.source_valuation_methodology} · generated "
         f"{contract.result_generated_at.isoformat()}."
     )
-    dates = pd.date_range(
-        pd.Timestamp.today().normalize() + pd.offsets.MonthEnd(1),
-        periods=horizon_years * 12,
-        freq="ME",
-    ).insert(0, pd.Timestamp.today().normalize())
+    dates = projection_calendar_dates(contract)
     percentile_data = result.monthly_percentiles
     figure = go.Figure()
     figure.add_trace(
@@ -1303,7 +1300,7 @@ def render_forecast(
     )
 
     annual = result.annual_percentiles.iloc[1:].reset_index()
-    annual.insert(1, "Calendar year", [date.today().year + year for year in annual["Year"]])
+    annual.insert(1, "Calendar year", [timestamp.year for timestamp in dates[12::12]])
     st.dataframe(
         annual,
         hide_index=True,

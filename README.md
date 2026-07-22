@@ -234,7 +234,9 @@ portfolio loading are coordinated by `chat_alpaca.bootstrap.initialize_applicati
 The session-only legacy planning projection has the explicit contract `legacy_projection / 1.0.0`.
 Each result records its assumptions, seed, simulation count, common confirmed source valuation date
 or disclosed fallback, valuation methodology, and generation timestamp. Boolean and nonfinite
-numeric inputs are rejected before simulation.
+numeric inputs are rejected before simulation. Calendar labels begin at that explicit source date,
+or at the UTC generation date for the disclosed fallback, and label each modeled monthly step at
+the end of the corresponding following calendar month. These labels do not change forecast paths.
 
 Phase 7 adds deterministic scenario analysis in `chat_alpaca.scenarios`. It supports broad-market,
 holding, sector, dividend, contribution, inflation, low-return, lost-decade, retirement-date, and
@@ -428,6 +430,9 @@ credential-free Streamlit render.
 
 The merged Phase 2 calculation-remediation evidence is preserved in the
 [Phase 2 acceptance record](docs/manual-tests/phase-2-calculation-remediation.md).
+The completed 127-row calculation audit, final evidence, limitations, and acceptance boundary are
+preserved in the
+[final calculation-audit acceptance record](docs/manual-tests/final-calculation-audit-acceptance.md).
 
 ## Deliberately deferred
 
