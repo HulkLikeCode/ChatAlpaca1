@@ -4,12 +4,22 @@ from datetime import date
 from decimal import Decimal
 
 import pandas as pd
+import pytest
 
+import chat_alpaca.analytics as analytics
+import chat_alpaca.reconstruction as reconstruction
+import chat_alpaca.reports as reports
+from chat_alpaca.analytics import (
+    consolidated_holdings,
+    performance_growth,
+    portfolio_gain_loss,
+)
 from chat_alpaca.models import HoldingLot, Portfolio, PortfolioTransaction
 from chat_alpaca.reports import (
     assemble_combined_performance_report,
     assemble_comparison_report,
     assemble_portfolio_card_reports,
+    build_portfolio_calculation_context,
     comparison_acquisition_plan,
     historical_symbol_universe,
     overlay_intraday_performance,
@@ -40,6 +50,79 @@ def _portfolio() -> Portfolio:
         )
     ]
     return portfolio
+
+
+def _reconstruction_fixture(count: int) -> tuple[list[Portfolio], pd.DataFrame, pd.DataFrame]:
+    index = pd.bdate_range("2025-01-02", periods=80)
+    closes = pd.DataFrame(index=index)
+    portfolios = []
+    for number in range(1, count + 1):
+        symbol = f"S{number:02d}"
+        closes[symbol] = [80.0 + number + day * 0.1 for day in range(len(index))]
+        portfolio = Portfolio(id=number, name=f"Portfolio {number}", cash=Decimal("1205"))
+        portfolio.holdings = [
+            HoldingLot(
+                symbol=symbol,
+                shares=Decimal("8"),
+                acquired_on=index[1].date(),
+                cost_basis=Decimal(str(80 + number)),
+            )
+        ]
+        portfolio.transactions = [
+            PortfolioTransaction(
+                id=number * 10 + 1,
+                transaction_date=index[0].date(),
+                kind="transfer",
+                action="Transfer",
+                cash_delta=Decimal("2000"),
+                source="test",
+            ),
+            PortfolioTransaction(
+                id=number * 10 + 2,
+                transaction_date=index[1].date(),
+                kind="buy",
+                action="Buy",
+                symbol=symbol,
+                quantity=Decimal("10"),
+                price=Decimal(str(80 + number)),
+                cash_delta=Decimal(str(-10 * (80 + number))),
+                source="test",
+            ),
+            PortfolioTransaction(
+                id=number * 10 + 3,
+                transaction_date=index[30].date(),
+                kind="sell",
+                action="Sell",
+                symbol=symbol,
+                quantity=Decimal("2"),
+                price=Decimal(str(84 + number)),
+                cash_delta=Decimal(str(2 * (84 + number))),
+                source="test",
+            ),
+            PortfolioTransaction(
+                id=number * 10 + 4,
+                transaction_date=index[45].date(),
+                kind="dividend",
+                action="Dividend",
+                symbol=symbol,
+                cash_delta=Decimal("5"),
+                source="test",
+            ),
+            PortfolioTransaction(
+                id=number * 10 + 5,
+                transaction_date=index[60].date(),
+                kind="interest",
+                action="Interest",
+                cash_delta=Decimal("2"),
+                source="test",
+            ),
+        ]
+        portfolios.append(portfolio)
+    benchmark = pd.DataFrame(
+        {"SPY": [400.0 + day * 0.2 for day in range(len(index))]},
+        index=index,
+    )
+    return portfolios, closes, benchmark
 
 
 def test_universe_and_acquisition_plan_own_adjustment_and_baseline_policy() -> None:
@@ -222,3 +305,218 @@ def test_comparison_report_assembles_series_metrics_and_missing_warning() -> Non
     assert list(report.metrics["Series"]) == ["Selected portfolios", "Example", "SPY"]
     assert any("MISSING" in warning for warning in report.warnings)
     assert report.coverage == "Usable comparison series: 3 of 4 requested."
+
+
+@pytest.mark.parametrize("portfolio_count", [2, 8, 20])
+def test_report_context_reconstructs_each_portfolio_once(portfolio_count: int, monkeypatch) -> None:
+    portfolios, closes, benchmark = _reconstruction_fixture(portfolio_count)
+    counts = {"typed": 0, "coverage": 0, "household": 0}
+    per_portfolio: dict[int, int] = {}
+    original_typed = reports._typed_reconstruction
+    original_coverage = analytics.reconstruct_from_coverage
+    original_household = reports.household_valuation
+    original_daily = reconstruction._daily_for_portfolio
+
+    def count_typed(*args, **kwargs):
+        counts["typed"] += 1
+        return original_typed(*args, **kwargs)
+
+    def count_coverage(*args, **kwargs):
+        counts["coverage"] += 1
+        return original_coverage(*args, **kwargs)
+
+    def count_household(*args, **kwargs):
+        counts["household"] += 1
+        return original_household(*args, **kwargs)
+
+    def count_daily(portfolio, *args, **kwargs):
+        per_portfolio[portfolio.id] = per_portfolio.get(portfolio.id, 0) + 1
+        return original_daily(portfolio, *args, **kwargs)
+
+    monkeypatch.setattr(reports, "_typed_reconstruction", count_typed)
+    monkeypatch.setattr(analytics, "reconstruct_from_coverage", count_coverage)
+    monkeypatch.setattr(reports, "household_valuation", count_household)
+    monkeypatch.setattr(reconstruction, "_daily_for_portfolio", count_daily)
+
+    context = build_portfolio_calculation_context(portfolios, closes)
+    assemble_combined_performance_report(
+        portfolios,
+        closes,
+        closes.index[10].date(),
+        closes.index[-1].date(),
+        benchmark,
+        calculation_context=context,
+    )
+    assemble_comparison_report(
+        portfolios,
+        closes,
+        benchmark,
+        closes.index[10].date(),
+        closes.index[-1].date(),
+        ("SPY",),
+        context,
+    )
+    assemble_portfolio_card_reports(
+        portfolios,
+        closes,
+        closes.index[10].date(),
+        closes.index[-1].date(),
+        context,
+    )
+    consolidated_holdings(
+        portfolios,
+        closes,
+        closes.index[10].date(),
+        closes.index[-1].date(),
+        benchmark,
+        household=context.household_valuation,
+    )
+
+    assert counts == {"typed": 1, "coverage": 1, "household": 1}
+    assert per_portfolio == {portfolio.id: 1 for portfolio in portfolios}
+
+
+def test_gain_loss_and_growth_share_reconstruction_without_mutation() -> None:
+    portfolios, closes, _ = _reconstruction_fixture(2)
+    closes_before = closes.copy(deep=True)
+    context = build_portfolio_calculation_context(portfolios, closes)
+    reconstruction_before = {
+        portfolio_id: item.daily.portfolio_value.copy(deep=True)
+        for portfolio_id, item in context.reconstruction.portfolios.items()
+    }
+
+    first_growth = performance_growth(portfolios[0], closes, context.reconstruction)
+    gain_loss = portfolio_gain_loss(
+        portfolios[0],
+        closes,
+        closes.index[10].date(),
+        closes.index[-1].date(),
+        context.reconstruction,
+        context.household_valuation.valuations[0],
+    )
+    second_growth = performance_growth(portfolios[0], closes, context.reconstruction)
+
+    assert gain_loss == portfolio_gain_loss(
+        portfolios[0], closes, closes.index[10].date(), closes.index[-1].date()
+    )
+    pd.testing.assert_series_equal(first_growth, second_growth, check_exact=True)
+    pd.testing.assert_frame_equal(closes, closes_before, check_exact=True)
+    for portfolio_id, expected in reconstruction_before.items():
+        pd.testing.assert_series_equal(
+            context.reconstruction.portfolios[portfolio_id].daily.portfolio_value,
+            expected,
+            check_exact=True,
+        )
+
+
+def test_context_outputs_exactly_match_independent_report_assembly() -> None:
+    portfolios, closes, benchmark = _reconstruction_fixture(2)
+    start = closes.index[10].date()
+    end = closes.index[-1].date()
+    context = build_portfolio_calculation_context(portfolios, closes)
+
+    shared = assemble_combined_performance_report(
+        portfolios,
+        closes,
+        start,
+        end,
+        benchmark,
+        calculation_context=context,
+    )
+    independent = assemble_combined_performance_report(portfolios, closes, start, end, benchmark)
+    assert shared == independent
+
+    shared_comparison = assemble_comparison_report(
+        portfolios, closes, benchmark, start, end, ("SPY",), context
+    )
+    independent_comparison = assemble_comparison_report(
+        portfolios, closes, benchmark, start, end, ("SPY",)
+    )
+    assert shared_comparison.warnings == independent_comparison.warnings
+    assert shared_comparison.coverage == independent_comparison.coverage
+    for shared_series, independent_series in zip(
+        shared_comparison.series, independent_comparison.series, strict=True
+    ):
+        pd.testing.assert_series_equal(shared_series, independent_series, check_exact=True)
+    pd.testing.assert_frame_equal(
+        shared_comparison.metrics, independent_comparison.metrics, check_exact=True
+    )
+
+
+def test_context_rejects_different_portfolios_and_price_datasets() -> None:
+    portfolios, closes, benchmark = _reconstruction_fixture(2)
+    context = build_portfolio_calculation_context(portfolios, closes)
+    start = closes.index[10].date()
+    end = closes.index[-1].date()
+
+    with pytest.raises(ValueError, match="different close-price dataset"):
+        assemble_comparison_report(
+            portfolios,
+            closes.copy(),
+            benchmark,
+            start,
+            end,
+            ("SPY",),
+            context,
+        )
+    with pytest.raises(ValueError, match="different portfolio selection"):
+        assemble_combined_performance_report(
+            portfolios[:1],
+            closes,
+            start,
+            end,
+            benchmark,
+            calculation_context=context,
+        )
+
+
+def test_new_context_reconstructs_after_transactions_or_closes_change(monkeypatch) -> None:
+    portfolios, closes, _ = _reconstruction_fixture(2)
+    calls = 0
+    original = reports._typed_reconstruction
+
+    def count_typed(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reports, "_typed_reconstruction", count_typed)
+    first = build_portfolio_calculation_context(portfolios, closes)
+    portfolios[0].transactions[0].cash_delta += Decimal("1")
+    second = build_portfolio_calculation_context(portfolios, closes)
+    changed_closes = closes.copy()
+    changed_closes.iloc[-1, 0] += 1.0
+    third = build_portfolio_calculation_context(portfolios, changed_closes)
+
+    assert calls == 3
+    assert first.reconstruction is not second.reconstruction
+    assert second.reconstruction is not third.reconstruction
+
+
+def test_shared_reconstruction_supports_separate_custom_periods() -> None:
+    portfolios, closes, benchmark = _reconstruction_fixture(2)
+    context = build_portfolio_calculation_context(portfolios, closes)
+    early_start = closes.index[10].date()
+    late_start = closes.index[50].date()
+    end = closes.index[-1].date()
+
+    early = assemble_combined_performance_report(
+        portfolios,
+        closes,
+        early_start,
+        end,
+        benchmark,
+        calculation_context=context,
+    )
+    late = assemble_combined_performance_report(
+        portfolios,
+        closes,
+        late_start,
+        end,
+        benchmark,
+        calculation_context=context,
+    )
+
+    assert early.all_time == late.all_time
+    assert early.daily == late.daily
+    assert early.custom != late.custom

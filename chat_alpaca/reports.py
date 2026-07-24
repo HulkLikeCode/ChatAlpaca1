@@ -8,6 +8,8 @@ from typing import Literal
 import pandas as pd
 
 from chat_alpaca.analytics import (
+    HouseholdValuationResult,
+    _typed_reconstruction,
     alpha_beta_from_levels,
     combined_performance_growth,
     household_valuation,
@@ -19,6 +21,7 @@ from chat_alpaca.analytics import (
 from chat_alpaca.market_data import get_benchmark_daily_closes, get_daily_closes
 from chat_alpaca.models import Portfolio
 from chat_alpaca.portfolio_service import money, portfolio_cost
+from chat_alpaca.reconstruction import ReconstructionResult
 
 BASELINE_LOOKBACK_DAYS = 7
 
@@ -79,6 +82,46 @@ class ComparisonReport:
     metrics: pd.DataFrame
     warnings: tuple[str, ...]
     coverage: str
+
+
+@dataclass(frozen=True)
+class PortfolioCalculationContext:
+    """Deterministic results shared only within one report or active-tab render."""
+
+    portfolio_ids: tuple[int, ...]
+    closes_identity: int
+    reconstruction: ReconstructionResult | None
+    household_valuation: HouseholdValuationResult | None
+
+
+def build_portfolio_calculation_context(
+    portfolios: list[Portfolio], closes: pd.DataFrame
+) -> PortfolioCalculationContext:
+    """Compute shared financial results without retaining them beyond the caller's operation."""
+    return PortfolioCalculationContext(
+        portfolio_ids=tuple(portfolio.id for portfolio in portfolios),
+        closes_identity=id(closes),
+        reconstruction=(
+            _typed_reconstruction(portfolios, closes)
+            if not closes.empty and any(portfolio.transactions for portfolio in portfolios)
+            else None
+        ),
+        household_valuation=(household_valuation(portfolios, closes) if not closes.empty else None),
+    )
+
+
+def _validated_context(
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    context: PortfolioCalculationContext | None,
+) -> PortfolioCalculationContext:
+    if context is None:
+        return build_portfolio_calculation_context(portfolios, closes)
+    if context.portfolio_ids != tuple(portfolio.id for portfolio in portfolios):
+        raise ValueError("The calculation context belongs to a different portfolio selection.")
+    if context.closes_identity != id(closes):
+        raise ValueError("The calculation context belongs to a different close-price dataset.")
+    return context
 
 
 def historical_symbol_universe(
@@ -154,10 +197,15 @@ def assemble_portfolio_card_reports(
     closes: pd.DataFrame,
     selected_start: date,
     selected_end: date,
+    calculation_context: PortfolioCalculationContext | None = None,
 ) -> tuple[PortfolioCardReport, ...]:
     if selected_start > selected_end:
         raise ValueError("The portfolio card start date must be on or before the end date.")
-    household = household_valuation(portfolios, closes) if not closes.empty else None
+    household = (
+        _validated_context(portfolios, closes, calculation_context).household_valuation
+        if not closes.empty
+        else None
+    )
     reports = []
     for index, portfolio in enumerate(portfolios):
         if closes.empty:
@@ -200,6 +248,7 @@ def assemble_combined_performance_report(
     custom_end: date,
     benchmark_closes: pd.DataFrame | None = None,
     benchmark_symbol: str = "SPY",
+    calculation_context: PortfolioCalculationContext | None = None,
 ) -> CombinedPerformanceReport:
     """Assemble portfolio value and gain/loss without presentation-layer accounting."""
     if closes.empty:
@@ -224,11 +273,22 @@ def assemble_combined_performance_report(
             coverage="Market-price coverage unavailable.",
         )
 
-    household = household_valuation(portfolios, closes)
+    context = _validated_context(portfolios, closes, calculation_context)
+    household = context.household_valuation
+    if household is None:
+        raise ValueError("A non-empty close-price dataset requires a household valuation.")
     valuations = household.valuations
     total_value = household.total_calculated_value
     gain_loss = [
-        portfolio_gain_loss(portfolio, closes, custom_start, custom_end) for portfolio in portfolios
+        portfolio_gain_loss(
+            portfolio,
+            closes,
+            custom_start,
+            custom_end,
+            context.reconstruction,
+            valuations[index],
+        )
+        for index, portfolio in enumerate(portfolios)
     ]
     benchmark_levels = (
         benchmark_closes[benchmark_symbol].dropna()
@@ -237,7 +297,7 @@ def assemble_combined_performance_report(
     )
     portfolio_risk = [
         alpha_beta_from_levels(
-            performance_growth(portfolio, closes),
+            performance_growth(portfolio, closes, context.reconstruction),
             benchmark_levels,
             custom_start,
             custom_end,
@@ -261,7 +321,7 @@ def assemble_combined_performance_report(
     )
     combined_risk = (
         alpha_beta_from_levels(
-            combined_performance_growth(portfolios, closes),
+            combined_performance_growth(portfolios, closes, context.reconstruction),
             benchmark_levels,
             custom_start,
             custom_end,
@@ -347,11 +407,16 @@ def assemble_comparison_report(
     report_start: date,
     report_end: date,
     benchmark_symbols: tuple[str, ...],
+    calculation_context: PortfolioCalculationContext | None = None,
 ) -> ComparisonReport:
     """Assemble normalized comparison series, statistics, warnings, and coverage."""
+    context = _validated_context(portfolios, portfolio_closes, calculation_context)
     portfolio_series = [
-        combined_performance_growth(portfolios, portfolio_closes),
-        *(performance_growth(portfolio, portfolio_closes) for portfolio in portfolios),
+        combined_performance_growth(portfolios, portfolio_closes, context.reconstruction),
+        *(
+            performance_growth(portfolio, portfolio_closes, context.reconstruction)
+            for portfolio in portfolios
+        ),
     ]
     candidates = [
         item[(item.index.date >= report_start) & (item.index.date <= report_end)]
