@@ -214,10 +214,6 @@ def dollars(value: object) -> str:
     return f"${float(value):,.0f}"
 
 
-def whole_dollars(value: object) -> str:
-    return f"${float(value):,.0f}"
-
-
 def freshness_label(status: FreshnessStatus) -> str:
     return (
         "Fresh"
@@ -429,8 +425,8 @@ def render_portfolio_cards(
                     '<div class="portfolio-card">',
                     f'<div class="eyebrow">{escape(report.name)}</div>',
                     f'<div class="value">{report.value_label}</div>',
-                    f'<div class="detail">Cash: {whole_dollars(report.cash)} · '
-                    f"CDT Div: {whole_dollars(report.cumulative_dividends)}</div>",
+                    f'<div class="detail">Cash: {dollars(report.cash)} · '
+                    f"CDT Div: {dollars(report.cumulative_dividends)}</div>",
                     "</div>",
                 )
             )
