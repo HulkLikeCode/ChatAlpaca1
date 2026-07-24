@@ -66,7 +66,11 @@ exact month-12 endpoints and never participate in simulation arithmetic.
 ledger-derived holdings and cash and refuses scenarios when required current or replay prices are
 missing. Results retain household, internal-portfolio, holding, sector, and account-type effects,
 largest loss contributors, assumptions, coverage, proxy warnings, and baseline comparisons.
-Model `1.1.0` resolves DataFrame inputs at one common household valuation date and persists that
+Model `1.2.0` adds a first-class no-shock `As Is` result and a mutually exclusive active UI
+contract for market, holding, dividend, inflation, low-return, and retirement-date branches.
+Legacy sector, interruption, lost-decade, and historical-replay assumptions remain readable but
+are not constructed by new V.15.2 UI runs. DataFrame inputs resolve at one common household
+valuation date and persist that
 date, per-symbol source dates, and completeness counts. Mapping values form one undated explicit
 snapshot and must be numeric, finite, positive, and non-boolean. Historical replay retains only
 jointly complete required-symbol rows, requires two or more, persists shared endpoints and count,
@@ -77,7 +81,7 @@ there is no raw path storage. Market inputs are linked to immutable `market_data
 canonical SHA-256 hash identifies the exact scoped transaction-ledger state. The generic validation
 record and interface are intentionally usable by later stochastic models. Passing automated tests
 may move a model into review, but only an explicit reviewed governance decision can label it
-validated.
+validated. Existing saved `1.1.0` results retain their stored contract and fields.
 
 Historical block bootstrap and correlated parametric Monte Carlo remain outside Phase 7.
 

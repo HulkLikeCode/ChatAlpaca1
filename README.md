@@ -31,7 +31,7 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
 - Combined sortable transaction management with portfolio/type/date filters and guarded edits/deletes
 - Sticky, batched portfolio and master-date controls with immediate 5D, 1M, 6M, YTD, 1Y, and 5Y
-  calendar-aware presets shared across the application
+  calendar-aware presets plus a compact selected-scope TPV, Holdings, and Cash strip
 - Compact portfolio-income reporting for realized dividends and interest, with master-end-aware
   YTD, trailing-365-day, selected-range, normalized-quarterly, monthly, and source views
 - Transaction-aware confirmed all-time, daily, and custom-range portfolio gain/loss excluding
@@ -39,7 +39,8 @@ A private, multi-portfolio personal portfolio manager that brings together portf
   indicative active-session IEX overlay and all-time independence from Custom Start/End
 - Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, lot drilldown,
   Eastern retrieval timestamps, and row-level relative age
-- Selected-portfolio total value in both Overview and Compare
+- Per-portfolio TPV, Holdings, and Cash in both Overview and Compare
+- Top-right-toolbar-only Streamlit header rollover and dark theme-consistent notifications
 - Selected-range cumulative dividends on portfolio value cards
 - Portfolio and holding Alpha/Beta against SPY total return, using at least 60 overlapping daily returns
 - Market and limit orders, cancellation, fill synchronization, and an auditable internal transaction ledger
@@ -205,7 +206,9 @@ historical series. Comparison metrics are unavailable, rather than numeric zero,
 insufficient. Alpha is displayed as `Alpha`, with its annualized market-model-intercept and
 zero-risk-free-rate assumption disclosed below the table. Missing quote moves remain unavailable
 rather than zero. Overview and Compare omit redundant summary metric tiles while retaining their
-tables, warnings, coverage, and Overview portfolio value cards.
+tables, warnings, coverage, and Overview portfolio value cards. Their tables expose per-portfolio
+TPV, Holdings, and Cash from the same common-date valuation contract used by the master strip;
+TPV equals Holdings plus ledger Cash before display-only nearest-$100 half-up rounding.
 Exact holdings retain numeric share values and adapt display precision through eight decimal
 places. The confirmed valuation display uses the authoritative dataset retrieval timestamp in
 daylight-aware Eastern Time and derives `As of` from that same row-level timestamp without
@@ -252,12 +255,19 @@ numeric inputs are rejected before simulation. Calendar labels begin at that exp
 or at the UTC generation date for the disclosed fallback, and label each modeled monthly step at
 the end of the corresponding following calendar month. These labels do not change forecast paths.
 
-Phase 7 adds deterministic scenario analysis in `chat_alpaca.scenarios`. It supports broad-market,
-holding, sector, dividend, contribution, inflation, low-return, lost-decade, retirement-date, and
-historical-replay stresses plus tabular sensitivity grids. Runs persist the model/version, exact
+Phase 7 adds deterministic scenario analysis in `chat_alpaca.scenarios`. The V.15.2 UI defaults to
+the first-class `As Is` branch and offers Market Decline, Holding Decline, Dividend Reduction,
+Inflation Increase, Low Return, and Retirement-Date Decline as mutually exclusive alternatives.
+Sector decline, contribution interruption, lost decade, and historical replay remain readable for
+legacy saved records but are absent from new user-generated runs. Runs persist the model/version, exact
 ledger hash and dataset references, assumptions, coverage, proxy disclosure, validation state, and
-summary outputs. The UI derives its scenario explanation and four-column assumption/default/delta
-comparison from the structured assumptions used by the calculation. Deterministic scenarios
+summary outputs. The compact always-visible input grid defaults to 0% shocks, no selected holding,
+$0 monthly contribution, 3% inflation, $0 annual spending, 7% expected return, 4% low return, and a
+10-year horizon. Its uneditable Retirement Date is derived safely as `Month YYYY` from today plus
+the 1–40-year horizon. The UI derives its scenario explanation and four-column assumption/default/delta
+comparison from the structured assumptions used by the calculation. Results use one compact
+Baseline / Scenario / Household Impact table and disclose whether the selected branch is an
+immediate current-value shock or terminal forecast value. Deterministic scenarios
 generate no raw paths. Automated test success is retained
 as validation evidence but cannot by itself label a model validated.
 DataFrame inputs resolve every nonzero held symbol to one common household valuation date: the
@@ -265,8 +275,9 @@ oldest latest usable symbol date, with each positive finite price taken on or be
 Mapping inputs are treated as an explicitly supplied undated snapshot and reject booleans,
 nonfinite values, zero, and negative prices. Historical replay uses only jointly complete rows,
 never forward-fills, requires at least two observations, and persists its shared endpoints and
-observation count. Deterministic model version `1.1.0` applies one resolved snapshot throughout each
-run.
+observation count. Deterministic model version `1.2.0` applies one resolved snapshot throughout each
+run. It retains the first-order shock, fixed trailing-dividend, nominal-to-real inflation, and
+mutually exclusive branch limitations; saved `1.1.0` records remain readable.
 
 Phase 8 adds historical block-bootstrap forecasting in `chat_alpaca.bootstrap_forecasting`. It
 samples observed, jointly aligned monthly holding or portfolio returns in circular 3-, 6-, or
@@ -308,6 +319,14 @@ backtests, and like-for-like bootstrap comparison are supported. Saved runs reta
 degrees of freedom, seed, model version, parameter sources and estimates, shrinkage and covariance
 methods, exact datasets, proxies, assumptions, validation result, output bands, and summarized
 terminal results. Raw paths and terminal samples remain excluded.
+
+The legacy planning Monte Carlo chart keeps its visible percentile bands, fills, median, colors,
+and legend. One invisible hover trace sorts the actual percentile values from highest to lowest at
+each date, uses percentile rank as the deterministic tie-breaker, and displays the date once.
+Streamlit's otherwise transparent header accepts no full-width pointer events; only the stable
+top-right toolbar target reveals on hover or keyboard focus. Central alert styling keeps info,
+warning, error, success, validation, saved-run, and stale-data notices within the black, blue,
+purple, cyan, and white palette.
 
 Phase 10 adds long-horizon retirement planning in `chat_alpaca.retirement`. It reuses the Phase 8
 historical block-bootstrap and Phase 9 correlated parametric return engines for 20–40-year
