@@ -257,6 +257,8 @@ def test_forecast_request_uses_common_confirmed_household_value() -> None:
     )
 
     assert request.current_value == 350.0
+    assert request.portfolio_ids == (1, 2)
+    assert request.portfolio_names == ("First", "Second")
     assert "2026-01-02" in request.coverage
     assert request.source_valuation_date == date(2026, 1, 2)
 

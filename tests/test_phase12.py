@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import chat_alpaca.realtime as realtime
 from chat_alpaca.portfolio_service import list_portfolios, seed_database
 from chat_alpaca.realtime import (
     ActiveSessionMonitor,
@@ -28,12 +29,48 @@ from chat_alpaca.realtime import (
     correlation_heuristic,
     market_context_metrics,
     market_hours_state,
+    portfolio_monitor_metrics,
     prioritize_subscriptions,
     sample_realized_volatility,
 )
 from chat_alpaca.trading import submit_allocated_order, sync_allocations
 
 UTC = timezone.utc
+
+
+def test_portfolio_monitor_metrics_reuse_one_scoped_reconstruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    portfolios = [
+        SimpleNamespace(id=1, name="First"),
+        SimpleNamespace(id=2, name="Second"),
+    ]
+    index = pd.bdate_range("2026-01-02", periods=22)
+    closes = pd.DataFrame({"AAA": np.linspace(100, 120, 22)}, index=index)
+    spy = pd.Series(np.linspace(200, 230, 22), index=index)
+    calls = 0
+    marker = object()
+
+    def reconstruct(_portfolios: object, _closes: object) -> object:
+        nonlocal calls
+        calls += 1
+        return marker
+
+    def growth(portfolio: object, _closes: object, reconstruction: object) -> pd.Series:
+        assert reconstruction is marker
+        return pd.Series(
+            np.linspace(100, 110 + portfolio.id, 22),
+            index=index,
+            name=portfolio.name,
+        )
+
+    monkeypatch.setattr(realtime, "scoped_reconstruction", reconstruct)
+    monkeypatch.setattr(realtime, "performance_growth", growth)
+
+    result = portfolio_monitor_metrics(portfolios, closes, spy)
+
+    assert calls == 1
+    assert [item.portfolio for item in result] == ["First", "Second"]
 
 
 def test_subscription_priorities_and_thirty_symbol_cap() -> None:
@@ -348,6 +385,8 @@ def test_pulse_combines_the_same_symbol_across_portfolios() -> None:
     assert pulse.holdings[0].value == 1_000
     assert pulse.holdings[0].daily_change == 25
     assert pulse.by_portfolio == {"First": 10, "Second": 15}
+    assert pulse.portfolio_values == {"First": 400, "Second": 600}
+    assert pulse.portfolio_contributions == {"First": 0.4, "Second": 0.6}
     assert pulse.portfolio_freshness == {"First": True, "Second": True}
 
 

@@ -20,6 +20,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.live import StockDataStream
 from alpaca.data.requests import StockSnapshotRequest
 
+from chat_alpaca.analytics import performance_growth, scoped_reconstruction
 from chat_alpaca.market_calendar import NEW_YORK, market_session_index
 from chat_alpaca.portfolio_service import normalize_symbol
 
@@ -842,6 +843,9 @@ class PortfolioPulse:
     daily_change: float | None
     holdings: tuple[PulseHolding, ...]
     by_portfolio: Mapping[str, float | None]
+    portfolio_values: Mapping[str, float | None]
+    portfolio_contributions: Mapping[str, float | None]
+    portfolio_staleness_reasons: Mapping[str, str | None]
     portfolio_freshness: Mapping[str, bool]
     stale_or_missing: tuple[str, ...]
     indicative_as_of: datetime | None = None
@@ -854,13 +858,17 @@ def build_portfolio_pulse(
     portfolio_list = list(portfolios)
     shares_by_symbol: dict[str, float] = {}
     portfolio_changes: dict[str, float | None] = {}
+    portfolio_values: dict[str, float | None] = {}
+    portfolio_staleness_reasons: dict[str, str | None] = {}
     portfolio_freshness: dict[str, bool] = {}
     cash_total = 0.0
     for portfolio in portfolio_list:
         name = str(getattr(portfolio, "name"))
         cash_total += float(getattr(portfolio, "cash"))
         changes: list[float] = []
+        values: list[float] = []
         statuses: list[FreshnessStatus] = []
+        staleness_reasons: set[str] = set()
         holdings = list(getattr(portfolio, "holdings"))
         for lot in holdings:
             symbol = normalize_symbol(getattr(lot, "symbol"))
@@ -868,6 +876,13 @@ def build_portfolio_pulse(
             shares_by_symbol[symbol] = shares_by_symbol.get(symbol, 0.0) + shares
             quote = quotes.get(symbol, QuoteRecord(symbol))
             statuses.append(quote.status)
+            if quote.staleness_reason and quote.status not in {
+                FreshnessStatus.STREAMING,
+                FreshnessStatus.RECENTLY_REFRESHED,
+            }:
+                staleness_reasons.add(quote.staleness_reason)
+            if quote.price is not None:
+                values.append(shares * quote.price)
             intraday_price = quote.intraday_price
             previous_close = _valid_quote_value(quote.previous_close)
             change = (
@@ -879,6 +894,14 @@ def build_portfolio_pulse(
                 changes.append(change)
         portfolio_changes[name] = (
             sum(changes) if holdings and len(changes) == len(holdings) else None
+        )
+        portfolio_values[name] = (
+            float(getattr(portfolio, "cash")) + sum(values)
+            if len(values) == len(holdings)
+            else None
+        )
+        portfolio_staleness_reasons[name] = (
+            "; ".join(sorted(staleness_reasons)) if staleness_reasons else None
         )
         portfolio_freshness[name] = bool(
             holdings
@@ -917,6 +940,14 @@ def build_portfolio_pulse(
         if rows and all(row.daily_change is not None for row in rows)
         else None
     )
+    portfolio_contributions = {
+        name: (
+            change / total_change
+            if change is not None and total_change is not None and abs(total_change) >= 0.01
+            else None
+        )
+        for name, change in portfolio_changes.items()
+    }
     changed_rows = tuple(
         replace(
             row,
@@ -963,6 +994,9 @@ def build_portfolio_pulse(
         total_change,
         changed_rows,
         portfolio_changes,
+        portfolio_values,
+        portfolio_contributions,
+        portfolio_staleness_reasons,
         portfolio_freshness,
         stale,
         indicative_as_of,
@@ -1027,6 +1061,44 @@ def _spy_correlation(
     if not np.isfinite(correlation):
         return np.nan, None, "21/21", first, last
     return correlation, correlation_heuristic(correlation), "21/21", first, last
+
+
+@dataclass(frozen=True)
+class PortfolioMonitorMetric:
+    portfolio: str
+    realized_volatility: float | None
+    spy_correlation: float | None
+    correlation_observations: str
+
+
+def portfolio_monitor_metrics(
+    portfolios: Sequence[object],
+    closes: pd.DataFrame,
+    spy_levels: pd.Series | None,
+) -> tuple[PortfolioMonitorMetric, ...]:
+    """Apply Monitor's existing daily volatility and raw 21-pair correlation conventions."""
+    portfolio_list = list(portfolios)
+    reconstruction = scoped_reconstruction(portfolio_list, closes) if not closes.empty else None
+    spy_returns = (
+        _usable_close_series(spy_levels).pct_change(fill_method=None).dropna()
+        if spy_levels is not None
+        else None
+    )
+    metrics = []
+    for portfolio in portfolio_list:
+        levels = performance_growth(portfolio, closes, reconstruction)
+        returns = levels.pct_change(fill_method=None).dropna()
+        volatility = sample_realized_volatility(returns)
+        correlation, _, observations, _, _ = _spy_correlation(returns, spy_returns)
+        metrics.append(
+            PortfolioMonitorMetric(
+                str(getattr(portfolio, "name")),
+                float(volatility) if np.isfinite(volatility) else None,
+                float(correlation) if np.isfinite(correlation) else None,
+                observations,
+            )
+        )
+    return tuple(metrics)
 
 
 def market_context_metrics(closes: pd.DataFrame) -> pd.DataFrame:

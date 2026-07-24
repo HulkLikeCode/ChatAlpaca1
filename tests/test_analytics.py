@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pandas as pd
@@ -139,7 +139,6 @@ def test_transaction_aware_values_and_gain_loss_exclude_external_cash_flows() ->
         {"ABC": [9.0, 10.0, 12.0]},
         index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
     )
-
     values = portfolio_series(portfolio, closes)
     gain_loss = portfolio_gain_loss(portfolio, closes, date(2026, 1, 2), date(2026, 1, 3))
 
@@ -443,6 +442,9 @@ def test_household_holdings_use_one_confirmed_date_and_separate_latest_overlay()
         {"AAA": [100.0, 110.0], "BBB": [50.0, float("nan")]},
         index=pd.to_datetime(["2026-01-02", "2026-01-03"]),
     )
+    aaa_retrieved = datetime(2026, 1, 3, 15, 30, tzinfo=timezone.utc)
+    bbb_retrieved = datetime(2026, 1, 3, 15, 31, tzinfo=timezone.utc)
+    closes.attrs["freshness"] = {"AAA": aaa_retrieved, "BBB": bbb_retrieved}
 
     summary, _ = consolidated_holdings([first, second], closes, date(2026, 1, 2), date(2026, 1, 3))
 
@@ -457,6 +459,10 @@ def test_household_holdings_use_one_confirmed_date_and_separate_latest_overlay()
     }
     assert summary["Confirmed value"].sum() == 350.0
     assert summary["Latest/indicative value"].sum() == 370.0
+    assert summary.set_index("Symbol")["Confirmed valuation timestamp"].to_dict() == {
+        "AAA": aaa_retrieved,
+        "BBB": bbb_retrieved,
+    }
 
 
 def test_mixed_long_short_lots_suppress_average_cost_and_preserve_detail() -> None:

@@ -26,8 +26,8 @@ def format_eastern_timestamp(value: datetime | None) -> str:
         return "—"
     observed = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     local = observed.astimezone(NEW_YORK)
-    clock = local.strftime("%I:%M %p").lstrip("0")
-    return f"{local.month}/{local.day} {clock} ET"
+    clock = local.strftime("%I:%M%p").lstrip("0").lower()
+    return f"{local.month}/{local.day}/{local.strftime('%y')} {clock} {local.tzname()}"
 
 
 class UsEquityHolidayCalendar(AbstractHolidayCalendar):

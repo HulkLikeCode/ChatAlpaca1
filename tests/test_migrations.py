@@ -232,13 +232,14 @@ def test_application_bootstrap_seeds_after_schema_upgrade(tmp_path) -> None:
         names = list(session.scalars(select(Portfolio.name).order_by(Portfolio.id)))
         markers = set(session.scalars(select(DataMigration.key)))
     assert names == [
-        "KCs Traditional IRA",
-        "KCs Roth IRA",
-        "KC and Papa",
+        "Portfolio 1",
+        "Portfolio 2",
+        "Portfolio 3",
         "Portfolio 4",
         "Portfolio 5",
     ]
-    assert {PHASE_1_MIGRATION_KEY, PHASE_1_DATE_CORRECTION_KEY} <= markers
+    assert PHASE_1_MIGRATION_KEY not in markers
+    assert PHASE_1_DATE_CORRECTION_KEY not in markers
 
 
 def test_application_initialization_returns_bootstrapped_state(tmp_path) -> None:
@@ -247,11 +248,11 @@ def test_application_initialization_returns_bootstrapped_state(tmp_path) -> None
     portfolios = initialize_application(engine)
 
     assert [portfolio.name for portfolio in portfolios[:3]] == [
-        "KCs Traditional IRA",
-        "KCs Roth IRA",
-        "KC and Papa",
+        "Portfolio 1",
+        "Portfolio 2",
+        "Portfolio 3",
     ]
-    assert portfolios[0].holdings
+    assert all(not portfolio.holdings for portfolio in portfolios)
 
 
 def test_application_bootstraps_once_and_loads_portfolios_every_time(tmp_path, monkeypatch) -> None:

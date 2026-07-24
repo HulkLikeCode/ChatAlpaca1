@@ -7,6 +7,26 @@ __pycache__/
 *.py[cod]
 data/
 .streamlit/secrets.toml
+
+# Private runtime data: uploads are processed in memory; these paths are reserved
+# for secure temporary staging, generated exports, and local portfolio snapshots.
+runtime/uploads/
+runtime/tmp/
+runtime/exports/
+runtime/snapshots/
+uploads/
+exports/
+cache/
+snapshots/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.csv.upload
+*.upload.tmp
+.cache/
 # Python
 __pycache__/
 *.py[cod]

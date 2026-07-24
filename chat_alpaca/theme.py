@@ -1,4 +1,5 @@
 STALE_VALUE_COLOR = "#86A7D8"
+VIOLET_COLOR = "#9B72FF"
 
 
 THEME_CSS = """
@@ -75,6 +76,12 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
   backdrop-filter: blur(16px);
 }
 .st-key-master_controls [data-testid="stForm"] {border: 0; padding: 0;}
+[class*="st-key-master_date_preset_"] button {
+  min-height: 1.85rem;
+  padding: .15rem .45rem;
+  font-size: .72rem;
+  font-weight: 800;
+}
 .portfolio-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -140,3 +147,12 @@ PLOT_COLORS = [
     "#8064C9",
     "#8FB8FF",
 ]
+
+
+def purple_header_table(frame: object) -> object:
+    """Apply a table-local header color without targeting Streamlit internals."""
+    styler = frame if hasattr(frame, "set_table_styles") else frame.style
+    return styler.set_table_styles(
+        [{"selector": "th", "props": [("color", VIOLET_COLOR)]}],
+        overwrite=False,
+    )

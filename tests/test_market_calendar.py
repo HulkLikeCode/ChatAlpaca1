@@ -7,7 +7,11 @@ from chat_alpaca.market_calendar import format_eastern_timestamp, market_session
 def test_eastern_timestamp_is_compact_and_daylight_aware() -> None:
     assert (
         format_eastern_timestamp(datetime(2026, 7, 20, 19, 42, tzinfo=ZoneInfo("UTC")))
-        == "7/20 3:42 PM ET"
+        == "7/20/26 3:42pm EDT"
+    )
+    assert (
+        format_eastern_timestamp(datetime(2026, 1, 20, 19, 42, tzinfo=ZoneInfo("UTC")))
+        == "1/20/26 2:42pm EST"
     )
     assert format_eastern_timestamp(None) == "—"
 

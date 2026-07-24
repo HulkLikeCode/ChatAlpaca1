@@ -22,6 +22,7 @@ from chat_alpaca.models import (
     Portfolio,
     PortfolioTransaction,
 )
+from chat_alpaca.presentation import assumption_comparisons, format_assumption_value
 
 DETERMINISTIC_MODEL_TYPE = "deterministic_scenario"
 DETERMINISTIC_MODEL_VERSION = "1.1.0"
@@ -128,6 +129,68 @@ class ScenarioResult:
             "comparison_with_baseline": dict(self.comparison_with_baseline),
             "warnings": list(self.warnings),
         }
+
+
+def scenario_explanation(assumptions: ScenarioAssumptions) -> str:
+    """Describe the selected deterministic branch directly from structured inputs."""
+    current = asdict(assumptions)
+    defaults = asdict(ScenarioAssumptions(assumptions.scenario_type))
+    comparisons = assumption_comparisons(current, defaults)
+    changed = [
+        (
+            f"{item.assumption} {format_assumption_value(item.default_value, item.unit)} → "
+            f"{format_assumption_value(item.value, item.unit)}"
+        )
+        for item in comparisons
+        if item.value != item.default_value
+    ]
+    unchanged = [item.assumption for item in comparisons if item.value == item.default_value]
+    scenario_type = ScenarioType(assumptions.scenario_type)
+    calculation = {
+        ScenarioType.BROAD_MARKET_DECLINE: (
+            "Each holding value receives the broad-market shock; cash is unchanged."
+        ),
+        ScenarioType.HOLDING_DECLINE: (
+            f"Only {assumptions.holding_symbol or 'the selected holding'} receives the "
+            "holding shock; cash and other holdings are unchanged."
+        ),
+        ScenarioType.SECTOR_DECLINE: (
+            f"The {assumptions.sector or 'selected'} sector shock is weighted through each "
+            "holding's disclosed sector exposure."
+        ),
+        ScenarioType.DIVIDEND_REDUCTION: (
+            "Positive trailing-365-day ledger dividends are reduced for each portfolio and "
+            "extended across the scenario horizon."
+        ),
+        ScenarioType.CONTRIBUTION_INTERRUPTION: (
+            "Monthly compounding omits contributions during the interruption, then restores "
+            "the configured contribution."
+        ),
+        ScenarioType.INFLATION_INCREASE: (
+            "The same nominal compounded value is deflated by baseline inflation and by "
+            "baseline plus additional inflation for comparison."
+        ),
+        ScenarioType.LOW_RETURN_PERIOD: (
+            "Starting value, contributions, and spending compound at the selected low return."
+        ),
+        ScenarioType.LOST_DECADE: (
+            "Starting value, contributions, and spending compound at the selected low return "
+            "for the fixed ten-year lost-decade horizon."
+        ),
+        ScenarioType.RETIREMENT_DATE_DECLINE: (
+            "Monthly compounding applies the market shock at the resolved retirement month."
+        ),
+        ScenarioType.HISTORICAL_REPLAY: (
+            "Each holding uses its jointly complete historical endpoint return with no "
+            "forward-filling."
+        ),
+    }[scenario_type]
+    return (
+        f"Adjusted inputs: {', '.join(changed) if changed else 'none'}. "
+        f"{calculation} Unchanged defaults: {', '.join(unchanged) if unchanged else 'none'}. "
+        "Impacts are allocated to household, portfolio, holding, sector, and account-type "
+        "outputs using the selected ledger scope and disclosed classifications."
+    )
 
 
 class ModelValidator(Protocol):
