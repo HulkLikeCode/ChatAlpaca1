@@ -30,20 +30,23 @@ A private, multi-portfolio personal portfolio manager that brings together portf
 - Separate admin and read-only user passwords; only admins can mutate data, upload files, or act on brokerage orders
 - Manual transaction entry, brokerage CSV preview/import, duplicate protection, and rebuild-from-statement
 - Combined sortable transaction management with portfolio/type/date filters and guarded edits/deletes
-- Sticky, batched portfolio and master-date controls shared by Overview, Compare, and Manage
+- Sticky, batched portfolio and master-date controls with immediate 5D, 1M, 6M, YTD, 1Y, and 5Y
+  calendar-aware presets shared across the application
 - Compact portfolio-income reporting for realized dividends and interest, with master-end-aware
   YTD, trailing-365-day, selected-range, normalized-quarterly, monthly, and source views
 - Transaction-aware confirmed all-time, daily, and custom-range portfolio gain/loss excluding
   contributions and awards, with a separately labeled, timestamped, provenance-disclosed
   indicative active-session IEX overlay and all-time independence from Custom Start/End
-- Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, and lot drilldown
+- Consolidated exact holdings with weighted cost basis, symbol-level gain/loss, lot drilldown,
+  Eastern retrieval timestamps, and row-level relative age
 - Selected-portfolio total value in both Overview and Compare
 - Selected-range cumulative dividends on portfolio value cards
 - Portfolio and holding Alpha/Beta against SPY total return, using at least 60 overlapping daily returns
 - Market and limit orders, cancellation, fill synchronization, and an auditable internal transaction ledger
 - Tiered active-session monitoring for fewer than 400 held symbols, with capped IEX streaming,
   batched snapshot fallback, reconnect gap backfill, explicit freshness, portfolio pulse, market
-  context, and symbol detail; period returns require their full horizon, drawdown is measured from
+  context, portfolio value/contribution/staleness/volatility/correlation fields, and symbol detail;
+  period returns require their full horizon, drawdown is measured from
   the available-window peak, and raw 21-session SPY correlation requires 21 complete pairs before
   its secondary fixed-threshold heuristic is shown; no closed-app monitoring claim or persistent
   worker
@@ -157,9 +160,9 @@ the SQLite or PostgreSQL target; PostgreSQL URLs are normalized to the installed
 
 Owner controls support manual entries for buys, sells, dividends, interest, transfers, awards, fees,
 taxes, and cash adjustments. Transactions are the source of truth: cash, FIFO lots, and ledger rows
-can be rebuilt deterministically after a guarded service-level update or deletion. The seeded
-Traditional and Roth holdings are recorded as cash-neutral opening-position transactions, and the
-three initial cash balances are recorded as Phase 1 cash adjustments effective `5/15/26`.
+can be rebuilt deterministically after a guarded service-level update or deletion. A fresh database
+creates five empty, generically named portfolios. Existing local or hosted database records remain
+authoritative and are not replaced by tracked statement files or private hard-coded holdings.
 
 Manage shows the master-selected portfolios in one sortable transaction table. The master date
 range and transaction-type filter drive the displayed rows. Select a row to edit or delete that
@@ -199,14 +202,16 @@ Confirmed all-time performance always runs from inception through the latest com
 valuation date and is not truncated by Custom Start or Custom End. Any permitted live overlay is
 separately labeled indicative with its timestamp and provenance and does not alter the confirmed
 historical series. Comparison metrics are unavailable, rather than numeric zero, when history is
-insufficient. Alpha is labeled `Annualized market-model intercept, RF assumed 0%`.
-Missing quote moves remain unavailable rather than zero. Overview keeps its zero-decimal portfolio
-value cards directly below the gain/loss metrics and summarizes valuation, Alpha/Beta, quote, and
-custom-end coverage in one compact status strip.
+insufficient. Alpha is displayed as `Alpha`, with its annualized market-model-intercept and
+zero-risk-free-rate assumption disclosed below the table. Missing quote moves remain unavailable
+rather than zero. Overview and Compare omit redundant summary metric tiles while retaining their
+tables, warnings, coverage, and Overview portfolio value cards.
 Exact holdings retain numeric share values and adapt display precision through eight decimal
-places. Current-open-lot fields are labeled `Unrealized gain/loss`, `Latest close change` with the
-actual observation dates, and `Current-lot unrealized custom change`; the latter excludes sold lots
-and income and is distinct from portfolio Custom gain/loss.
+places. The confirmed valuation display uses the authoritative dataset retrieval timestamp in
+daylight-aware Eastern Time and derives `As of` from that same row-level timestamp without
+refreshing market data. Current-open-lot fields are labeled `Unrealized gain/loss`, `Latest close
+change` with the actual observation dates, and `Current-lot unrealized custom change`; the latter
+excludes sold lots and income and is distinct from portfolio Custom gain/loss.
 
 Portfolio cards show cumulative dividend ledger credits in the inclusive applied master range;
 interest is excluded. Portfolio and
@@ -232,6 +237,9 @@ are unavailable, a planning scenario may retain the existing cost-basis-plus-cas
 with that fallback and its coverage disclosed. Application database migration, seeding, and initial
 portfolio loading are coordinated by `chat_alpaca.bootstrap.initialize_application` outside the UI.
 The session-only legacy planning projection has the explicit contract `legacy_projection / 1.0.0`.
+Its scope is exactly the applied master-selected portfolios; there is no second projection-scope
+selector or scenario preset. Expected return and volatility are direct model inputs, and the
+initial forecast horizon defaults to 10 years without replacing an existing session selection.
 Each result records its assumptions, seed, simulation count, common confirmed source valuation date
 or disclosed fallback, valuation methodology, and generation timestamp. Boolean and nonfinite
 numeric inputs are rejected before simulation. Calendar labels begin at that explicit source date,
@@ -242,7 +250,9 @@ Phase 7 adds deterministic scenario analysis in `chat_alpaca.scenarios`. It supp
 holding, sector, dividend, contribution, inflation, low-return, lost-decade, retirement-date, and
 historical-replay stresses plus tabular sensitivity grids. Runs persist the model/version, exact
 ledger hash and dataset references, assumptions, coverage, proxy disclosure, validation state, and
-summary outputs. Deterministic scenarios generate no raw paths. Automated test success is retained
+summary outputs. The UI derives its scenario explanation and four-column assumption/default/delta
+comparison from the structured assumptions used by the calculation. Deterministic scenarios
+generate no raw paths. Automated test success is retained
 as validation evidence but cannot by itself label a model validated.
 DataFrame inputs resolve every nonzero held symbol to one common household valuation date: the
 oldest latest usable symbol date, with each positive finite price taken on or before that date.
@@ -387,7 +397,13 @@ classification with proportional ETF look-through; incomplete ETF weights and un
 classifications remain explicitly Unclassified, and stale inputs are disclosed. Sector dashboards
 remain deferred beyond Phase 6.
 
-Brokerage CSV imports preview every row before posting. The included `KC and Papa.csv` format supports its current buy, sell, dividend, interest, transfer, award, fee, and foreign-tax rows. Re-importing a statement skips transactions already recorded, while the **Rebuild portfolio from statement** action deliberately replaces that portfolio's lots, cash, transaction history, legacy ledger rows, and saved Alpaca allocations after the owner types `REBUILD`.
+Brokerage CSV imports are read in memory and preview every row before posting. Re-importing a
+statement skips transactions already recorded, while the **Rebuild portfolio from statement**
+action deliberately replaces that portfolio's lots, cash, transaction history, legacy ledger rows,
+and saved Alpaca allocations after the owner types `REBUILD`. Private statements are not runtime
+seed dependencies and must not be tracked. Runtime upload, temporary, export, snapshot, cache, and
+local database paths are Git-ignored. Removing a statement from the current tree does not purge it
+from earlier Git history.
 
 ## How order allocation works
 
@@ -423,7 +439,8 @@ The production database must use TLS according to the database provider's connec
 .venv/bin/python -m pytest -q
 ```
 
-Tests cover seeded statement rebuilding, duplicate-safe imports, FIFO sales, cash ledger entries,
+Tests cover generic non-private startup, synthetic statement rebuilding, duplicate-safe imports,
+runtime-path ignore guards, FIFO sales, cash ledger entries,
 uncapped holdings, analytics, historical-data provenance and precedence, adjustment separation,
 incremental refresh, CSV validation, proxy records, idempotent order-fill allocation, and a
 credential-free Streamlit render.

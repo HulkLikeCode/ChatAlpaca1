@@ -8,13 +8,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
-from pathlib import Path
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from chat_alpaca.models import (
-    DataMigration,
     HoldingLot,
     LedgerEntry,
     OrderAllocation,
@@ -24,33 +22,9 @@ from chat_alpaca.models import (
 )
 
 MAX_PORTFOLIOS = 20
-DEFAULT_STATEMENT_PATH = Path(__file__).resolve().parent.parent / "KC and Papa.csv"
-PHASE_1_EFFECTIVE_DATE = date(2026, 5, 15)
 PHASE_1_MIGRATION_KEY = "2026-07-17-phase-1-opening-positions-and-cash"
 PHASE_1_DATE_CORRECTION_KEY = "2026-07-18-phase-1-effective-date-correction"
-
-CASH_BALANCE_TARGETS = {
-    "KCs Traditional IRA": Decimal("59780.15"),
-    "KCs Roth IRA": Decimal("10331.93"),
-    "KC and Papa": Decimal("77.77"),
-}
-
-SEED_PORTFOLIOS = (
-    (
-        "KCs Traditional IRA",
-        (
-            ("DCO", "39", date(2026, 5, 15), "145.17948"),
-            ("VTV", "547", date(2026, 5, 15), "207.0364"),
-        ),
-    ),
-    (
-        "KCs Roth IRA",
-        (("ONEQ", "918", date(2026, 5, 15), "104.06513"),),
-    ),
-    ("KC and Papa", ()),
-    ("Portfolio 4", ()),
-    ("Portfolio 5", ()),
-)
+SEED_PORTFOLIO_NAMES = tuple(f"Portfolio {index}" for index in range(1, 6))
 
 ACTION_KINDS = {
     "buy": "buy",
@@ -314,121 +288,11 @@ def _validate_transaction(draft: TransactionDraft) -> None:
 
 
 def seed_database(session: Session) -> None:
+    """Create only non-private empty defaults; existing database records remain authoritative."""
     count = session.scalar(select(func.count()).select_from(Portfolio)) or 0
     if not count:
-        for name, _initial_holdings in SEED_PORTFOLIOS:
+        for name in SEED_PORTFOLIO_NAMES:
             session.add(Portfolio(name=name, cash=Decimal("0")))
-        session.flush()
-        statement_portfolio = session.scalar(
-            select(Portfolio).where(Portfolio.name == "KC and Papa")
-        )
-        if statement_portfolio is not None and DEFAULT_STATEMENT_PATH.exists():
-            rebuild_portfolio_from_csv(
-                session,
-                statement_portfolio.id,
-                DEFAULT_STATEMENT_PATH.read_bytes(),
-                source="seed_csv",
-            )
-    _apply_phase_1_data_migration(session)
-    _apply_phase_1_date_correction(session)
-
-
-def _migration_fingerprint(label: str) -> str:
-    return hashlib.sha256(f"{PHASE_1_MIGRATION_KEY}:{label}".encode()).hexdigest()
-
-
-def _apply_phase_1_data_migration(session: Session) -> None:
-    """Convert legacy seed state once, including already-populated databases."""
-    if session.get(DataMigration, PHASE_1_MIGRATION_KEY) is not None:
-        return
-
-    portfolios = {
-        portfolio.name: portfolio
-        for portfolio in session.scalars(
-            select(Portfolio).where(Portfolio.name.in_(CASH_BALANCE_TARGETS))
-        )
-    }
-    seed_positions = {name: positions for name, positions in SEED_PORTFOLIOS}
-    for portfolio_name in ("KCs Traditional IRA", "KCs Roth IRA"):
-        portfolio = portfolios.get(portfolio_name)
-        if portfolio is None:
-            continue
-        for symbol, quantity, acquired_on, cost_basis in seed_positions[portfolio_name]:
-            transaction = PortfolioTransaction(
-                portfolio_id=portfolio.id,
-                transaction_date=acquired_on,
-                kind="opening_position",
-                action="Opening Position",
-                symbol=symbol,
-                description="Phase 1 conversion of legacy seeded holding",
-                quantity=Decimal(quantity),
-                price=Decimal(cost_basis),
-                fees=None,
-                cash_delta=Decimal("0"),
-                source="phase_1_migration",
-                fingerprint=_migration_fingerprint(
-                    f"opening:{portfolio_name}:{symbol}:{quantity}:{acquired_on.isoformat()}"
-                ),
-            )
-            session.add(transaction)
-
-    session.flush()
-    for portfolio_name, target in CASH_BALANCE_TARGETS.items():
-        portfolio = portfolios.get(portfolio_name)
-        if portfolio is None:
-            continue
-        transaction_cash = session.scalar(
-            select(func.coalesce(func.sum(PortfolioTransaction.cash_delta), 0)).where(
-                PortfolioTransaction.portfolio_id == portfolio.id
-            )
-        )
-        delta = money(target - Decimal(transaction_cash or 0))
-        session.add(
-            PortfolioTransaction(
-                portfolio_id=portfolio.id,
-                transaction_date=PHASE_1_EFFECTIVE_DATE,
-                kind="cash_adjustment",
-                action="Cash Adjustment",
-                symbol=None,
-                description=f"Phase 1 cash balance set to ${target:,.2f}",
-                quantity=None,
-                price=None,
-                fees=None,
-                cash_delta=delta,
-                source="phase_1_migration",
-                fingerprint=_migration_fingerprint(f"cash:{portfolio_name}"),
-            )
-        )
-
-    session.add(DataMigration(key=PHASE_1_MIGRATION_KEY))
-    session.flush()
-    for portfolio in portfolios.values():
-        replay_portfolio(session, portfolio.id)
-
-
-def _apply_phase_1_date_correction(session: Session) -> None:
-    """Move already-applied Phase 1 cash adjustments to their confirmed effective date."""
-    if session.get(DataMigration, PHASE_1_DATE_CORRECTION_KEY) is not None:
-        return
-
-    portfolio_ids = list(
-        session.scalars(select(Portfolio.id).where(Portfolio.name.in_(CASH_BALANCE_TARGETS)))
-    )
-    if portfolio_ids:
-        adjustments = list(
-            session.scalars(
-                select(PortfolioTransaction).where(
-                    PortfolioTransaction.portfolio_id.in_(portfolio_ids),
-                    PortfolioTransaction.kind == "cash_adjustment",
-                    PortfolioTransaction.source == "phase_1_migration",
-                )
-            )
-        )
-        for adjustment in adjustments:
-            adjustment.transaction_date = PHASE_1_EFFECTIVE_DATE
-
-    session.add(DataMigration(key=PHASE_1_DATE_CORRECTION_KEY))
-    session.flush()
 
 
 def list_portfolios(session: Session) -> list[Portfolio]:

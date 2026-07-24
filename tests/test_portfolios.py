@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -11,7 +10,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from chat_alpaca.models import (
-    DataMigration,
     HoldingLot,
     LedgerEntry,
     Portfolio,
@@ -19,11 +17,7 @@ from chat_alpaca.models import (
     TransactionOverride,
 )
 from chat_alpaca.portfolio_service import (
-    CASH_BALANCE_TARGETS,
     MAX_PORTFOLIOS,
-    PHASE_1_DATE_CORRECTION_KEY,
-    PHASE_1_EFFECTIVE_DATE,
-    PHASE_1_MIGRATION_KEY,
     TransactionDraft,
     create_portfolio,
     delete_portfolio,
@@ -36,7 +30,6 @@ from chat_alpaca.portfolio_service import (
     list_transactions_for_portfolios,
     parse_short_date,
     parse_statement_csv,
-    portfolio_cost,
     portfolio_income_events,
     portfolio_income_summary,
     rebuild_portfolio_from_csv,
@@ -49,7 +42,11 @@ from chat_alpaca.portfolio_service import (
     update_transaction,
 )
 
-STATEMENT_PATH = Path(__file__).resolve().parent.parent / "KC and Papa.csv"
+STATEMENT_FIXTURE = """Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount
+1/2/2026,MoneyLink Transfer,,Opening cash,,,,1000.00
+1/3/2026,Buy,AAPL,First lot,4,100.00,,-400.00
+1/4/2026,Sell,AAPL,Partial sale,1,110.00,,110.00
+"""
 
 
 def test_seeded_portfolios_and_costs(session: Session) -> None:
@@ -57,128 +54,26 @@ def test_seeded_portfolios_and_costs(session: Session) -> None:
     portfolios = list_portfolios(session)
 
     assert [portfolio.name for portfolio in portfolios] == [
-        "KCs Traditional IRA",
-        "KCs Roth IRA",
-        "KC and Papa",
+        "Portfolio 1",
+        "Portfolio 2",
+        "Portfolio 3",
         "Portfolio 4",
         "Portfolio 5",
     ]
-    assert [portfolio.cash for portfolio in portfolios[:3]] == [
-        Decimal("59780.1500"),
-        Decimal("10331.9300"),
-        Decimal("77.7700"),
-    ]
-    assert portfolio_cost(portfolios[0]) == Decimal("178691.06052")
-    assert portfolio_cost(portfolios[1]) == Decimal("105863.71934")
-    assert len(portfolios[2].holdings) == 37
-    assert (
-        session.scalar(
-            select(PortfolioTransaction).where(
-                PortfolioTransaction.portfolio_id == portfolios[2].id
-            )
-        )
-        is not None
-    )
-
-    opening_positions = list(
-        session.scalars(
-            select(PortfolioTransaction).where(PortfolioTransaction.kind == "opening_position")
-        )
-    )
-    assert [(item.symbol, item.cash_delta) for item in opening_positions] == [
-        ("DCO", Decimal("0.0000")),
-        ("VTV", Decimal("0.0000")),
-        ("ONEQ", Decimal("0.0000")),
-    ]
-    adjustments = list(
-        session.scalars(
-            select(PortfolioTransaction).where(
-                PortfolioTransaction.source == "phase_1_migration",
-                PortfolioTransaction.kind == "cash_adjustment",
-            )
-        )
-    )
-    assert len(adjustments) == 3
-    assert all(item.transaction_date == PHASE_1_EFFECTIVE_DATE for item in adjustments)
+    assert all(portfolio.cash == Decimal("0") for portfolio in portfolios)
+    assert all(not portfolio.holdings for portfolio in portfolios)
+    assert session.scalar(select(func.count()).select_from(PortfolioTransaction)) == 0
 
 
-def test_phase_1_migration_is_durable_and_idempotent(session: Session) -> None:
+def test_non_private_seed_is_durable_and_idempotent(session: Session) -> None:
     seed_database(session)
-    original_transactions = session.scalar(select(func.count()).select_from(PortfolioTransaction))
+    original_portfolios = session.scalar(select(func.count()).select_from(Portfolio))
 
     seed_database(session)
     session.flush()
 
-    assert session.get(DataMigration, PHASE_1_MIGRATION_KEY) is not None
-    assert session.get(DataMigration, PHASE_1_DATE_CORRECTION_KEY) is not None
-    assert session.scalar(select(func.count()).select_from(PortfolioTransaction)) == (
-        original_transactions
-    )
-    assert {portfolio.name: portfolio.cash for portfolio in list_portfolios(session)[:3]} == {
-        name: target.quantize(Decimal("0.0001")) for name, target in CASH_BALANCE_TARGETS.items()
-    }
-
-
-def test_phase_1_migrates_a_populated_legacy_database(session: Session) -> None:
-    portfolio = Portfolio(name="KCs Traditional IRA", cash=Decimal("0"))
-    portfolio.holdings.extend(
-        [
-            HoldingLot(
-                symbol="DCO",
-                shares=Decimal("39"),
-                acquired_on=date(2026, 5, 15),
-                cost_basis=Decimal("145.17948"),
-            ),
-            HoldingLot(
-                symbol="VTV",
-                shares=Decimal("547"),
-                acquired_on=date(2026, 5, 15),
-                cost_basis=Decimal("207.0364"),
-            ),
-        ]
-    )
-    session.add(portfolio)
-    session.flush()
-
-    seed_database(session)
-    seed_database(session)
-
-    assert portfolio.cash == Decimal("59780.1500")
-    assert [(lot.symbol, lot.shares) for lot in portfolio.holdings] == [
-        ("DCO", Decimal("39.00000000")),
-        ("VTV", Decimal("547.00000000")),
-    ]
-    assert len(list_transactions(session, portfolio.id)) == 3
-
-
-def test_phase_1_effective_date_correction_updates_an_existing_database(
-    session: Session,
-) -> None:
-    seed_database(session)
-    correction = session.get(DataMigration, PHASE_1_DATE_CORRECTION_KEY)
-    assert correction is not None
-    session.delete(correction)
-    adjustments = list(
-        session.scalars(
-            select(PortfolioTransaction).where(
-                PortfolioTransaction.source == "phase_1_migration",
-                PortfolioTransaction.kind == "cash_adjustment",
-            )
-        )
-    )
-    for adjustment in adjustments:
-        adjustment.transaction_date = date(2026, 7, 17)
-    session.flush()
-
-    seed_database(session)
-
-    assert session.get(DataMigration, PHASE_1_DATE_CORRECTION_KEY) is not None
-    assert all(item.transaction_date == date(2026, 5, 15) for item in adjustments)
-    assert [portfolio.cash for portfolio in list_portfolios(session)[:3]] == [
-        Decimal("59780.1500"),
-        Decimal("10331.9300"),
-        Decimal("77.7700"),
-    ]
+    assert session.scalar(select(func.count()).select_from(Portfolio)) == original_portfolios == 5
+    assert session.scalar(select(func.count()).select_from(PortfolioTransaction)) == 0
 
 
 def test_cash_edit_is_persisted_in_ledger(session: Session) -> None:
@@ -195,7 +90,7 @@ def test_cash_edit_is_persisted_in_ledger(session: Session) -> None:
     )
     assert portfolio.cash == Decimal("1250.2500")
     assert entry is not None
-    assert entry.cash_delta == Decimal("-58529.9000")
+    assert entry.cash_delta == Decimal("1250.2500")
     assert entry.note == "Opening cash"
 
 
@@ -610,12 +505,16 @@ def test_sqlite_rejects_invalid_foreign_key_write(session: Session) -> None:
 def test_statement_import_is_idempotent_and_preserves_duplicate_rows(session: Session) -> None:
     seed_database(session)
     portfolio = list_portfolios(session)[3]
-    parsed = parse_statement_csv(STATEMENT_PATH.read_bytes())
+    content = STATEMENT_FIXTURE + (
+        "1/5/2026,MoneyLink Transfer,,Repeated transfer,,,,50.00\n"
+        "1/5/2026,MoneyLink Transfer,,Repeated transfer,,,,50.00\n"
+    )
+    parsed = parse_statement_csv(content)
 
     assert parsed.errors == []
-    assert len(parsed.transactions) == 75
-    assert import_statement(session, portfolio.id, parsed) == (75, 0)
-    assert import_statement(session, portfolio.id, parsed) == (0, 75)
+    assert len(parsed.transactions) == 5
+    assert import_statement(session, portfolio.id, parsed) == (5, 0)
+    assert import_statement(session, portfolio.id, parsed) == (0, 5)
 
     transfers = list(
         session.scalars(
@@ -647,13 +546,12 @@ def test_rebuild_replaces_portfolio_and_applies_fifo_sales(session: Session) -> 
         ),
     )
 
-    rebuilt = rebuild_portfolio_from_csv(session, portfolio.id, STATEMENT_PATH.read_bytes())
+    rebuilt = rebuild_portfolio_from_csv(session, portfolio.id, STATEMENT_FIXTURE)
     session.flush()
     refreshed = list_portfolios(session)[3]
 
-    assert rebuilt == 75
+    assert rebuilt == 3
     assert all(lot.symbol != "TEST" for lot in refreshed.holdings)
-    assert [(lot.symbol, lot.shares) for lot in refreshed.holdings if lot.symbol == "CRML"] == []
     assert sum(
         (lot.shares for lot in refreshed.holdings if lot.symbol == "AAPL"), Decimal("0")
-    ) == Decimal("122.00000000")
+    ) == Decimal("3.00000000")
