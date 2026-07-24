@@ -9,8 +9,23 @@ from streamlit.testing.v1 import AppTest
 
 from chat_alpaca.config import get_settings
 from chat_alpaca.theme import THEME_CSS
+from streamlit_app import dollars
 
 SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, "$0"),
+        (1234, "$1,234"),
+        (-1234, "$-1,234"),
+        (1234.56, "$1,235"),
+        (123456789, "$123,456,789"),
+    ],
+)
+def test_dollars_preserves_whole_dollar_formatting(value: object, expected: str) -> None:
+    assert dollars(value) == expected
 
 
 def viewer_app(page: str = "Overview") -> AppTest:

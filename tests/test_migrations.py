@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
 from io import StringIO
@@ -13,7 +16,12 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from chat_alpaca.bootstrap import bootstrap_database, initialize_application
+from chat_alpaca.bootstrap import (
+    _reset_bootstrap_state_for_tests,
+    bootstrap_database,
+    bootstrap_database_once,
+    initialize_application,
+)
 from chat_alpaca.migrations import (
     BASELINE_REVISION,
     CURRENT_REVISION,
@@ -25,6 +33,7 @@ from chat_alpaca.models import Base, DataMigration, HoldingLot, Portfolio, Portf
 from chat_alpaca.portfolio_service import (
     PHASE_1_DATE_CORRECTION_KEY,
     PHASE_1_MIGRATION_KEY,
+    create_portfolio,
 )
 
 EXPECTED_TABLES = {
@@ -49,6 +58,13 @@ EXPECTED_TABLES = {
     "model_validations",
     "hypothetical_scenarios",
 }
+
+
+@pytest.fixture(autouse=True)
+def reset_bootstrap_state() -> None:
+    _reset_bootstrap_state_for_tests()
+    yield
+    _reset_bootstrap_state_for_tests()
 
 
 def _revision(engine: sa.Engine) -> str | None:
@@ -236,6 +252,176 @@ def test_application_initialization_returns_bootstrapped_state(tmp_path) -> None
         "KC and Papa",
     ]
     assert portfolios[0].holdings
+
+
+def test_application_bootstraps_once_and_loads_portfolios_every_time(tmp_path, monkeypatch) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'bootstrap-once.db'}")
+    calls = {"migration": 0, "seed": 0, "list": 0}
+    original_upgrade = upgrade_database
+
+    def observe_upgrade(target_engine: sa.Engine) -> None:
+        calls["migration"] += 1
+        original_upgrade(target_engine)
+
+    def observe_seed(_session: Session) -> None:
+        calls["seed"] += 1
+
+    def observe_list(_session: Session) -> list[Portfolio]:
+        calls["list"] += 1
+        return []
+
+    monkeypatch.setattr("chat_alpaca.bootstrap.upgrade_database", observe_upgrade)
+    monkeypatch.setattr("chat_alpaca.bootstrap.seed_database", observe_seed)
+    monkeypatch.setattr("chat_alpaca.bootstrap.list_portfolios", observe_list)
+
+    assert initialize_application(engine) == []
+    assert initialize_application(engine) == []
+    assert initialize_application(engine) == []
+
+    assert calls == {"migration": 1, "seed": 1, "list": 3}
+
+
+def test_different_engines_bootstrap_independently(tmp_path, monkeypatch) -> None:
+    engines = [
+        create_engine(f"sqlite:///{tmp_path / 'first.db'}"),
+        create_engine(f"sqlite:///{tmp_path / 'second.db'}"),
+    ]
+    migrations: list[sa.Engine] = []
+    seeds: list[sa.Engine] = []
+
+    monkeypatch.setattr(
+        "chat_alpaca.bootstrap.upgrade_database",
+        lambda engine: migrations.append(engine),
+    )
+    monkeypatch.setattr(
+        "chat_alpaca.bootstrap.seed_database",
+        lambda session: seeds.append(session.get_bind()),
+    )
+
+    for engine in engines:
+        bootstrap_database_once(engine)
+        bootstrap_database_once(engine)
+
+    assert migrations == engines
+    assert seeds == engines
+
+
+def test_failed_migration_is_retried(tmp_path, monkeypatch) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'migration-retry.db'}")
+    calls = {"migration": 0, "seed": 0}
+    original_upgrade = upgrade_database
+
+    def fail_once(target_engine: sa.Engine) -> None:
+        calls["migration"] += 1
+        if calls["migration"] == 1:
+            raise RuntimeError("migration failed")
+        original_upgrade(target_engine)
+
+    def observe_seed(_session: Session) -> None:
+        calls["seed"] += 1
+
+    monkeypatch.setattr("chat_alpaca.bootstrap.upgrade_database", fail_once)
+    monkeypatch.setattr("chat_alpaca.bootstrap.seed_database", observe_seed)
+
+    with pytest.raises(RuntimeError, match="migration failed"):
+        bootstrap_database_once(engine)
+    bootstrap_database_once(engine)
+    bootstrap_database_once(engine)
+
+    assert calls == {"migration": 2, "seed": 1}
+
+
+def test_failed_seed_retries_the_incomplete_bootstrap(tmp_path, monkeypatch) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'seed-retry.db'}")
+    calls = {"migration": 0, "seed": 0}
+    original_upgrade = upgrade_database
+
+    def observe_upgrade(target_engine: sa.Engine) -> None:
+        calls["migration"] += 1
+        original_upgrade(target_engine)
+
+    def fail_once(_session: Session) -> None:
+        calls["seed"] += 1
+        if calls["seed"] == 1:
+            raise RuntimeError("seed failed")
+
+    monkeypatch.setattr("chat_alpaca.bootstrap.upgrade_database", observe_upgrade)
+    monkeypatch.setattr("chat_alpaca.bootstrap.seed_database", fail_once)
+
+    with pytest.raises(RuntimeError, match="seed failed"):
+        bootstrap_database_once(engine)
+    bootstrap_database_once(engine)
+    bootstrap_database_once(engine)
+
+    assert calls == {"migration": 2, "seed": 2}
+
+
+def test_concurrent_first_calls_bootstrap_once(tmp_path, monkeypatch) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'concurrent.db'}")
+    upgrade_database(engine)
+    calls = {"migration": 0, "seed": 0, "list": 0}
+    calls_lock = threading.Lock()
+    original_upgrade = upgrade_database
+
+    def observe_upgrade(target_engine: sa.Engine) -> None:
+        with calls_lock:
+            calls["migration"] += 1
+        time.sleep(0.05)
+        original_upgrade(target_engine)
+
+    def observe_seed(_session: Session) -> None:
+        with calls_lock:
+            calls["seed"] += 1
+        time.sleep(0.05)
+
+    def observe_list(_session: Session) -> list[Portfolio]:
+        with calls_lock:
+            calls["list"] += 1
+        return []
+
+    monkeypatch.setattr("chat_alpaca.bootstrap.upgrade_database", observe_upgrade)
+    monkeypatch.setattr("chat_alpaca.bootstrap.seed_database", observe_seed)
+    monkeypatch.setattr("chat_alpaca.bootstrap.list_portfolios", observe_list)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: initialize_application(engine), range(2)))
+
+    assert results == [[], []]
+    assert calls == {"migration": 1, "seed": 1, "list": 2}
+
+
+def test_reset_allows_the_same_engine_to_bootstrap_again(tmp_path, monkeypatch) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'reset.db'}")
+    calls = 0
+
+    def observe_upgrade(_engine: sa.Engine) -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr("chat_alpaca.bootstrap.upgrade_database", observe_upgrade)
+    monkeypatch.setattr("chat_alpaca.bootstrap.seed_database", lambda _session: None)
+
+    bootstrap_database_once(engine)
+    _reset_bootstrap_state_for_tests()
+    bootstrap_database_once(engine)
+
+    assert calls == 2
+
+
+def test_application_initialization_reloads_fresh_portfolio_state(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'fresh-state.db'}")
+
+    initial = initialize_application(engine)
+    with Session(engine) as session:
+        created = create_portfolio(session, "Freshly added")
+        created_id = created.id
+        session.commit()
+    refreshed = initialize_application(engine)
+
+    assert all(portfolio.id != created_id for portfolio in initial)
+    assert any(
+        portfolio.id == created_id and portfolio.name == "Freshly added" for portfolio in refreshed
+    )
 
 
 def test_sqlite_foreign_keys_remain_enforced_after_migration(tmp_path) -> None:
