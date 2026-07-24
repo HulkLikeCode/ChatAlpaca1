@@ -1,18 +1,124 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
+from decimal import Decimal
 
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from chat_alpaca.bootstrap import (
+    _reset_bootstrap_state_for_tests,
+    initialize_application,
+)
 from chat_alpaca.config import get_settings
+from chat_alpaca.db import get_engine, get_session_factory, session_scope
+from chat_alpaca.portfolio_service import TransactionDraft, record_transaction
 from chat_alpaca.presentation import date_preset_range
 from chat_alpaca.theme import THEME_CSS, VIOLET_COLOR, purple_header_table
-from streamlit_app import dollars
+from streamlit_app import cached_historical_data, dollars
 
 SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
+
+
+def synthetic_transaction(
+    transaction_date: date,
+    kind: str,
+    cash_delta: str,
+    *,
+    symbol: str | None = None,
+    quantity: str | None = None,
+    price: str | None = None,
+) -> TransactionDraft:
+    return TransactionDraft(
+        transaction_date,
+        kind.replace("_", " ").title(),
+        kind,
+        symbol,
+        f"Synthetic {kind.replace('_', ' ')}",
+        Decimal(quantity) if quantity is not None else None,
+        Decimal(price) if price is not None else None,
+        None,
+        Decimal(cash_delta),
+    )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def isolated_app_database(tmp_path_factory: pytest.TempPathFactory):
+    """Give AppTest deterministic synthetic ledger data, independent of ignored files."""
+    database_path = tmp_path_factory.mktemp("streamlit-app") / "app.db"
+    previous_database_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = f"sqlite:///{database_path}"
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+    _reset_bootstrap_state_for_tests()
+    cached_historical_data.clear()
+
+    portfolios = initialize_application()
+    synthetic_transactions = (
+        (
+            portfolios[0].id,
+            synthetic_transaction(date(2026, 5, 15), "cash_adjustment", "1000"),
+        ),
+        (
+            portfolios[0].id,
+            synthetic_transaction(
+                date(2026, 5, 15),
+                "opening_position",
+                "0",
+                symbol="AAPL",
+                quantity="4",
+                price="100",
+            ),
+        ),
+        (
+            portfolios[0].id,
+            synthetic_transaction(
+                date(2026, 6, 15),
+                "dividend",
+                "12.50",
+                symbol="AAPL",
+            ),
+        ),
+        (
+            portfolios[1].id,
+            synthetic_transaction(date(2026, 5, 15), "cash_adjustment", "2000"),
+        ),
+        (
+            portfolios[1].id,
+            synthetic_transaction(
+                date(2026, 5, 15),
+                "opening_position",
+                "0",
+                symbol="MSFT",
+                quantity="5",
+                price="200",
+            ),
+        ),
+        (
+            portfolios[1].id,
+            synthetic_transaction(date(2026, 6, 16), "interest", "5"),
+        ),
+    )
+    with session_scope() as session:
+        for portfolio_id, transaction in synthetic_transactions:
+            record_transaction(session, portfolio_id, transaction, source="test")
+
+    yield
+
+    get_engine().dispose()
+    get_session_factory.cache_clear()
+    get_engine.cache_clear()
+    _reset_bootstrap_state_for_tests()
+    cached_historical_data.clear()
+    if previous_database_url is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = previous_database_url
+    get_settings.cache_clear()
 
 
 @pytest.mark.parametrize(
