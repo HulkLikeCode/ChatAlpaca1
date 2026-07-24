@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hmac
-from datetime import date, timedelta, timezone
+from dataclasses import asdict
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from uuid import uuid4
@@ -77,6 +78,15 @@ from chat_alpaca.portfolio_service import (
     rename_portfolio,
     update_transaction,
 )
+from chat_alpaca.presentation import (
+    DATE_PRESET_LABELS,
+    assumption_comparison_frame,
+    date_preset_range,
+    format_relative_age,
+    market_context_display_frame,
+    matching_date_preset,
+    sorted_hover_text,
+)
 from chat_alpaca.realtime import (
     BROAD_MARKET_PROXIES,
     CORRELATION_HEURISTIC_DISCLOSURE,
@@ -96,6 +106,7 @@ from chat_alpaca.realtime import (
     build_portfolio_pulse,
     market_context_metrics,
     market_hours_state,
+    portfolio_monitor_metrics,
     position_risk_contributions,
 )
 from chat_alpaca.reports import (
@@ -116,9 +127,10 @@ from chat_alpaca.scenarios import (
     ScenarioType,
     run_deterministic_scenario,
     save_scenario_run,
+    scenario_explanation,
     sensitivity_grid,
 )
-from chat_alpaca.theme import PLOT_COLORS, THEME_CSS
+from chat_alpaca.theme import PLOT_COLORS, THEME_CSS, purple_header_table
 from chat_alpaca.trading import (
     cancel_order,
     get_trading_client,
@@ -238,6 +250,14 @@ def portfolio_has_data(portfolio: Portfolio) -> bool:
     return bool(portfolio.holdings or portfolio.transactions or float(portfolio.cash) != 0)
 
 
+def _apply_master_date_preset(label: str, today: date) -> None:
+    start, end = date_preset_range(label, today)
+    st.session_state.master_start_date = start
+    st.session_state.master_end_date = end
+    st.session_state.master_start_draft = start
+    st.session_state.master_end_draft = end
+
+
 def render_master_controls(
     portfolios: list[Portfolio],
 ) -> tuple[list[Portfolio], date, date]:
@@ -270,6 +290,23 @@ def render_master_controls(
 
     id_to_portfolio = {portfolio.id: portfolio for portfolio in portfolios}
     with st.container(key="master_controls"):
+        active_preset = matching_date_preset(
+            st.session_state.master_start_draft,
+            st.session_state.master_end_draft,
+            today,
+        )
+        preset_columns = st.columns(len(DATE_PRESET_LABELS), gap="small")
+        for column, label in zip(preset_columns, DATE_PRESET_LABELS, strict=True):
+            column.button(
+                label,
+                key=f"master_date_preset_{label}",
+                type="primary" if active_preset == label else "secondary",
+                width="stretch",
+                on_click=_apply_master_date_preset,
+                args=(label, today),
+            )
+        applied_start = st.session_state.get("master_start_date", applied_start)
+        applied_end = st.session_state.get("master_end_date", applied_end)
         with st.form("master_filters", border=False):
             columns = st.columns([3.2, 1.35, 1.35, 0.9], vertical_alignment="bottom")
             scope_label = "All Portfolios" if applied_all else f"{len(applied_ids)} portfolios"
@@ -445,27 +482,6 @@ def render_portfolio_cards(
     )
 
 
-def _metric_dollars(value: float | None) -> str:
-    return dollars(value) if value is not None else "—"
-
-
-def _render_metric(
-    column: object,
-    label: str,
-    value: object,
-    *,
-    key: str,
-    stale: bool = False,
-) -> None:
-    """Render a metric with the theme's quiet stale-value treatment when needed."""
-    with column:
-        if stale:
-            with st.container(key=f"stale_metric_{key}"):
-                st.metric(label, value)
-        else:
-            st.metric(label, value)
-
-
 def _render_warning(message: str, *, subdued: bool = False) -> None:
     if subdued or message.startswith("Historical data note:"):
         st.caption(message)
@@ -559,65 +575,6 @@ def render_performance_summary(
                 indicative_total_value=pulse.indicative_total_value,
             )
 
-        metrics = st.columns(6)
-        _render_metric(
-            metrics[0],
-            report.total_label,
-            dollars(report.total_value) if report.total_value is not None else "—",
-            key=f"{key_prefix}_selected_totals",
-            stale=bool(
-                regular_market_hours
-                and pulse is not None
-                and pulse.indicative_total_value is not None
-                and not overlay_is_fresh
-            ),
-        )
-        _render_metric(
-            metrics[1],
-            (
-                "All-time gain/loss (indicative overlay)"
-                if pulse is not None and available_count > 0
-                else "All-time gain/loss (confirmed)"
-            ),
-            _metric_dollars(report.all_time),
-            key=f"{key_prefix}_all_time",
-            stale=bool(
-                regular_market_hours
-                and pulse is not None
-                and available_count > 0
-                and not overlay_is_fresh
-            ),
-        )
-        _render_metric(
-            metrics[2],
-            "Daily gain/loss",
-            _metric_dollars(report.daily),
-            key=f"{key_prefix}_daily",
-            stale=bool(
-                regular_market_hours
-                and pulse is not None
-                and not overlay_is_fresh
-                and report.daily is not None
-            ),
-        )
-        _render_metric(
-            metrics[3],
-            "Custom gain/loss",
-            _metric_dollars(report.custom),
-            key=f"{key_prefix}_custom",
-            stale=bool(
-                regular_market_hours
-                and pulse is not None
-                and custom_end == date.today()
-                and available_count > 0
-                and not overlay_is_fresh
-            ),
-        )
-        metrics[4].metric(
-            "Annualized market-model intercept, RF assumed 0%",
-            f"{report.alpha:.2%}" if report.alpha is not None else "—",
-        )
-        metrics[5].metric("Beta", f"{report.beta:.2f}" if report.beta is not None else "—")
         if show_portfolio_cards:
             render_portfolio_cards(
                 portfolios, closes, custom_start, custom_end, calculation_context
@@ -672,9 +629,7 @@ def render_performance_summary(
                     "All-time gain/loss": row.all_time,
                     "Daily gain/loss": row.daily,
                     "Custom gain/loss": row.custom,
-                    "Annualized market-model intercept, RF assumed 0%": (
-                        row.alpha * 100 if row.alpha is not None else None
-                    ),
+                    "Alpha": (row.alpha * 100 if row.alpha is not None else None),
                     "Beta": row.beta,
                     "Observations": row.alpha_beta_observations,
                     "_stale": regular_market_hours
@@ -695,7 +650,7 @@ def render_performance_summary(
             else performance
         )
         st.dataframe(
-            performance_display,
+            purple_header_table(performance_display),
             hide_index=True,
             width="stretch",
             column_config={
@@ -708,14 +663,13 @@ def render_performance_summary(
                 )
             }
             | {
-                "Annualized market-model intercept, RF assumed 0%": (
-                    st.column_config.NumberColumn(format="%.2f%%")
-                ),
+                "Alpha": st.column_config.NumberColumn(format="%.2f%%"),
                 "Beta": st.column_config.NumberColumn(format="%.2f"),
                 "Observations": st.column_config.NumberColumn(format="%d"),
             },
             key=f"{key_prefix}_portfolio_gain_loss",
         )
+        st.caption("Alpha = Annualized market model-intercept, RF assumed 0%")
         st.caption(
             "Confirmed all-time gain/loss runs from inception through the latest complete confirmed "
             "valuation date and is independent of Custom End. Any live amount is separately labeled "
@@ -764,7 +718,7 @@ def render_consolidated_holdings(
             "Daily gain/loss": "Latest close change",
             "Daily price dates": "Change dates",
             "Custom gain/loss": "Current-lot unrealized custom change",
-            "Alpha": "Annualized market-model intercept, RF assumed 0%",
+            "Alpha": "Alpha",
         }
         money_columns = (
             "Avg/share",
@@ -777,11 +731,44 @@ def render_consolidated_holdings(
             "Latest close change",
             "Current-lot unrealized custom change",
         )
+        rendered_at = datetime.now(timezone.utc)
+
+        def prepare_holdings_view(frame: pd.DataFrame) -> pd.DataFrame:
+            result = frame.rename(columns=common_renames).copy()
+            timestamps = result["Confirmed valuation timestamp"]
+            result["Confirmed Valuation Date"] = [
+                (
+                    format_eastern_timestamp(timestamp)
+                    if pd.notna(timestamp)
+                    else (
+                        f"{value.month}/{value.day}/{value.strftime('%y')} · timestamp unavailable"
+                        if pd.notna(value)
+                        else "Unavailable"
+                    )
+                )
+                for timestamp, value in zip(
+                    timestamps,
+                    result["Confirmed valuation date"],
+                    strict=True,
+                )
+            ]
+            result["As of"] = [
+                format_relative_age(
+                    timestamp.to_pydatetime() if isinstance(timestamp, pd.Timestamp) else timestamp,
+                    now=rendered_at,
+                )
+                if pd.notna(timestamp)
+                else "Unavailable"
+                for timestamp in timestamps
+            ]
+            return result
+
         if view == "Summary":
             summary_columns = [
                 "Symbol",
                 "Avg/share",
-                "Confirmed valuation date",
+                "Confirmed Valuation Date",
+                "As of",
                 "Confirmed price",
                 "Confirmed value",
                 "Latest symbol price",
@@ -792,14 +779,14 @@ def render_consolidated_holdings(
                 "Latest close change",
                 "Change dates",
                 "Current-lot unrealized custom change",
-                "Annualized market-model intercept, RF assumed 0%",
+                "Alpha",
                 "Beta",
                 "Alpha/Beta observations",
                 "Shares",
                 "Portfolios",
             ]
-            summary_view = summary.rename(columns=common_renames)[summary_columns].copy()
-            summary_view["Annualized market-model intercept, RF assumed 0%"] *= 100
+            summary_view = prepare_holdings_view(summary)[summary_columns]
+            summary_view["Alpha"] *= 100
             st.dataframe(
                 summary_view,
                 hide_index=True,
@@ -809,11 +796,8 @@ def render_consolidated_holdings(
                     "Shares": st.column_config.NumberColumn(
                         format=adaptive_share_number_format(summary_view["Shares"])
                     ),
-                    "Annualized market-model intercept, RF assumed 0%": (
-                        st.column_config.NumberColumn(format="%.2f%%")
-                    ),
+                    "Alpha": st.column_config.NumberColumn(format="%.2f%%"),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
-                    "Confirmed valuation date": st.column_config.DateColumn(format="M/D/YY"),
                     "Latest symbol date": st.column_config.DateColumn(format="M/D/YY"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.0f")
@@ -828,7 +812,8 @@ def render_consolidated_holdings(
             detail_columns = [
                 "Symbol",
                 "Avg/share",
-                "Confirmed valuation date",
+                "Confirmed Valuation Date",
+                "As of",
                 "Confirmed price",
                 "Confirmed value",
                 "Latest symbol price",
@@ -839,15 +824,15 @@ def render_consolidated_holdings(
                 "Latest close change",
                 "Change dates",
                 "Current-lot unrealized custom change",
-                "Annualized market-model intercept, RF assumed 0%",
+                "Alpha",
                 "Beta",
                 "Alpha/Beta observations",
                 "Shares",
                 "Portfolio",
                 "Acquired",
             ]
-            detail_view = detail.rename(columns=common_renames)[detail_columns].copy()
-            detail_view["Annualized market-model intercept, RF assumed 0%"] *= 100
+            detail_view = prepare_holdings_view(detail)[detail_columns]
+            detail_view["Alpha"] *= 100
             st.dataframe(
                 detail_view,
                 hide_index=True,
@@ -857,12 +842,9 @@ def render_consolidated_holdings(
                     "Shares": st.column_config.NumberColumn(
                         format=adaptive_share_number_format(detail_view["Shares"])
                     ),
-                    "Annualized market-model intercept, RF assumed 0%": (
-                        st.column_config.NumberColumn(format="%.2f%%")
-                    ),
+                    "Alpha": st.column_config.NumberColumn(format="%.2f%%"),
                     "Beta": st.column_config.NumberColumn(format="%.2f"),
                     "Acquired": st.column_config.DateColumn(format="M/D/YY"),
-                    "Confirmed valuation date": st.column_config.DateColumn(format="M/D/YY"),
                     "Latest symbol date": st.column_config.DateColumn(format="M/D/YY"),
                     **{
                         column: st.column_config.NumberColumn(format="$%,.0f")
@@ -873,6 +855,7 @@ def render_consolidated_holdings(
                     "Latest symbol price": st.column_config.NumberColumn(format="$%,.2f"),
                 },
             )
+        st.caption("Alpha = Annualized market model-intercept, RF assumed 0%")
         insufficient = summary[summary["Alpha"].isna()]
         st.caption(
             "Holding Alpha/Beta uses daily price returns plus symbol-assigned ledger dividends "
@@ -1033,7 +1016,7 @@ def render_compare(
         expanded=True,
         calculation_context=calculation_context,
     )
-    with st.expander("Performance comparison", expanded=False):
+    with st.expander("Performance comparison", expanded=True):
         controls = st.columns([1.4, 2.2])
         with controls[0]:
             selected_benchmarks = st.multiselect(
@@ -1115,8 +1098,32 @@ def render_compare(
                         "width": 2.3,
                         "color": PLOT_COLORS[index % len(PLOT_COLORS)],
                     },
+                    hoverinfo="skip",
                 )
             )
+        hover_text = sorted_hover_text(report.series)
+        hover_index = report.series[0].index
+        for item in report.series[1:]:
+            hover_index = hover_index.union(item.index)
+        hover_y = [
+            max(
+                (float(value) for item in report.series if pd.notna(value := item.get(timestamp))),
+                default=100.0,
+            )
+            for timestamp in hover_index
+        ]
+        figure.add_trace(
+            go.Scatter(
+                x=hover_index,
+                y=hover_y,
+                name="Sorted values",
+                mode="lines",
+                line={"width": 0, "color": "rgba(0,0,0,0)"},
+                text=hover_text,
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+            )
+        )
         figure.update_layout(
             height=520,
             margin={"l": 12, "r": 12, "t": 24, "b": 12},
@@ -1124,7 +1131,7 @@ def render_compare(
             plot_bgcolor="rgba(6,8,16,.62)",
             font={"color": "#F7F8FF"},
             legend={"orientation": "h", "y": 1.08},
-            hovermode="x unified",
+            hovermode="x",
             yaxis={"title": "Growth of $100", "gridcolor": "rgba(105,126,255,.14)"},
             xaxis={"gridcolor": "rgba(105,126,255,.10)"},
         )
@@ -1134,33 +1141,26 @@ def render_compare(
             hide_index=True,
             width="stretch",
             column_config={
-                key: st.column_config.NumberColumn(format="%.0f%%")
-                for key in (
-                    "Total return",
-                    "Annualized return",
-                    "Volatility",
-                    "Max drawdown",
-                )
+                "Total return": st.column_config.NumberColumn(format="%.1f%%"),
+                **{
+                    key: st.column_config.NumberColumn(format="%.0f%%")
+                    for key in ("Annualized return", "Volatility", "Max drawdown")
+                },
             },
+        )
+        st.caption(
+            "Annualized return compounds the first-to-last value ratio over elapsed calendar "
+            "days divided by 365.25; fewer than two valid values is unavailable."
+        )
+        st.caption(
+            "Volatility is the sample standard deviation of daily percentage changes, annualized "
+            "by √252; it is unavailable unless at least two daily returns are present."
         )
         st.caption(
             "All series are rebased to $100. Portfolio performance excludes transfers, cash "
             "adjustments, and contributed opening positions. Portfolio prices are split-adjusted "
             "only; benchmark series use dividend-adjusted total-return closes."
         )
-
-
-FORECAST_PRESETS = {
-    "Conservative": (0.05, 0.08),
-    "Baseline": (0.07, 0.12),
-    "Growth": (0.09, 0.16),
-}
-
-
-def _apply_forecast_preset() -> None:
-    annual_return, annual_volatility = FORECAST_PRESETS[st.session_state.forecast_preset]
-    st.session_state.forecast_annual_return = annual_return * 100
-    st.session_state.forecast_annual_volatility = annual_volatility * 100
 
 
 def render_forecast(
@@ -1171,51 +1171,39 @@ def render_forecast(
         st.caption("No portfolios are available for a projection.")
         return
 
-    scope_options = ["Selected portfolios", *(portfolio.name for portfolio in portfolios)]
-    st.session_state.setdefault("forecast_preset", "Baseline")
+    st.session_state.pop("forecast_scope", None)
+    st.session_state.pop("forecast_preset", None)
     st.session_state.setdefault("forecast_annual_return", 7.0)
     st.session_state.setdefault("forecast_annual_volatility", 12.0)
     st.session_state.setdefault("forecast_monthly_contribution", 0.0)
     st.session_state.setdefault("forecast_horizon", 10)
     st.session_state.setdefault("forecast_target_value", 1_000_000.0)
 
+    st.caption("Forecast scope: " + ", ".join(portfolio.name for portfolio in portfolios))
     first_row = st.columns(3)
-    scope = first_row[0].selectbox("Projection scope", scope_options, key="forecast_scope")
-    first_row[1].selectbox(
-        "Scenario preset",
-        list(FORECAST_PRESETS),
-        key="forecast_preset",
-        on_change=_apply_forecast_preset,
-    )
-    horizon_years = first_row[2].select_slider(
+    horizon_years = first_row[0].select_slider(
         "Forecast horizon (years)", options=list(range(1, 11)), key="forecast_horizon"
     )
-    scoped_portfolios = (
-        portfolios
-        if scope == "Selected portfolios"
-        else [next(portfolio for portfolio in portfolios if portfolio.name == scope)]
-    )
-    second_row = st.columns(3)
-    annual_return = second_row[0].number_input(
+    annual_return = first_row[1].number_input(
         "Expected annual return (%)",
         min_value=-99.0,
         max_value=50.0,
         step=0.25,
         key="forecast_annual_return",
     )
-    annual_volatility = second_row[1].number_input(
+    annual_volatility = first_row[2].number_input(
         "Annual volatility (%)",
         min_value=0.0,
         max_value=100.0,
         step=0.25,
         key="forecast_annual_volatility",
     )
-    monthly_contribution = second_row[2].number_input(
+    second_row = st.columns([1.2, 0.8, 1.4], vertical_alignment="bottom")
+    monthly_contribution = second_row[0].number_input(
         "Monthly contribution ($)", min_value=0.0, step=100.0, key="forecast_monthly_contribution"
     )
-    target_row = st.columns([1.0, 1.5, 1.5], vertical_alignment="bottom")
-    include_target = target_row[0].checkbox("Set a target value", key="forecast_include_target")
-    entered_target = target_row[1].number_input(
+    include_target = second_row[1].checkbox("Set a target value", key="forecast_include_target")
+    entered_target = second_row[2].number_input(
         "Target portfolio value ($)",
         min_value=1.0,
         step=1_000.0,
@@ -1223,7 +1211,6 @@ def render_forecast(
         key="forecast_target_value",
         disabled=not include_target,
     )
-    target_probability_slot = target_row[2].empty()
     target_value = entered_target if include_target else None
     assumptions = ForecastAssumptions(
         annual_return=annual_return / 100,
@@ -1233,11 +1220,11 @@ def render_forecast(
         target_value=target_value,
     )
     try:
-        request = build_forecast_request(scoped_portfolios, closes, assumptions)
+        request = build_forecast_request(portfolios, closes, assumptions)
     except ValueError as exc:
         st.warning(str(exc))
         return
-    st.caption(f"Starting value for {scope}: {dollars(request.current_value)}.")
+    st.caption(f"Starting value for selected portfolios: {dollars(request.current_value)}.")
     st.caption(request.coverage)
     for warning in request.warnings:
         _render_warning(warning)
@@ -1248,12 +1235,6 @@ def render_forecast(
         if contract.source_valuation_date is not None
         else "unavailable (disclosed fallback)"
     )
-    st.caption(
-        f"Model {contract.model_type} / {contract.model_version} · seed {contract.seed} · "
-        f"{contract.simulation_count:,} simulations · source valuation date {source_date} · "
-        f"method {contract.source_valuation_methodology} · generated "
-        f"{contract.result_generated_at.isoformat()}."
-    )
     dates = projection_calendar_dates(contract)
     percentile_data = result.monthly_percentiles
     figure = go.Figure()
@@ -1262,7 +1243,8 @@ def render_forecast(
             x=dates,
             y=percentile_data["P95"],
             line={"width": 0, "color": "rgba(126,105,255,0)"},
-            hoverinfo="skip",
+            name="95th percentile",
+            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>95th percentile</extra>",
             showlegend=False,
         )
     )
@@ -1282,7 +1264,8 @@ def render_forecast(
             x=dates,
             y=percentile_data["P75"],
             line={"width": 0, "color": "rgba(105,126,255,0)"},
-            hoverinfo="skip",
+            name="75th percentile",
+            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>75th percentile</extra>",
             showlegend=False,
         )
     )
@@ -1320,6 +1303,20 @@ def render_forecast(
     )
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
     st.caption(
+        f"Model {contract.model_type} / {contract.model_version} · seed {contract.seed} · "
+        f"{contract.simulation_count:,} simulations · source valuation date {source_date} · "
+        f"method {contract.source_valuation_methodology} · generated "
+        f"{contract.result_generated_at.isoformat()}."
+    )
+    st.caption(
+        "Inputs: the confirmed selected-portfolio value is month zero; the horizon sets the "
+        "number of monthly steps; expected annual return sets lognormal drift; annual volatility "
+        "sets dispersion; the monthly contribution is deposited at each month-end; 10,000 paths "
+        f"use seed {contract.seed}; P5/P25/P50/P75/P95 form the displayed bands; and the optional "
+        "target is compared with terminal path values to calculate its probability. This model "
+        "has no inflation or fee input."
+    )
+    st.caption(
         "Methodology: 10,000 reproducible monthly lognormal simulations use the selected "
         "expected return for drift and volatility for outcome dispersion; contributions are "
         "added at month-end. The chart shows the median, 25th–75th, and 5th–95th percentile "
@@ -1343,11 +1340,11 @@ def render_forecast(
         },
     )
     if result.target_probability is not None:
-        target_probability_slot.metric(
+        st.metric(
             f"Chance of reaching {dollars(target_value)} in {horizon_years} years",
             f"{result.target_probability:.0%}",
         )
-    render_deterministic_scenarios(scoped_portfolios, closes, owner=owner)
+    render_deterministic_scenarios(portfolios, closes, owner=owner)
 
 
 SCENARIO_LABELS = {
@@ -1373,7 +1370,8 @@ def render_deterministic_scenarios(
             "One fixed set of assumptions is applied reproducibly. This view does not run "
             "bootstrap or Monte Carlo models."
         )
-        selected_type = st.selectbox(
+        control_columns = st.columns(3)
+        selected_type = control_columns[0].selectbox(
             "Deterministic scenario",
             list(SCENARIO_LABELS),
             format_func=lambda value: SCENARIO_LABELS[value],
@@ -1386,7 +1384,7 @@ def render_deterministic_scenarios(
             else "Market decline (%)"
         )
         market_decline = (
-            -st.number_input(
+            -control_columns[1].number_input(
                 shock_label,
                 min_value=0.0,
                 max_value=100.0,
@@ -1397,7 +1395,7 @@ def render_deterministic_scenarios(
             / 100
         )
         inflation_increase = (
-            st.number_input(
+            control_columns[2].number_input(
                 "Additional inflation (%)",
                 min_value=0.0,
                 max_value=25.0,
@@ -1410,7 +1408,7 @@ def render_deterministic_scenarios(
             else 0.02
         )
         low_return = (
-            st.number_input(
+            control_columns[2].number_input(
                 "Low-period annual return (%)",
                 min_value=-99.0,
                 max_value=25.0,
@@ -1424,7 +1422,7 @@ def render_deterministic_scenarios(
         )
         interruption_months = (
             int(
-                st.number_input(
+                control_columns[2].number_input(
                     "Contribution interruption (months)",
                     min_value=0,
                     max_value=480,
@@ -1437,7 +1435,7 @@ def render_deterministic_scenarios(
             else 12
         )
         holding_symbol = (
-            st.selectbox("Holding", symbols, key="scenario_holding")
+            control_columns[2].selectbox("Holding", symbols, key="scenario_holding")
             if selected_type == ScenarioType.HOLDING_DECLINE and symbols
             else None
         )
@@ -1449,7 +1447,9 @@ def render_deterministic_scenarios(
                 sectors[symbol] = metadata.sector or "Unclassified"
         available_sectors = sorted(set(sectors.values()))
         if selected_type == ScenarioType.SECTOR_DECLINE:
-            sector = st.selectbox("Sector", available_sectors, key="scenario_sector")
+            sector = control_columns[2].selectbox(
+                "Sector", available_sectors, key="scenario_sector"
+            )
         assumptions = ScenarioAssumptions(
             selected_type,
             market_decline=market_decline,
@@ -1510,12 +1510,17 @@ def render_deterministic_scenarios(
                 for name, impact in result.account_type_effects.items()
             ]
         )
-        assumption_frame = pd.DataFrame(
-            [
-                {"Assumption": name.replace("_", " ").title(), "Value": str(value)}
-                for name, value in result.assumptions.items()
-            ]
+        default_payload = asdict(ScenarioAssumptions(selected_type))
+        default_payload["scenario_type"] = selected_type.value
+        default_payload = {
+            key: value.isoformat() if isinstance(value, date) else value
+            for key, value in default_payload.items()
+        }
+        assumption_frame = assumption_comparison_frame(
+            result.assumptions,
+            default_payload,
         )
+        st.caption(scenario_explanation(assumptions))
         impact_height = min(
             360,
             max(
@@ -2587,32 +2592,36 @@ def render_hypothetical_analysis(
         "review and a fresh price."
     )
     actions: list[ProposedAction] = st.session_state.setdefault("hypothetical_actions", [])
-    action_label = st.selectbox(
+    scope_columns = st.columns(3)
+    action_label = scope_columns[0].selectbox(
         "Proposed action",
         options=[item.value for item in HypotheticalActionType],
         format_func=lambda value: value.replace("_", " ").title(),
         key="hypothetical_action_type",
     )
-    portfolio = st.selectbox(
+    portfolio = scope_columns[1].selectbox(
         "Scenario portfolio", portfolios, format_func=lambda item: item.name, key="hypo_portfolio"
     )
-    destination = st.selectbox(
+    destination = scope_columns[2].selectbox(
         "Assignment destination",
         portfolios,
         format_func=lambda item: item.name,
         key="hypo_destination",
     )
-    symbol = st.text_input("Hypothetical symbol", key="hypo_symbol").strip().upper()
-    quantity_value = st.number_input(
+    trade_columns = st.columns(5)
+    symbol = trade_columns[0].text_input("Hypothetical symbol", key="hypo_symbol").strip().upper()
+    quantity_value = trade_columns[1].number_input(
         "Hypothetical quantity", min_value=0.0, value=0.0, key="hypo_quantity"
     )
-    price_value = st.number_input(
+    price_value = trade_columns[2].number_input(
         "Hypothetical analysis price", min_value=0.0, value=0.0, key="hypo_price"
     )
-    amount_value = st.number_input(
+    amount_value = trade_columns[3].number_input(
         "Hypothetical cash amount", min_value=0.0, value=0.0, key="hypo_amount"
     )
-    fees_value = st.number_input("Hypothetical fees", min_value=0.0, value=0.0, key="hypo_fees")
+    fees_value = trade_columns[4].number_input(
+        "Hypothetical fees", min_value=0.0, value=0.0, key="hypo_fees"
+    )
     add_column, clear_column = st.columns(2)
     if add_column.button("Add proposed action"):
         try:
@@ -2668,16 +2677,19 @@ def render_hypothetical_analysis(
             hide_index=True,
             width="stretch",
         )
-    expected_return = st.number_input(
+    model_columns = st.columns(3)
+    expected_return = model_columns[0].number_input(
         "Annual expected return assumption (%)",
         min_value=-99.0,
         max_value=100.0,
         value=7.0,
         key="hypo_expected_return",
     )
-    target_enabled = st.checkbox("Set a hypothetical forecast target", key="hypo_target_on")
+    target_enabled = model_columns[1].checkbox(
+        "Set a hypothetical forecast target", key="hypo_target_on"
+    )
     target_value = (
-        st.number_input(
+        model_columns[2].number_input(
             "Hypothetical forecast target",
             min_value=1.0,
             value=100000.0,
@@ -2686,19 +2698,20 @@ def render_hypothetical_analysis(
         if target_enabled
         else None
     )
-    retirement_enabled = st.checkbox(
+    retirement_columns = st.columns(3)
+    retirement_enabled = retirement_columns[0].checkbox(
         "Include retirement success analysis", key="hypo_retirement_on"
     )
     retirement_horizon = 20
     retirement_spending = 0.0
     if retirement_enabled:
-        retirement_horizon = st.select_slider(
+        retirement_horizon = retirement_columns[1].select_slider(
             "Retirement analysis horizon (years)",
             options=list(range(20, 41)),
             value=20,
             key="hypo_retirement_horizon",
         )
-        retirement_spending = st.number_input(
+        retirement_spending = retirement_columns[2].number_input(
             "Annual retirement spending assumption",
             min_value=0.0,
             value=40000.0,
@@ -3023,32 +3036,22 @@ def render_active_monitoring(
             "Durable previous closes are shown where available."
         )
 
+    context_request = HistoricalDataRequest(
+        tuple(dict.fromkeys((*BROAD_MARKET_PROXIES, *SECTOR_PROXIES))),
+        date.today() - timedelta(days=400),
+        date.today(),
+        "benchmark_total_return",
+    )
+    try:
+        context_history = cached_historical_data(context_request)
+    except Exception:
+        context_history = pd.DataFrame()
+
     pulse = build_portfolio_pulse(portfolios, records)
-    metrics = st.columns(4)
-    _render_metric(
-        metrics[0],
-        "Selected Totals",
-        dollars(pulse.indicative_total_value)
-        if pulse.indicative_total_value is not None
-        else "Unavailable",
-        key="monitor_selected_totals",
-        stale=bool(
-            hours.is_regular_hours
-            and pulse.stale_or_missing
-            and pulse.indicative_total_value is not None
-        ),
-    )
-    _render_metric(
-        metrics[1],
-        "Daily change",
-        dollars(pulse.daily_change) if pulse.daily_change is not None else "Unavailable",
-        key="monitor_daily_change",
-        stale=bool(
-            hours.is_regular_hours and pulse.stale_or_missing and pulse.daily_change is not None
-        ),
-    )
-    metrics[2].metric("Held symbols", len(symbols))
-    metrics[3].metric("Stale / missing", len(pulse.stale_or_missing))
+    portfolio_membership: dict[str, list[str]] = {}
+    for portfolio in portfolios:
+        for symbol in {lot.symbol for lot in portfolio.holdings}:
+            portfolio_membership.setdefault(symbol, []).append(portfolio.name)
 
     holding_rows = pd.DataFrame(
         [
@@ -3058,11 +3061,12 @@ def render_active_monitoring(
                 "Value": row.value,
                 "Daily change": row.daily_change,
                 "Share of net daily P/L": row.contribution,
-                "Freshness": freshness_label(row.status),
                 "As of": format_eastern_timestamp(records[row.symbol].as_of_time),
                 "Feed": records[row.symbol].feed,
                 "Provider": records[row.symbol].provider,
                 "Staleness reason": records[row.symbol].staleness_reason,
+                # Row grain is one consolidated held symbol across the selected portfolios.
+                "Portfolio": ", ".join(sorted(portfolio_membership.get(row.symbol, ()))),
                 "_stale": hours.is_regular_hours
                 and row.status
                 not in {FreshnessStatus.STREAMING, FreshnessStatus.RECENTLY_REFRESHED},
@@ -3100,34 +3104,59 @@ def render_active_monitoring(
                 "Share of net daily P/L": st.column_config.NumberColumn(format="%.0f%%"),
             },
         )
+    risk_by_portfolio = {
+        item.portfolio: item
+        for item in portfolio_monitor_metrics(
+            portfolios,
+            closes,
+            context_history["SPY"] if "SPY" in context_history else None,
+        )
+    }
     portfolio_rows = pd.DataFrame(
         [
             {
                 "Portfolio": name,
                 "Daily contribution": change,
-                "_stale": hours.is_regular_hours
-                and any(
-                    records[lot.symbol].status
-                    not in {FreshnessStatus.STREAMING, FreshnessStatus.RECENTLY_REFRESHED}
-                    for portfolio in portfolios
-                    if portfolio.name == name
-                    for lot in portfolio.holdings
+                "Share of net daily P/L": pulse.portfolio_contributions.get(name),
+                "Value": pulse.portfolio_values.get(name),
+                "Staleness reason": pulse.portfolio_staleness_reasons.get(name),
+                "Realized volatility": (
+                    risk_by_portfolio[name].realized_volatility
+                    if name in risk_by_portfolio
+                    else None
                 ),
+                "21-session SPY correlation": (
+                    risk_by_portfolio[name].spy_correlation if name in risk_by_portfolio else None
+                ),
+                "_stale": hours.is_regular_hours and not pulse.portfolio_freshness.get(name, False),
             }
             for name, change in pulse.by_portfolio.items()
         ]
     )
     if not portfolio_rows.empty:
+        st.markdown("#### Portfolio / daily contribution")
+        portfolio_rows["Share of net daily P/L"] *= 100
+        portfolio_rows["Realized volatility"] *= 100
         stale_portfolio_rows = portfolio_rows.pop("_stale")
         st.dataframe(
             (
-                _style_stale_values(portfolio_rows, stale_portfolio_rows, ("Daily contribution",))
+                _style_stale_values(
+                    portfolio_rows,
+                    stale_portfolio_rows,
+                    ("Daily contribution", "Share of net daily P/L", "Value"),
+                )
                 if hours.is_regular_hours
                 else portfolio_rows
             ),
             hide_index=True,
             width="stretch",
-            column_config={"Daily contribution": st.column_config.NumberColumn(format="$%,.0f")},
+            column_config={
+                "Daily contribution": st.column_config.NumberColumn(format="$%,.0f"),
+                "Share of net daily P/L": st.column_config.NumberColumn(format="%.1f%%"),
+                "Value": st.column_config.NumberColumn(format="$%,.0f"),
+                "Realized volatility": st.column_config.NumberColumn(format="%.1f%%"),
+                "21-session SPY correlation": st.column_config.NumberColumn(format="%.1f"),
+            },
         )
     if pulse.stale_or_missing and hours.is_regular_hours:
         stale_symbols = escape(", ".join(pulse.stale_or_missing))
@@ -3223,16 +3252,7 @@ def render_active_monitoring(
             st.caption("No recent assigned fills.")
 
     st.markdown("#### Market context")
-    context_request = HistoricalDataRequest(
-        tuple(dict.fromkeys((*BROAD_MARKET_PROXIES, *SECTOR_PROXIES))),
-        date.today() - timedelta(days=400),
-        date.today(),
-        "benchmark_total_return",
-    )
-    try:
-        context = market_context_metrics(cached_historical_data(context_request))
-    except Exception:
-        context = pd.DataFrame()
+    context = market_context_metrics(context_history)
     if context.empty:
         st.caption("Market-context history is unavailable.")
     else:
@@ -3243,17 +3263,16 @@ def render_active_monitoring(
             "12M return",
             "Drawdown from available-window peak",
             "Realized volatility",
-            "21-session SPY correlation",
         )
-        context = context.copy()
-        context[list(percentage_columns)] *= 100
+        context = market_context_display_frame(context)
         st.dataframe(
             context,
             hide_index=True,
             width="stretch",
             column_config={
-                name: st.column_config.NumberColumn(format="%.0f%%") for name in percentage_columns
-            },
+                name: st.column_config.NumberColumn(format="%.1f%%") for name in percentage_columns
+            }
+            | {"21-session SPY correlation": st.column_config.NumberColumn(format="%.1f")},
         )
         st.caption(
             "Components are disclosed individually: horizon-specific returns and coverage, "

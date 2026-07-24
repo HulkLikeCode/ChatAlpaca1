@@ -8,7 +8,8 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from chat_alpaca.config import get_settings
-from chat_alpaca.theme import THEME_CSS
+from chat_alpaca.presentation import date_preset_range
+from chat_alpaca.theme import THEME_CSS, VIOLET_COLOR, purple_header_table
 from streamlit_app import dollars
 
 SELECT_PORTFOLIO_OPTION = "__select_portfolio__"
@@ -102,8 +103,8 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
         "Trade",
         "Architecture",
     ]
-    assert any("KCs Traditional IRA" in text.value for text in app.markdown)
-    assert [item.label for item in app.metric].count("Selected Totals") == 1
+    assert any("portfolio-card" in text.value for text in app.markdown)
+    assert "Selected Totals" not in [item.label for item in app.metric]
     currency_metrics = [str(item.value) for item in app.metric if str(item.value).startswith("$")]
     assert currency_metrics
     assert all("." not in value for value in currency_metrics)
@@ -127,7 +128,7 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
             "All-time gain/loss",
             "Daily gain/loss",
             "Custom gain/loss",
-            "Annualized market-model intercept, RF assumed 0%",
+            "Alpha",
             "Beta",
             "Observations",
         ]
@@ -158,6 +159,12 @@ def test_metric_and_portfolio_cards_share_compact_theme_dimensions() -> None:
     assert THEME_CSS.count("min-height: 104px") == 2
     assert THEME_CSS.count("padding: .72rem .85rem") == 2
     assert ".portfolio-card .value {color: var(--ink); font-size: 1.55rem" in THEME_CSS
+
+
+def test_purple_header_style_is_scoped_to_the_table_header() -> None:
+    styled = purple_header_table(pd.DataFrame({"Alpha": [1.0]}))
+
+    assert styled.table_styles == [{"selector": "th", "props": [("color", VIOLET_COLOR)]}]
 
 
 def test_comparison_defaults_to_spy_benchmark() -> None:
@@ -205,10 +212,27 @@ def test_monitor_consolidates_movers_and_simplifies_freshness() -> None:
         for item in app.dataframe
         if "Daily change" in item.value and "Share of net daily P/L" in item.value
     )
-    assert "Portfolio" not in movers
+    assert movers.columns[movers.columns.get_loc("Staleness reason") + 1] == "Portfolio"
     assert movers["Symbol"].is_unique
-    assert set(movers["Freshness"]) <= {"Fresh", "Stale"}
+    assert "Freshness" not in movers
     assert any("stale-symbol-alert" in item.value for item in app.markdown)
+    portfolio_contribution = next(
+        item.value
+        for item in app.dataframe
+        if "Portfolio" in item.value
+        and "Daily contribution" in item.value
+        and "Realized volatility" in item.value
+    )
+    assert list(portfolio_contribution.columns) == [
+        "Portfolio",
+        "Daily contribution",
+        "Share of net daily P/L",
+        "Value",
+        "Staleness reason",
+        "Realized volatility",
+        "21-session SPY correlation",
+    ]
+    assert not app.metric
 
 
 def test_forecast_target_and_methodology_render_together() -> None:
@@ -222,6 +246,13 @@ def test_forecast_target_and_methodology_render_together() -> None:
     assert not target.disabled
     assert any(item.label.startswith("Chance of reaching") for item in app.metric)
     assert any("10,000 reproducible monthly" in item.value for item in app.caption)
+    assert "Projection scope" not in [item.label for item in app.selectbox]
+    assert "Scenario preset" not in [item.label for item in app.selectbox]
+    horizon = next(item for item in app.select_slider if item.label == "Forecast horizon (years)")
+    assert horizon.value == 10
+    chart = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert {"75th percentile", "95th percentile"} <= {trace.get("name") for trace in chart["data"]}
+    assert any(item.value.startswith("Forecast scope:") for item in app.caption)
 
 
 def test_incomplete_data_warnings_are_presented_without_credentials() -> None:
@@ -362,7 +393,7 @@ def test_master_filters_apply_portfolios_and_dates_together() -> None:
     app.multiselect[0].set_value([first_portfolio_id])
     app.date_input[0].set_value(date(2026, 6, 1))
     app.date_input[1].set_value(date(2026, 6, 30))
-    app.button[0].click().run()
+    next(item for item in app.button if item.label == "Apply").click().run()
 
     assert not app.exception
     assert app.session_state["master_portfolio_ids"] == [first_portfolio_id]
@@ -374,12 +405,57 @@ def test_master_filters_apply_portfolios_and_dates_together() -> None:
     assert portfolio_grid.count('<div class="portfolio-card">') == 1
 
 
+def test_master_date_preset_applies_immediately_and_updates_custom_inputs() -> None:
+    app = viewer_app()
+
+    assert [item.label for item in app.button[:6]] == ["5D", "1M", "6M", "YTD", "1Y", "5Y"]
+    next(item for item in app.button if item.label == "1M").click().run()
+
+    expected_start, expected_end = date_preset_range("1M", date.today())
+    assert app.session_state["master_start_date"] == expected_start
+    assert app.session_state["master_end_date"] == expected_end
+    assert app.date_input[0].value == expected_start
+    assert app.date_input[1].value == expected_end
+
+
+def test_gain_loss_tables_use_alpha_label_shared_footnote_and_no_summary_tiles() -> None:
+    for page in ("Overview", "Compare"):
+        app = viewer_app(page)
+        table = next(
+            item.value
+            for item in app.dataframe
+            if list(item.value.columns[:5])
+            == [
+                "Portfolio",
+                "Cash",
+                "All-time gain/loss",
+                "Daily gain/loss",
+                "Custom gain/loss",
+            ]
+        )
+        assert "Alpha" in table
+        assert not any("Annualized market-model" in column for column in table)
+        assert any(
+            item.value == "Alpha = Annualized market model-intercept, RF assumed 0%"
+            for item in app.caption
+        )
+        assert "Selected Totals" not in [item.label for item in app.metric]
+
+
+def test_compare_performance_is_expanded_by_default() -> None:
+    app = viewer_app("Compare")
+
+    comparison = next(item for item in app.expander if item.label == "Performance comparison")
+    assert comparison.proto.expanded
+
+
 def test_exact_holdings_summary_and_detail_column_order() -> None:
     app = viewer_app()
     expected_summary = [
         "Symbol",
         "Avg/share",
-        "Confirmed valuation date",
+        "Confirmed Valuation Date",
+        "As of",
         "Confirmed price",
         "Confirmed value",
         "Latest symbol price",
@@ -390,7 +466,7 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "Latest close change",
         "Change dates",
         "Current-lot unrealized custom change",
-        "Annualized market-model intercept, RF assumed 0%",
+        "Alpha",
         "Beta",
         "Alpha/Beta observations",
         "Shares",
@@ -405,7 +481,8 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
     expected_detail = [
         "Symbol",
         "Avg/share",
-        "Confirmed valuation date",
+        "Confirmed Valuation Date",
+        "As of",
         "Confirmed price",
         "Confirmed value",
         "Latest symbol price",
@@ -416,7 +493,7 @@ def test_exact_holdings_summary_and_detail_column_order() -> None:
         "Latest close change",
         "Change dates",
         "Current-lot unrealized custom change",
-        "Annualized market-model intercept, RF assumed 0%",
+        "Alpha",
         "Beta",
         "Alpha/Beta observations",
         "Shares",

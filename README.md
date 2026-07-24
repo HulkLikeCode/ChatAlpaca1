@@ -221,6 +221,12 @@ Portfolio returns are ledger-aware. Holding returns add symbol-assigned dividend
 split-adjusted price returns; unassigned dividends and dividend events without an attributable
 prior holding value are excluded and disclosed.
 
+Compare opens Performance Comparison by default. Its hover-only Plotly trace presents the available
+series from highest to lowest at each hovered date without reordering the legend, and its retained
+series table formats total return to one decimal place. Notes below the chart disclose that
+annualized return compounds over elapsed calendar days using 365.25 days per year and that
+volatility is the sample standard deviation of daily returns annualized by the square root of 252.
+
 The reusable Phase 4 service in `chat_alpaca.reconstruction` is the shared analytics boundary. It
 consumes canonical transactions and confirmed split-adjusted, non-dividend-adjusted repository
 closes; it never replaces missing prices with zero or a silent forward fill. Typed results preserve
