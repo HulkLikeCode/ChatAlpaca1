@@ -25,7 +25,7 @@ from chat_alpaca.models import (
 from chat_alpaca.presentation import assumption_comparisons, format_assumption_value
 
 DETERMINISTIC_MODEL_TYPE = "deterministic_scenario"
-DETERMINISTIC_MODEL_VERSION = "1.1.0"
+DETERMINISTIC_MODEL_VERSION = "1.2.0"
 VALIDATION_STATUSES = {"unvalidated", "in_review", "validated", "rejected"}
 
 SHOCK_DISCLOSURE = (
@@ -40,6 +40,7 @@ DIVIDEND_DISCLOSURE = (
 
 
 class ScenarioType(str, Enum):
+    AS_IS = "as_is"
     BROAD_MARKET_DECLINE = "broad_market_decline"
     HOLDING_DECLINE = "holding_decline"
     SECTOR_DECLINE = "sector_decline"
@@ -97,6 +98,128 @@ class ScenarioAssumptions:
             raise ValueError("Inflation assumptions must be greater than -100%.")
 
 
+ACTIVE_SCENARIO_FIELDS: Mapping[ScenarioType, frozenset[str]] = {
+    ScenarioType.AS_IS: frozenset(
+        {"contribution_amount", "spending", "expected_return", "horizon_years"}
+    ),
+    ScenarioType.BROAD_MARKET_DECLINE: frozenset({"market_decline"}),
+    ScenarioType.HOLDING_DECLINE: frozenset({"holding_symbol", "holding_decline"}),
+    ScenarioType.DIVIDEND_REDUCTION: frozenset(
+        {
+            "dividend_reduction",
+            "contribution_amount",
+            "spending",
+            "expected_return",
+            "horizon_years",
+        }
+    ),
+    ScenarioType.INFLATION_INCREASE: frozenset(
+        {
+            "inflation",
+            "inflation_increase",
+            "contribution_amount",
+            "spending",
+            "expected_return",
+            "horizon_years",
+        }
+    ),
+    ScenarioType.LOW_RETURN_PERIOD: frozenset(
+        {
+            "low_return",
+            "expected_return",
+            "contribution_amount",
+            "spending",
+            "horizon_years",
+        }
+    ),
+    ScenarioType.RETIREMENT_DATE_DECLINE: frozenset(
+        {
+            "market_decline",
+            "contribution_amount",
+            "spending",
+            "expected_return",
+            "horizon_years",
+            "retirement_date",
+        }
+    ),
+}
+
+SCENARIO_INPUT_DESCRIPTIONS: Mapping[str, str] = {
+    "market_decline": (
+        "One immediate shock to holdings for Market Decline, or one shock at the resolved "
+        "retirement month; cash is unaffected."
+    ),
+    "holding_symbol": "Chooses the only holding affected by Holding Decline.",
+    "holding_decline": (
+        "One immediate shock to the selected symbol; cash and all other holdings are unchanged."
+    ),
+    "dividend_reduction": (
+        "Reduces positive trailing-365-day ledger dividends in every forecast year; assumes no "
+        "growth or reinvestment."
+    ),
+    "contribution_amount": "A monthly contribution added at each month-end.",
+    "inflation": ("Deflates the nominal terminal value into inflation-adjusted purchasing power."),
+    "inflation_increase": (
+        "Added to baseline inflation in every year of the Inflation Increase scenario."
+    ),
+    "spending": "An annual amount withdrawn in twelve equal monthly installments.",
+    "expected_return": (
+        "An annual return converted to monthly compounding over the applicable horizon."
+    ),
+    "low_return": ("Replaces Expected Return for the entire Low Return scenario horizon."),
+    "horizon_years": (
+        "Sets the number of monthly forecast periods and the displayed Retirement Date."
+    ),
+    "retirement_date": "One market shock occurs at this resolved retirement month.",
+}
+
+
+def scenario_field_is_relevant(scenario_type: ScenarioType | str, field: str) -> bool:
+    """Return whether an active V.15.2 scenario consumes an input."""
+    return field in ACTIVE_SCENARIO_FIELDS.get(ScenarioType(scenario_type), frozenset())
+
+
+def scenario_output_basis(scenario_type: ScenarioType | str) -> str:
+    """Disclose whether the selected branch returns an immediate or terminal value."""
+    return (
+        "Immediate current-value shock"
+        if ScenarioType(scenario_type)
+        in {ScenarioType.BROAD_MARKET_DECLINE, ScenarioType.HOLDING_DECLINE}
+        else "Terminal forecast value"
+    )
+
+
+def validate_active_scenario(assumptions: ScenarioAssumptions) -> str | None:
+    """Fail fast on missing defining shocks before valuation or scenario work begins."""
+    scenario_type = ScenarioType(assumptions.scenario_type)
+    if scenario_type == ScenarioType.AS_IS:
+        return None
+    if scenario_type == ScenarioType.HOLDING_DECLINE:
+        if not (assumptions.holding_symbol or "").strip():
+            return "Holding Decline requires a selected Holding Symbol."
+        if assumptions.holding_decline == 0:
+            return "Holding Decline must be greater than 0%."
+    elif (
+        scenario_type
+        in {
+            ScenarioType.BROAD_MARKET_DECLINE,
+            ScenarioType.RETIREMENT_DATE_DECLINE,
+        }
+        and assumptions.market_decline == 0
+    ):
+        return "Market Decline must be greater than 0%."
+    elif scenario_type == ScenarioType.DIVIDEND_REDUCTION and assumptions.dividend_reduction == 0:
+        return "Dividend Reduction must be greater than 0%."
+    elif scenario_type == ScenarioType.INFLATION_INCREASE and assumptions.inflation_increase == 0:
+        return "Inflation Increase must be greater than 0%."
+    elif (
+        scenario_type == ScenarioType.LOW_RETURN_PERIOD
+        and assumptions.low_return == assumptions.expected_return
+    ):
+        return "Low Return must differ from Expected Return."
+    return None
+
+
 @dataclass(frozen=True)
 class ScenarioResult:
     scenario_type: str
@@ -147,6 +270,9 @@ def scenario_explanation(assumptions: ScenarioAssumptions) -> str:
     unchanged = [item.assumption for item in comparisons if item.value == item.default_value]
     scenario_type = ScenarioType(assumptions.scenario_type)
     calculation = {
+        ScenarioType.AS_IS: (
+            "Baseline and scenario use the same monthly compounding assumptions with no shock."
+        ),
         ScenarioType.BROAD_MARKET_DECLINE: (
             "Each holding value receives the broad-market shock; cash is unchanged."
         ),
@@ -346,6 +472,7 @@ def run_deterministic_scenario(
     """Run one deterministic scenario without randomness or raw path generation."""
     if not portfolios:
         raise ValueError("A deterministic scenario requires at least one portfolio.")
+    scenario_type = ScenarioType(assumptions.scenario_type)
     required_symbols = sorted(
         {
             lot.symbol.upper()
@@ -388,7 +515,6 @@ def run_deterministic_scenario(
     if starting_value <= 0:
         raise ValueError("A deterministic scenario requires a positive household value.")
 
-    scenario_type = ScenarioType(assumptions.scenario_type)
     years = 10 if scenario_type == ScenarioType.LOST_DECADE else assumptions.horizon_years
     baseline = _compound(
         starting_value,
@@ -404,7 +530,9 @@ def run_deterministic_scenario(
         warnings.append(f"Scenario valuation date: {price_coverage['common_valuation_date']}.")
     scenario_value = baseline
 
-    if scenario_type == ScenarioType.BROAD_MARKET_DECLINE:
+    if scenario_type == ScenarioType.AS_IS:
+        pass
+    elif scenario_type == ScenarioType.BROAD_MARKET_DECLINE:
         warnings.append(SHOCK_DISCLOSURE)
         impacts = [float(row["value"]) * assumptions.market_decline for row in holdings]
         baseline = starting_value

@@ -29,7 +29,10 @@ from chat_alpaca.scenarios import (
     run_deterministic_scenario,
     save_scenario_run,
     scenario_explanation,
+    scenario_field_is_relevant,
+    scenario_output_basis,
     sensitivity_grid,
+    validate_active_scenario,
 )
 
 
@@ -99,7 +102,7 @@ def test_deterministic_reproducibility_and_attribution(session: Session) -> None
     assert first.impact_by_holding == {"AAA": -20, "BBB": -20}
     assert first.impact_by_sector == {"Technology": -20, "Energy": -20}
     assert first.account_type_effects == {"taxable": -40}
-    assert first.model_version == "1.1.0"
+    assert first.model_version == "1.2.0"
     assert SHOCK_DISCLOSURE in first.warnings
 
 
@@ -287,6 +290,47 @@ def test_scenario_reference_calculations_and_disclosures(session: Session) -> No
     assert inflation.scenario_value == pytest.approx(300 / 1.03**2)
     assert inflation.total_household_impact == pytest.approx(
         inflation.scenario_value - inflation.baseline_value
+    )
+
+
+def test_as_is_uses_identical_baseline_and_scenario_compounding(session: Session) -> None:
+    portfolio = _portfolio(session)
+    assumptions = ScenarioAssumptions(
+        ScenarioType.AS_IS,
+        expected_return=0.07,
+        contribution_amount=100,
+        spending=1200,
+        horizon_years=2,
+    )
+
+    result = run_deterministic_scenario([portfolio], {"AAA": 10, "BBB": 20}, assumptions)
+
+    assert result.baseline_value == pytest.approx(result.scenario_value)
+    assert result.total_household_impact == pytest.approx(0)
+    assert result.model_version == DETERMINISTIC_MODEL_VERSION == "1.2.0"
+    assert scenario_output_basis(ScenarioType.AS_IS) == "Terminal forecast value"
+
+
+def test_active_scenario_relevance_and_fail_fast_validation() -> None:
+    assert scenario_field_is_relevant(ScenarioType.AS_IS, "expected_return")
+    assert not scenario_field_is_relevant(ScenarioType.AS_IS, "market_decline")
+    assert validate_active_scenario(ScenarioAssumptions(ScenarioType.AS_IS)) is None
+    assert "greater than 0%" in validate_active_scenario(
+        ScenarioAssumptions(ScenarioType.BROAD_MARKET_DECLINE, market_decline=0)
+    )
+    assert "selected Holding Symbol" in validate_active_scenario(
+        ScenarioAssumptions(
+            ScenarioType.HOLDING_DECLINE,
+            holding_symbol=None,
+            holding_decline=-0.2,
+        )
+    )
+    assert "must differ" in validate_active_scenario(
+        ScenarioAssumptions(
+            ScenarioType.LOW_RETURN_PERIOD,
+            expected_return=0.04,
+            low_return=0.04,
+        )
     )
 
 

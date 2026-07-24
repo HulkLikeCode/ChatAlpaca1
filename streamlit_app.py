@@ -85,6 +85,9 @@ from chat_alpaca.presentation import (
     format_relative_age,
     market_context_display_frame,
     matching_date_preset,
+    monte_carlo_hover_text,
+    nearest_hundred,
+    retirement_date_for_horizon,
     sorted_hover_text,
 )
 from chat_alpaca.realtime import (
@@ -116,19 +119,25 @@ from chat_alpaca.reports import (
     assemble_combined_performance_report,
     assemble_comparison_report,
     assemble_portfolio_card_reports,
+    assemble_selected_portfolio_valuation,
     build_portfolio_calculation_context,
     comparison_acquisition_plan,
     overlay_intraday_performance,
     portfolio_acquisition_request,
+    with_portfolio_reconstruction,
 )
 from chat_alpaca.scenarios import (
+    SCENARIO_INPUT_DESCRIPTIONS,
     DatasetReference,
     ScenarioAssumptions,
     ScenarioType,
     run_deterministic_scenario,
     save_scenario_run,
     scenario_explanation,
+    scenario_field_is_relevant,
+    scenario_output_basis,
     sensitivity_grid,
+    validate_active_scenario,
 )
 from chat_alpaca.theme import PLOT_COLORS, THEME_CSS, purple_header_table
 from chat_alpaca.trading import (
@@ -379,6 +388,37 @@ def get_prices(
         return pd.DataFrame(), str(exc)
 
 
+def render_master_valuation_summary(
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    calculation_context: PortfolioCalculationContext,
+) -> None:
+    """Render the applied selection's compact valuation strip without acquiring data."""
+    report = assemble_selected_portfolio_valuation(portfolios, closes, calculation_context)
+
+    def display(value: object) -> str:
+        rounded = nearest_hundred(value)
+        return f"${rounded:,.0f}" if rounded is not None else "Unavailable"
+
+    cells = (
+        ("TPV", "Total selected portfolio value", report.total_portfolio_value),
+        ("Holdings", "Selected portfolios’ total holdings value", report.holdings_market_value),
+        ("Cash", "Selected portfolios’ total cash value", report.cash),
+    )
+    st.markdown(
+        '<div class="master-value-strip" role="table" '
+        'aria-label="Applied selected portfolio valuation">'
+        + "".join(
+            '<div role="cell" class="master-value-cell" '
+            f'title="{escape(help_text)}" aria-label="{escape(help_text)}: {display(value)}">'
+            f"<span>{label}</span><strong>{display(value)}</strong></div>"
+            for label, help_text, value in cells
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def get_alpha_beta_benchmark(
     report_start: date, report_end: date
 ) -> tuple[pd.DataFrame, str | None]:
@@ -530,6 +570,98 @@ def _indicative_performance_pulse(portfolios: list[Portfolio], closes: pd.DataFr
         return None
 
 
+def _render_portfolio_performance_table(
+    report,
+    *,
+    regular_market_hours: bool,
+    pulse,
+    fresh_portfolios: set[str],
+    key_prefix: str,
+) -> None:
+    performance = pd.DataFrame(
+        [
+            {
+                "Portfolio": row.portfolio,
+                "TPV": row.total_portfolio_value,
+                "Holdings": row.holdings_market_value,
+                "Cash": row.cash,
+                "All-time gain/loss": row.all_time,
+                "Daily gain/loss": row.daily,
+                "Custom gain/loss": row.custom,
+                "Alpha": (row.alpha * 100 if row.alpha is not None else None),
+                "Beta": row.beta,
+                "Observations": row.alpha_beta_observations,
+                "_stale": regular_market_hours
+                and pulse is not None
+                and row.portfolio not in fresh_portfolios,
+            }
+            for row in report.rows
+        ]
+    )
+    stale_performance_rows = performance.pop("_stale")
+    performance_display = (
+        _style_stale_values(
+            performance,
+            stale_performance_rows,
+            (
+                "TPV",
+                "Holdings",
+                "All-time gain/loss",
+                "Daily gain/loss",
+                "Custom gain/loss",
+            ),
+        )
+        if regular_market_hours and pulse is not None
+        else performance
+    )
+    performance_styler = (
+        performance_display
+        if hasattr(performance_display, "set_table_styles")
+        else performance_display.style
+    )
+    performance_styler = performance_styler.format(
+        {
+            column: lambda value: (
+                f"${rounded:,.0f}"
+                if (rounded := nearest_hundred(value)) is not None
+                else "Unavailable"
+            )
+            for column in ("TPV", "Holdings", "Cash")
+        }
+    )
+    st.dataframe(
+        purple_header_table(performance_styler),
+        hide_index=True,
+        width="stretch",
+        column_order=[
+            "Portfolio",
+            "TPV",
+            "Holdings",
+            "Cash",
+            "All-time gain/loss",
+            "Daily gain/loss",
+            "Custom gain/loss",
+            "Alpha",
+            "Beta",
+            "Observations",
+        ],
+        column_config={
+            column: st.column_config.NumberColumn(format="$%,.0f")
+            for column in (
+                "All-time gain/loss",
+                "Daily gain/loss",
+                "Custom gain/loss",
+            )
+        }
+        | {
+            "Alpha": st.column_config.NumberColumn(format="%.2f%%"),
+            "Beta": st.column_config.NumberColumn(format="%.2f"),
+            "Observations": st.column_config.NumberColumn(format="%d"),
+        },
+        key=f"{key_prefix}_portfolio_gain_loss",
+    )
+
+
 @st.fragment(run_every="30s")
 def render_performance_summary(
     portfolios: list[Portfolio],
@@ -542,6 +674,7 @@ def render_performance_summary(
     show_portfolio_cards: bool = False,
     data_note: str | None = None,
     calculation_context: PortfolioCalculationContext | None = None,
+    notes_below_table: bool = False,
 ) -> None:
     with st.expander("Portfolio value and gain/loss", expanded=expanded):
         regular_market_hours = market_hours_state().is_regular_hours
@@ -572,12 +705,22 @@ def render_performance_summary(
                 report,
                 dict(pulse.by_portfolio),
                 include_custom=custom_end == date.today(),
+                portfolio_values=dict(pulse.portfolio_values),
                 indicative_total_value=pulse.indicative_total_value,
             )
 
         if show_portfolio_cards:
             render_portfolio_cards(
                 portfolios, closes, custom_start, custom_end, calculation_context
+            )
+
+        if notes_below_table:
+            _render_portfolio_performance_table(
+                report,
+                regular_market_hours=regular_market_hours,
+                pulse=pulse,
+                fresh_portfolios=fresh_portfolios,
+                key_prefix=key_prefix,
             )
 
         status_parts = [report.coverage.removesuffix(".")]
@@ -621,54 +764,14 @@ def render_performance_summary(
             st.info(f"Live market values are unavailable, so cost basis is shown. {data_note}")
         for warning in report.warnings:
             _render_warning(warning, subdued=closes.empty)
-        performance = pd.DataFrame(
-            [
-                {
-                    "Portfolio": row.portfolio,
-                    "Cash": row.cash,
-                    "All-time gain/loss": row.all_time,
-                    "Daily gain/loss": row.daily,
-                    "Custom gain/loss": row.custom,
-                    "Alpha": (row.alpha * 100 if row.alpha is not None else None),
-                    "Beta": row.beta,
-                    "Observations": row.alpha_beta_observations,
-                    "_stale": regular_market_hours
-                    and pulse is not None
-                    and row.portfolio not in fresh_portfolios,
-                }
-                for row in report.rows
-            ]
-        )
-        stale_performance_rows = performance.pop("_stale")
-        performance_display = (
-            _style_stale_values(
-                performance,
-                stale_performance_rows,
-                ("All-time gain/loss", "Daily gain/loss", "Custom gain/loss"),
+        if not notes_below_table:
+            _render_portfolio_performance_table(
+                report,
+                regular_market_hours=regular_market_hours,
+                pulse=pulse,
+                fresh_portfolios=fresh_portfolios,
+                key_prefix=key_prefix,
             )
-            if regular_market_hours and pulse is not None
-            else performance
-        )
-        st.dataframe(
-            purple_header_table(performance_display),
-            hide_index=True,
-            width="stretch",
-            column_config={
-                column: st.column_config.NumberColumn(format="$%,.0f")
-                for column in (
-                    "Cash",
-                    "All-time gain/loss",
-                    "Daily gain/loss",
-                    "Custom gain/loss",
-                )
-            }
-            | {
-                "Alpha": st.column_config.NumberColumn(format="%.2f%%"),
-                "Beta": st.column_config.NumberColumn(format="%.2f"),
-                "Observations": st.column_config.NumberColumn(format="%d"),
-            },
-            key=f"{key_prefix}_portfolio_gain_loss",
-        )
         st.caption("Alpha = Annualized market model-intercept, RF assumed 0%")
         st.caption(
             "Confirmed all-time gain/loss runs from inception through the latest complete confirmed "
@@ -966,11 +1069,15 @@ def render_overview(
     custom_start: date,
     custom_end: date,
     benchmark_closes: pd.DataFrame,
+    calculation_context: PortfolioCalculationContext | None = None,
 ) -> None:
     if not portfolios:
         st.caption("No non-blank portfolios are available for the selected scope.")
         return
-    calculation_context = build_portfolio_calculation_context(portfolios, closes)
+    calculation_context = calculation_context or build_portfolio_calculation_context(
+        portfolios, closes
+    )
+    calculation_context = with_portfolio_reconstruction(portfolios, closes, calculation_context)
     render_performance_summary(
         portfolios,
         closes,
@@ -1001,11 +1108,17 @@ def render_compare(
     custom_start: date,
     custom_end: date,
     benchmark_closes: pd.DataFrame,
+    calculation_context: PortfolioCalculationContext | None = None,
 ) -> None:
     if not portfolios:
         st.caption("No portfolios are available to compare.")
         return
-    calculation_context = build_portfolio_calculation_context(portfolios, portfolio_closes)
+    calculation_context = calculation_context or build_portfolio_calculation_context(
+        portfolios, portfolio_closes
+    )
+    calculation_context = with_portfolio_reconstruction(
+        portfolios, portfolio_closes, calculation_context
+    )
     render_performance_summary(
         portfolios,
         portfolio_closes,
@@ -1015,6 +1128,7 @@ def render_compare(
         benchmark_closes,
         expanded=True,
         calculation_context=calculation_context,
+        notes_below_table=True,
     )
     with st.expander("Performance comparison", expanded=True):
         controls = st.columns([1.4, 2.2])
@@ -1244,7 +1358,7 @@ def render_forecast(
             y=percentile_data["P95"],
             line={"width": 0, "color": "rgba(126,105,255,0)"},
             name="95th percentile",
-            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>95th percentile</extra>",
+            hoverinfo="skip",
             showlegend=False,
         )
     )
@@ -1256,7 +1370,7 @@ def render_forecast(
             fillcolor="rgba(126,105,255,.16)",
             line={"width": 0, "color": "rgba(126,105,255,0)"},
             name="5th–95th percentile",
-            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>5th percentile</extra>",
+            hoverinfo="skip",
         )
     )
     figure.add_trace(
@@ -1265,7 +1379,7 @@ def render_forecast(
             y=percentile_data["P75"],
             line={"width": 0, "color": "rgba(105,126,255,0)"},
             name="75th percentile",
-            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>75th percentile</extra>",
+            hoverinfo="skip",
             showlegend=False,
         )
     )
@@ -1277,7 +1391,7 @@ def render_forecast(
             fillcolor="rgba(105,126,255,.28)",
             line={"width": 0, "color": "rgba(105,126,255,0)"},
             name="25th–75th percentile",
-            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>25th percentile</extra>",
+            hoverinfo="skip",
         )
     )
     figure.add_trace(
@@ -1287,7 +1401,21 @@ def render_forecast(
             mode="lines",
             name="Median scenario",
             line={"width": 3, "color": PLOT_COLORS[0]},
-            hovertemplate="%{x|%b %Y}<br>$%{y:,.0f}<extra>Median scenario</extra>",
+            hoverinfo="skip",
+        )
+    )
+    hover_text = monte_carlo_hover_text(dates, percentile_data)
+    hover_y = percentile_data[["P5", "P25", "P50", "P75", "P95"]].max(axis=1)
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=hover_y,
+            name="Sorted percentile values",
+            mode="lines",
+            line={"width": 0, "color": "rgba(0,0,0,0)"},
+            text=hover_text,
+            hovertemplate="%{text}<extra></extra>",
+            showlegend=False,
         )
     )
     figure.update_layout(
@@ -1348,16 +1476,13 @@ def render_forecast(
 
 
 SCENARIO_LABELS = {
-    ScenarioType.BROAD_MARKET_DECLINE: "Immediate broad-market decline",
-    ScenarioType.HOLDING_DECLINE: "Holding-specific decline",
-    ScenarioType.SECTOR_DECLINE: "Sector decline",
-    ScenarioType.DIVIDEND_REDUCTION: "Dividend reduction",
-    ScenarioType.CONTRIBUTION_INTERRUPTION: "Contribution interruption",
-    ScenarioType.INFLATION_INCREASE: "Inflation increase",
-    ScenarioType.LOW_RETURN_PERIOD: "Low-return period",
-    ScenarioType.LOST_DECADE: "Lost decade",
-    ScenarioType.RETIREMENT_DATE_DECLINE: "Retirement-date decline",
-    ScenarioType.HISTORICAL_REPLAY: "Historical replay",
+    ScenarioType.AS_IS: "As Is",
+    ScenarioType.BROAD_MARKET_DECLINE: "Market Decline",
+    ScenarioType.HOLDING_DECLINE: "Holding Decline",
+    ScenarioType.DIVIDEND_REDUCTION: "Dividend Reduction",
+    ScenarioType.INFLATION_INCREASE: "Inflation Increase",
+    ScenarioType.LOW_RETURN_PERIOD: "Low Return",
+    ScenarioType.RETIREMENT_DATE_DECLINE: "Retirement-Date Decline",
 }
 
 
@@ -1367,109 +1492,167 @@ def render_deterministic_scenarios(
     """Render the focused Phase 7 scenario view; calculations remain in the service module."""
     with st.expander("Deterministic scenario analysis", expanded=False):
         st.caption(
-            "One fixed set of assumptions is applied reproducibly. This view does not run "
-            "bootstrap or Monte Carlo models."
+            "One mutually exclusive deterministic branch is applied at a time; disabled inputs "
+            "remain visible for clarity."
         )
-        control_columns = st.columns(3)
-        selected_type = control_columns[0].selectbox(
-            "Deterministic scenario",
+        st.session_state.setdefault("det_scenario_type", ScenarioType.AS_IS)
+        st.session_state.setdefault("det_market_decline", 0.0)
+        st.session_state.setdefault("det_holding_symbol", None)
+        st.session_state.setdefault("det_holding_decline", 0.0)
+        st.session_state.setdefault("det_dividend_reduction", 0.0)
+        st.session_state.setdefault("det_contribution_amount", 0.0)
+        st.session_state.setdefault("det_inflation", 3.0)
+        st.session_state.setdefault("det_inflation_increase", 0.0)
+        st.session_state.setdefault("det_spending", 0.0)
+        st.session_state.setdefault("det_expected_return", 7.0)
+        st.session_state.setdefault("det_low_return", 4.0)
+        st.session_state.setdefault("det_horizon_years", 10)
+
+        symbols = sorted({lot.symbol for portfolio in portfolios for lot in portfolio.holdings})
+        first = st.columns(4)
+        selected_type = first[0].selectbox(
+            "Scenario",
             list(SCENARIO_LABELS),
             format_func=lambda value: SCENARIO_LABELS[value],
-            key="deterministic_scenario_type",
+            key="det_scenario_type",
+            help="Selects the only deterministic branch that changes the baseline.",
         )
-        symbols = sorted({lot.symbol for portfolio in portfolios for lot in portfolio.holdings})
-        shock_label = (
-            "Dividend reduction (%)"
-            if selected_type == ScenarioType.DIVIDEND_REDUCTION
-            else "Market decline (%)"
+        market_decline_input = first[1].number_input(
+            "Market Decline (%)",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            key="det_market_decline",
+            disabled=not scenario_field_is_relevant(selected_type, "market_decline"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["market_decline"],
         )
-        market_decline = (
-            -control_columns[1].number_input(
-                shock_label,
-                min_value=0.0,
-                max_value=100.0,
-                value=20.0,
-                step=1.0,
-                key="scenario_market_decline",
+        holding_symbol = first[2].selectbox(
+            "Holding Symbol",
+            [None, *symbols],
+            format_func=lambda value: "No holding selected" if value is None else value,
+            key="det_holding_symbol",
+            disabled=not scenario_field_is_relevant(selected_type, "holding_symbol"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["holding_symbol"],
+        )
+        holding_decline_input = first[3].number_input(
+            "Holding Decline (%)",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            key="det_holding_decline",
+            disabled=not scenario_field_is_relevant(selected_type, "holding_decline"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["holding_decline"],
+        )
+
+        second = st.columns(4)
+        dividend_reduction_input = second[0].number_input(
+            "Dividend Reduction (%)",
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            key="det_dividend_reduction",
+            disabled=not scenario_field_is_relevant(selected_type, "dividend_reduction"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["dividend_reduction"],
+        )
+        contribution_amount = second[1].number_input(
+            "Contribution Amount ($/month)",
+            min_value=0.0,
+            step=100.0,
+            key="det_contribution_amount",
+            disabled=not scenario_field_is_relevant(selected_type, "contribution_amount"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["contribution_amount"],
+        )
+        inflation_input = second[2].number_input(
+            "Inflation (%)",
+            min_value=-99.0,
+            max_value=100.0,
+            step=0.25,
+            key="det_inflation",
+            disabled=not scenario_field_is_relevant(selected_type, "inflation"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["inflation"],
+        )
+        inflation_increase_input = second[3].number_input(
+            "Inflation Increase (%)",
+            min_value=0.0,
+            max_value=100.0,
+            step=0.25,
+            key="det_inflation_increase",
+            disabled=not scenario_field_is_relevant(selected_type, "inflation_increase"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["inflation_increase"],
+        )
+
+        third = st.columns(4)
+        spending = third[0].number_input(
+            "Spending ($/year)",
+            min_value=0.0,
+            step=1_000.0,
+            key="det_spending",
+            disabled=not scenario_field_is_relevant(selected_type, "spending"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["spending"],
+        )
+        expected_return_input = third[1].number_input(
+            "Expected Return (%/year)",
+            min_value=-99.0,
+            max_value=100.0,
+            step=0.25,
+            key="det_expected_return",
+            disabled=not scenario_field_is_relevant(selected_type, "expected_return"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["expected_return"],
+        )
+        low_return_input = third[2].number_input(
+            "Low Return (%/year)",
+            min_value=-99.0,
+            max_value=100.0,
+            step=0.25,
+            key="det_low_return",
+            disabled=not scenario_field_is_relevant(selected_type, "low_return"),
+            help=SCENARIO_INPUT_DESCRIPTIONS["low_return"],
+        )
+        horizon_years = int(
+            third[3].number_input(
+                "Horizon Years",
+                min_value=1,
+                max_value=40,
+                step=1,
+                key="det_horizon_years",
+                disabled=not scenario_field_is_relevant(selected_type, "horizon_years"),
+                help=SCENARIO_INPUT_DESCRIPTIONS["horizon_years"],
             )
-            / 100
         )
-        inflation_increase = (
-            control_columns[2].number_input(
-                "Additional inflation (%)",
-                min_value=0.0,
-                max_value=25.0,
-                value=2.0,
-                step=0.25,
-                key="scenario_inflation_increase",
-            )
-            / 100
-            if selected_type == ScenarioType.INFLATION_INCREASE
-            else 0.02
+        retirement_date = retirement_date_for_horizon(date.today(), horizon_years)
+        fourth = st.columns(4)
+        fourth[0].text_input(
+            "Retirement Date",
+            value=retirement_date.strftime("%B %Y"),
+            disabled=True,
+            help=SCENARIO_INPUT_DESCRIPTIONS["retirement_date"],
         )
-        low_return = (
-            control_columns[2].number_input(
-                "Low-period annual return (%)",
-                min_value=-99.0,
-                max_value=25.0,
-                value=1.0,
-                step=0.25,
-                key="scenario_low_return",
-            )
-            / 100
-            if selected_type in {ScenarioType.LOW_RETURN_PERIOD, ScenarioType.LOST_DECADE}
-            else 0.01
-        )
-        interruption_months = (
-            int(
-                control_columns[2].number_input(
-                    "Contribution interruption (months)",
-                    min_value=0,
-                    max_value=480,
-                    value=12,
-                    step=1,
-                    key="scenario_interruption_months",
-                )
-            )
-            if selected_type == ScenarioType.CONTRIBUTION_INTERRUPTION
-            else 12
-        )
-        holding_symbol = (
-            control_columns[2].selectbox("Holding", symbols, key="scenario_holding")
-            if selected_type == ScenarioType.HOLDING_DECLINE and symbols
-            else None
-        )
-        sector = None
-        sectors: dict[str, str] = {}
-        with session_scope() as session:
-            for symbol in symbols:
-                metadata = resolve_security_metadata(session, symbol)
-                sectors[symbol] = metadata.sector or "Unclassified"
-        available_sectors = sorted(set(sectors.values()))
-        if selected_type == ScenarioType.SECTOR_DECLINE:
-            sector = control_columns[2].selectbox(
-                "Sector", available_sectors, key="scenario_sector"
-            )
+
         assumptions = ScenarioAssumptions(
             selected_type,
-            market_decline=market_decline,
+            market_decline=-market_decline_input / 100,
             holding_symbol=holding_symbol,
-            holding_decline=market_decline,
-            sector=sector,
-            sector_decline=market_decline,
-            dividend_reduction=abs(market_decline),
-            contribution_amount=float(st.session_state.get("forecast_monthly_contribution", 0)),
-            interruption_months=interruption_months,
-            inflation_increase=inflation_increase,
-            expected_return=float(st.session_state.get("forecast_annual_return", 7)) / 100,
-            low_return=low_return,
-            horizon_years=int(st.session_state.get("forecast_horizon", 10)),
-            retirement_date=date.today().replace(
-                year=date.today().year + min(5, int(st.session_state.get("forecast_horizon", 10)))
-            ),
+            holding_decline=-holding_decline_input / 100,
+            sector=None,
+            sector_decline=0.0,
+            dividend_reduction=dividend_reduction_input / 100,
+            contribution_amount=contribution_amount,
+            interruption_months=0,
+            inflation=inflation_input / 100,
+            inflation_increase=inflation_increase_input / 100,
+            spending=spending,
+            expected_return=expected_return_input / 100,
+            low_return=low_return_input / 100,
+            horizon_years=horizon_years,
+            retirement_date=retirement_date,
+            historical_start=None,
+            historical_end=None,
         )
+        if validation_message := validate_active_scenario(assumptions):
+            st.warning(validation_message)
+            return
         dataset_references = [
-            DatasetReference(dataset_id, "historical_replay")
+            DatasetReference(dataset_id, "current_valuation")
             for dataset_id in closes.attrs.get("dataset_ids", ())
         ]
         try:
@@ -1477,19 +1660,31 @@ def render_deterministic_scenarios(
                 portfolios,
                 closes,
                 assumptions,
-                sectors=sectors,
-                historical_prices=(
-                    closes if selected_type == ScenarioType.HISTORICAL_REPLAY else None
-                ),
                 dataset_references=dataset_references,
             )
         except ValueError as exc:
             st.warning(str(exc))
             return
-        metrics = st.columns(3)
-        metrics[0].metric("Baseline", dollars(result.baseline_value))
-        metrics[1].metric("Scenario", dollars(result.scenario_value))
-        metrics[2].metric("Household impact", dollars(result.total_household_impact))
+        result_summary = pd.DataFrame(
+            [
+                {
+                    "Baseline": result.baseline_value,
+                    "Scenario": result.scenario_value,
+                    "Household Impact": result.total_household_impact,
+                }
+            ]
+        )
+        st.dataframe(
+            purple_header_table(result_summary),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                column: st.column_config.NumberColumn(format="$%,.0f")
+                for column in ("Baseline", "Scenario", "Household Impact")
+            },
+            key="deterministic_result_summary",
+        )
+        st.caption(f"Output basis: {scenario_output_basis(selected_type)}.")
         portfolio_impact = pd.DataFrame(
             [
                 {"Portfolio": name, "Impact": impact}
@@ -1510,7 +1705,24 @@ def render_deterministic_scenarios(
                 for name, impact in result.account_type_effects.items()
             ]
         )
-        default_payload = asdict(ScenarioAssumptions(selected_type))
+        default_payload = asdict(
+            ScenarioAssumptions(
+                ScenarioType.AS_IS,
+                market_decline=0,
+                holding_decline=0,
+                sector_decline=0,
+                dividend_reduction=0,
+                contribution_amount=0,
+                interruption_months=0,
+                inflation=0.03,
+                inflation_increase=0,
+                spending=0,
+                expected_return=0.07,
+                low_return=0.04,
+                horizon_years=10,
+                retirement_date=retirement_date_for_horizon(date.today(), 10),
+            )
+        )
         default_payload["scenario_type"] = selected_type.value
         default_payload = {
             key: value.isoformat() if isinstance(value, date) else value
@@ -1557,14 +1769,11 @@ def render_deterministic_scenarios(
             )
         st.markdown("#### Sensitivity")
         sensitivity_values: dict[str, list[object]]
-        if selected_type == ScenarioType.HISTORICAL_REPLAY:
-            sensitivity_values = {}
+        if selected_type == ScenarioType.AS_IS:
+            sensitivity_values = {"expected_return": [0.04, 0.07, 0.10]}
         elif selected_type == ScenarioType.INFLATION_INCREASE:
             sensitivity_values = {"inflation": [0.02, 0.03, 0.04]}
-        elif selected_type == ScenarioType.CONTRIBUTION_INTERRUPTION:
-            contribution = assumptions.contribution_amount
-            sensitivity_values = {"contribution_amount": [0.0, contribution, contribution * 1.25]}
-        elif selected_type in {ScenarioType.LOW_RETURN_PERIOD, ScenarioType.LOST_DECADE}:
+        elif selected_type == ScenarioType.LOW_RETURN_PERIOD:
             sensitivity_values = {"expected_return": [0.04, 0.07, 0.10]}
         else:
             sensitivity_values = {"market_decline": [-0.10, -0.20, -0.30]}
@@ -1574,10 +1783,6 @@ def render_deterministic_scenarios(
                 closes,
                 assumptions,
                 sensitivity_values,
-                sectors=sectors,
-                historical_prices=(
-                    closes if selected_type == ScenarioType.HISTORICAL_REPLAY else None
-                ),
                 dataset_references=dataset_references,
             )
             sensitivity = sensitivity.copy()
@@ -1622,8 +1827,6 @@ def render_deterministic_scenarios(
                     },
                 },
             )
-        else:
-            st.caption("Historical replay uses its fixed available prior-period observations.")
         st.caption(
             f"Coverage: {result.coverage['priced_holdings']} priced lots. "
             f"Model {result.model_version}; validation status is unvalidated unless an explicit "
@@ -3309,13 +3512,16 @@ def main() -> None:
     ]
     if st.session_state.get("active_page") not in {None, *labels}:
         st.session_state.active_page = labels[0]
+    closes, data_note = get_prices(selected_portfolios, master_start, master_end)
+    calculation_context = build_portfolio_calculation_context(
+        selected_portfolios,
+        closes,
+        include_reconstruction=False,
+    )
+    render_master_valuation_summary(selected_portfolios, closes, calculation_context)
     tabs = st.tabs(labels, key="active_page", on_change="rerun")
-    closes = pd.DataFrame()
-    data_note = None
     benchmark_closes = pd.DataFrame()
     benchmark_note = None
-    if any(tab.open for tab in tabs[:5]):
-        closes, data_note = get_prices(selected_portfolios, master_start, master_end)
     if any(tabs[index].open for index in (0, 2, 4)):
         benchmark_closes, benchmark_note = get_alpha_beta_benchmark(master_start, master_end)
     if tabs[0].open:
@@ -3327,6 +3533,7 @@ def main() -> None:
                 master_start,
                 master_end,
                 benchmark_closes,
+                calculation_context,
             )
     elif tabs[1].open:
         with tabs[1]:
@@ -3339,6 +3546,7 @@ def main() -> None:
                 master_start,
                 master_end,
                 benchmark_closes,
+                calculation_context,
             )
     elif tabs[3].open:
         with tabs[3]:

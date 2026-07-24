@@ -16,7 +16,8 @@ from chat_alpaca.bootstrap import (
 from chat_alpaca.config import get_settings
 from chat_alpaca.db import get_engine, get_session_factory, session_scope
 from chat_alpaca.portfolio_service import TransactionDraft, record_transaction
-from chat_alpaca.presentation import date_preset_range
+from chat_alpaca.presentation import date_preset_range, retirement_date_for_horizon
+from chat_alpaca.scenarios import ScenarioType
 from chat_alpaca.theme import THEME_CSS, VIOLET_COLOR, purple_header_table
 from streamlit_app import cached_historical_data, dollars
 
@@ -230,6 +231,8 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
         if list(item.value.columns)
         == [
             "Portfolio",
+            "TPV",
+            "Holdings",
             "Cash",
             "All-time gain/loss",
             "Daily gain/loss",
@@ -240,6 +243,18 @@ def test_read_only_app_renders_overview_and_lazy_navigation() -> None:
         ]
     )
     assert gain_loss["Cash"].sum() > 0
+    assert list(gain_loss.columns) == [
+        "Portfolio",
+        "TPV",
+        "Holdings",
+        "Cash",
+        "All-time gain/loss",
+        "Daily gain/loss",
+        "Custom gain/loss",
+        "Alpha",
+        "Beta",
+        "Observations",
+    ]
     assert "Cash positions" not in [item.label for item in app.expander]
     assert not any("latest market value" in item.value for item in app.markdown)
 
@@ -265,6 +280,18 @@ def test_metric_and_portfolio_cards_share_compact_theme_dimensions() -> None:
     assert THEME_CSS.count("min-height: 104px") == 2
     assert THEME_CSS.count("padding: .72rem .85rem") == 2
     assert ".portfolio-card .value {color: var(--ink); font-size: 1.55rem" in THEME_CSS
+
+
+def test_header_rollover_and_alerts_use_narrow_theme_selectors() -> None:
+    assert 'header[data-testid="stHeader"] {' in THEME_CSS
+    assert "pointer-events: none" in THEME_CSS
+    assert '[data-testid="stToolbar"]:hover' in THEME_CSS
+    assert '[data-testid="stToolbar"]:focus-within' in THEME_CSS
+    assert 'header[data-testid="stHeader"]:hover' not in THEME_CSS
+    assert '[data-testid="stAlert"]' in THEME_CSS
+    assert "var(--cyan)" in THEME_CSS
+    for prohibited in ("#ff0000", "#00ff00", "#ffff00", "#ffa500"):
+        assert prohibited not in THEME_CSS.lower()
 
 
 def test_purple_header_style_is_scoped_to_the_table_header() -> None:
@@ -358,7 +385,86 @@ def test_forecast_target_and_methodology_render_together() -> None:
     assert horizon.value == 10
     chart = json.loads(app.get("plotly_chart")[0].proto.spec)
     assert {"75th percentile", "95th percentile"} <= {trace.get("name") for trace in chart["data"]}
+    assert [trace.get("name") for trace in chart["data"][:5]] == [
+        "95th percentile",
+        "5th–95th percentile",
+        "75th percentile",
+        "25th–75th percentile",
+        "Median scenario",
+    ]
+    assert all(trace.get("hoverinfo") == "skip" for trace in chart["data"][:5])
+    assert chart["data"][5]["name"] == "Sorted percentile values"
+    assert chart["data"][5]["showlegend"] is False
     assert any(item.value.startswith("Forecast scope:") for item in app.caption)
+
+
+def test_deterministic_v15_2_controls_are_visible_and_use_independent_defaults() -> None:
+    app = viewer_app("Forecast")
+
+    scenario = next(item for item in app.selectbox if item.label == "Scenario")
+    assert scenario.value == ScenarioType.AS_IS
+    assert scenario.options == [
+        "As Is",
+        "Market Decline",
+        "Holding Decline",
+        "Dividend Reduction",
+        "Inflation Increase",
+        "Low Return",
+        "Retirement-Date Decline",
+    ]
+    number_values = {item.label: item.value for item in app.number_input}
+    assert number_values["Market Decline (%)"] == 0
+    assert number_values["Holding Decline (%)"] == 0
+    assert number_values["Dividend Reduction (%)"] == 0
+    assert number_values["Contribution Amount ($/month)"] == 0
+    assert number_values["Inflation (%)"] == 3
+    assert number_values["Inflation Increase (%)"] == 0
+    assert number_values["Spending ($/year)"] == 0
+    assert number_values["Expected Return (%/year)"] == 7
+    assert number_values["Low Return (%/year)"] == 4
+    assert number_values["Horizon Years"] == 10
+    holding = next(item for item in app.selectbox if item.label == "Holding Symbol")
+    assert holding.value is None
+    retirement = next(item for item in app.text_input if item.label == "Retirement Date")
+    assert retirement.disabled
+    assert retirement.value == retirement_date_for_horizon(date.today(), 10).strftime("%B %Y")
+    absent = {
+        "Sector",
+        "Sector Decline",
+        "Contribution Interruption Months",
+        "Historical Start",
+        "Historical End",
+    }
+    all_labels = {
+        item.label
+        for collection in (
+            app.selectbox,
+            app.number_input,
+            app.text_input,
+            app.date_input,
+        )
+        for item in collection
+    }
+    assert absent.isdisjoint(all_labels)
+    assert app.session_state["forecast_annual_return"] == 7
+    assert app.session_state["det_expected_return"] == 7
+
+    next(item for item in app.number_input if item.label == "Horizon Years").set_value(1).run()
+    retirement = next(item for item in app.text_input if item.label == "Retirement Date")
+    assert retirement.value == retirement_date_for_horizon(date.today(), 1).strftime("%B %Y")
+
+
+def test_active_deterministic_ui_does_not_resolve_sector_metadata(monkeypatch) -> None:
+    import chat_alpaca.classification as classification
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("V.15.2 deterministic controls must not resolve sector metadata")
+
+    monkeypatch.setattr(classification, "resolve_security_metadata", fail_if_called)
+    app = viewer_app("Forecast")
+
+    assert not app.exception
+    assert any(item.label == "Scenario" for item in app.selectbox)
 
 
 def test_incomplete_data_warnings_are_presented_without_credentials() -> None:
@@ -495,6 +601,11 @@ def test_add_transaction_customizes_fields_and_validates_trade_symbols() -> None
 def test_master_filters_apply_portfolios_and_dates_together() -> None:
     app = viewer_app()
     first_portfolio_id = 1
+    initial_summary = next(
+        item.value
+        for item in app.markdown
+        if item.value.startswith('<div class="master-value-strip"')
+    )
 
     app.multiselect[0].set_value([first_portfolio_id])
     app.date_input[0].set_value(date(2026, 6, 1))
@@ -505,6 +616,18 @@ def test_master_filters_apply_portfolios_and_dates_together() -> None:
     assert app.session_state["master_portfolio_ids"] == [first_portfolio_id]
     assert app.session_state["master_start_date"] == date(2026, 6, 1)
     assert app.session_state["master_end_date"] == date(2026, 6, 30)
+    applied_summary = next(
+        item.value
+        for item in app.markdown
+        if item.value.startswith('<div class="master-value-strip"')
+    )
+    assert "TPV" in applied_summary
+    assert "Holdings" in applied_summary
+    assert "Cash" in applied_summary
+    assert "Total selected portfolio value" in applied_summary
+    assert "Selected portfolios’ total holdings value" in applied_summary
+    assert "Selected portfolios’ total cash value" in applied_summary
+    assert applied_summary != initial_summary
     portfolio_grid = next(
         item.value for item in app.markdown if item.value.startswith('<div class="portfolio-grid">')
     )
@@ -533,12 +656,24 @@ def test_gain_loss_tables_use_alpha_label_shared_footnote_and_no_summary_tiles()
             if list(item.value.columns[:5])
             == [
                 "Portfolio",
+                "TPV",
+                "Holdings",
                 "Cash",
                 "All-time gain/loss",
-                "Daily gain/loss",
-                "Custom gain/loss",
             ]
         )
+        assert list(table.columns) == [
+            "Portfolio",
+            "TPV",
+            "Holdings",
+            "Cash",
+            "All-time gain/loss",
+            "Daily gain/loss",
+            "Custom gain/loss",
+            "Alpha",
+            "Beta",
+            "Observations",
+        ]
         assert "Alpha" in table
         assert not any("Annualized market-model" in column for column in table)
         assert any(
@@ -553,6 +688,33 @@ def test_compare_performance_is_expanded_by_default() -> None:
 
     comparison = next(item for item in app.expander if item.label == "Performance comparison")
     assert comparison.proto.expanded
+
+
+def test_compare_value_table_precedes_its_notes_and_warnings() -> None:
+    app = viewer_app("Compare")
+    expander = next(item for item in app.expander if item.label == "Portfolio value and gain/loss")
+
+    def descendants(node):
+        for child in node.children.values():
+            yield child
+            if hasattr(child, "children"):
+                yield from descendants(child)
+
+    items = list(descendants(expander))
+    table_index = next(
+        index
+        for index, item in enumerate(items)
+        if item.__class__.__name__ == "Dataframe"
+        and list(item.value.columns[:4]) == ["Portfolio", "TPV", "Holdings", "Cash"]
+    )
+    explanatory_indices = [
+        index
+        for index, item in enumerate(items)
+        if item.__class__.__name__ in {"Caption", "Warning", "Info", "Error"}
+        or (item.__class__.__name__ == "Markdown" and "performance-status" in item.value)
+    ]
+    assert explanatory_indices
+    assert table_index < min(explanatory_indices)
 
 
 def test_exact_holdings_summary_and_detail_column_order() -> None:
