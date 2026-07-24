@@ -43,6 +43,8 @@ class ComparisonAcquisitionPlan:
 @dataclass(frozen=True)
 class PerformanceRow:
     portfolio: str
+    total_portfolio_value: float | None
+    holdings_market_value: float | None
     cash: float
     all_time: float | None
     daily: float | None
@@ -50,6 +52,23 @@ class PerformanceRow:
     alpha: float | None
     beta: float | None
     alpha_beta_observations: int
+
+
+@dataclass(frozen=True)
+class PortfolioValueRow:
+    portfolio: str
+    total_portfolio_value: Decimal | None
+    holdings_market_value: Decimal | None
+    cash: Decimal
+
+
+@dataclass(frozen=True)
+class SelectedPortfolioValuationReport:
+    total_portfolio_value: Decimal | None
+    holdings_market_value: Decimal | None
+    cash: Decimal
+    rows: tuple[PortfolioValueRow, ...]
+    is_complete: bool
 
 
 @dataclass(frozen=True)
@@ -64,6 +83,8 @@ class PortfolioCardReport:
 @dataclass(frozen=True)
 class CombinedPerformanceReport:
     total_value: Decimal | None
+    total_holdings: Decimal | None
+    total_cash: Decimal
     total_label: str
     all_time: float | None
     daily: float | None
@@ -95,7 +116,10 @@ class PortfolioCalculationContext:
 
 
 def build_portfolio_calculation_context(
-    portfolios: list[Portfolio], closes: pd.DataFrame
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    *,
+    include_reconstruction: bool = True,
 ) -> PortfolioCalculationContext:
     """Compute shared financial results without retaining them beyond the caller's operation."""
     return PortfolioCalculationContext(
@@ -103,10 +127,31 @@ def build_portfolio_calculation_context(
         closes_identity=id(closes),
         reconstruction=(
             scoped_reconstruction(portfolios, closes)
-            if not closes.empty and any(portfolio.transactions for portfolio in portfolios)
+            if include_reconstruction
+            and not closes.empty
+            and any(portfolio.transactions for portfolio in portfolios)
             else None
         ),
         household_valuation=(household_valuation(portfolios, closes) if not closes.empty else None),
+    )
+
+
+def with_portfolio_reconstruction(
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    context: PortfolioCalculationContext,
+) -> PortfolioCalculationContext:
+    """Add reconstruction to a valuation-only context without revaluing the household."""
+    validated = _validated_context(portfolios, closes, context)
+    if validated.reconstruction is not None or closes.empty:
+        return validated
+    return replace(
+        validated,
+        reconstruction=(
+            scoped_reconstruction(portfolios, closes)
+            if any(portfolio.transactions for portfolio in portfolios)
+            else None
+        ),
     )
 
 
@@ -192,6 +237,50 @@ def _summed(values: list[float | None]) -> float | None:
     return sum(values) if values and all(value is not None for value in values) else None
 
 
+def assemble_selected_portfolio_valuation(
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    calculation_context: PortfolioCalculationContext | None = None,
+) -> SelectedPortfolioValuationReport:
+    """Expose one common-date TPV/holdings/cash contract for a selected portfolio scope."""
+    cash = sum((Decimal(portfolio.cash) for portfolio in portfolios), Decimal("0"))
+    if closes.empty:
+        return SelectedPortfolioValuationReport(
+            None,
+            None,
+            cash,
+            tuple(
+                PortfolioValueRow(portfolio.name, None, None, Decimal(portfolio.cash))
+                for portfolio in portfolios
+            ),
+            False,
+        )
+    household = _validated_context(portfolios, closes, calculation_context).household_valuation
+    if household is None:
+        raise ValueError("A non-empty close-price dataset requires a household valuation.")
+    rows = tuple(
+        PortfolioValueRow(
+            portfolio.name,
+            valuation.total_calculated_value if valuation.is_complete else None,
+            valuation.market_value if valuation.is_complete else None,
+            Decimal(portfolio.cash),
+        )
+        for portfolio, valuation in zip(portfolios, household.valuations, strict=True)
+    )
+    holdings = (
+        sum((row.holdings_market_value for row in rows), Decimal("0"))
+        if household.is_complete
+        else None
+    )
+    return SelectedPortfolioValuationReport(
+        holdings + cash if holdings is not None else None,
+        holdings,
+        cash,
+        rows,
+        household.is_complete,
+    )
+
+
 def assemble_portfolio_card_reports(
     portfolios: list[Portfolio],
     closes: pd.DataFrame,
@@ -253,9 +342,9 @@ def assemble_combined_performance_report(
     """Assemble portfolio value and gain/loss without presentation-layer accounting."""
     if closes.empty:
         return CombinedPerformanceReport(
-            total_value=sum(
-                (portfolio_cost(portfolio) for portfolio in portfolios), start=money(0)
-            ),
+            total_value=None,
+            total_holdings=None,
+            total_cash=sum((Decimal(portfolio.cash) for portfolio in portfolios), Decimal("0")),
             total_label="Selected Totals",
             all_time=None,
             daily=None,
@@ -265,7 +354,16 @@ def assemble_combined_performance_report(
             alpha_beta_observations=0,
             rows=tuple(
                 PerformanceRow(
-                    portfolio.name, float(portfolio.cash), None, None, None, None, None, 0
+                    portfolio.name,
+                    None,
+                    None,
+                    float(portfolio.cash),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    0,
                 )
                 for portfolio in portfolios
             ),
@@ -278,7 +376,8 @@ def assemble_combined_performance_report(
     if household is None:
         raise ValueError("A non-empty close-price dataset requires a household valuation.")
     valuations = household.valuations
-    total_value = household.total_calculated_value
+    selected_values = assemble_selected_portfolio_valuation(portfolios, closes, context)
+    total_value = selected_values.total_portfolio_value
     gain_loss = [
         portfolio_gain_loss(
             portfolio,
@@ -309,7 +408,17 @@ def assemble_combined_performance_report(
     rows = tuple(
         PerformanceRow(
             portfolio.name,
-            float(portfolio.cash),
+            (
+                float(value_row.total_portfolio_value)
+                if value_row.total_portfolio_value is not None
+                else None
+            ),
+            (
+                float(value_row.holdings_market_value)
+                if value_row.holdings_market_value is not None
+                else None
+            ),
+            float(value_row.cash),
             metrics.all_time,
             metrics.daily,
             metrics.custom,
@@ -317,7 +426,9 @@ def assemble_combined_performance_report(
             risk.beta if risk else None,
             risk.observations if risk else 0,
         )
-        for portfolio, metrics, risk in zip(portfolios, gain_loss, portfolio_risk, strict=True)
+        for portfolio, value_row, metrics, risk in zip(
+            portfolios, selected_values.rows, gain_loss, portfolio_risk, strict=True
+        )
     )
     combined_risk = (
         alpha_beta_from_levels(
@@ -339,6 +450,8 @@ def assemble_combined_performance_report(
     complete_count = sum(valuation.is_complete for valuation in valuations)
     return CombinedPerformanceReport(
         total_value=total_value,
+        total_holdings=selected_values.holdings_market_value,
+        total_cash=selected_values.cash,
         total_label="Selected Totals",
         all_time=_summed([row.all_time for row in rows]),
         daily=_summed([row.daily for row in rows]),
@@ -362,15 +475,26 @@ def overlay_intraday_performance(
     portfolio_changes: dict[str, float | None],
     *,
     include_custom: bool,
+    portfolio_values: dict[str, float | None] | None = None,
     indicative_total_value: float | None = None,
 ) -> CombinedPerformanceReport:
     """Overlay complete indicative quote moves on close-based performance metrics."""
+    portfolio_values = portfolio_values or {}
     rows = []
     for row in report.rows:
         change = portfolio_changes.get(row.portfolio)
+        indicative_value = portfolio_values.get(row.portfolio)
         rows.append(
             replace(
                 row,
+                total_portfolio_value=(
+                    indicative_value if indicative_value is not None else row.total_portfolio_value
+                ),
+                holdings_market_value=(
+                    indicative_value - row.cash
+                    if indicative_value is not None
+                    else row.holdings_market_value
+                ),
                 all_time=(
                     row.all_time + change
                     if row.all_time is not None and change is not None
@@ -391,6 +515,11 @@ def overlay_intraday_performance(
             money(indicative_total_value)
             if indicative_total_value is not None
             else report.total_value
+        ),
+        total_holdings=(
+            money(indicative_total_value - float(report.total_cash))
+            if indicative_total_value is not None
+            else report.total_holdings
         ),
         total_label="Selected Totals",
         all_time=_summed([row.all_time for row in updated_rows]),

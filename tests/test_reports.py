@@ -19,6 +19,7 @@ from chat_alpaca.reports import (
     assemble_combined_performance_report,
     assemble_comparison_report,
     assemble_portfolio_card_reports,
+    assemble_selected_portfolio_valuation,
     build_portfolio_calculation_context,
     comparison_acquisition_plan,
     historical_symbol_universe,
@@ -176,6 +177,44 @@ def test_combined_performance_report_returns_incomplete_coverage_warning() -> No
     assert report.coverage == "Complete valuations: 0 of 1 portfolios."
     assert any("Missing prices for held symbols: ABC" in warning for warning in report.warnings)
     assert report.rows[0].cash == 0
+    assert report.rows[0].holdings_market_value is None
+    assert report.rows[0].total_portfolio_value is None
+    assert report.total_holdings is None
+
+
+def test_selected_valuation_reconciles_rows_and_aggregate_before_display_rounding() -> None:
+    portfolios, closes, _ = _reconstruction_fixture(2)
+    context = build_portfolio_calculation_context(portfolios, closes, include_reconstruction=False)
+
+    report = assemble_selected_portfolio_valuation(portfolios, closes, context)
+
+    assert report.is_complete
+    assert report.total_portfolio_value == report.holdings_market_value + report.cash
+    assert report.total_portfolio_value == sum(
+        (row.total_portfolio_value for row in report.rows), Decimal("0")
+    )
+    assert report.holdings_market_value == sum(
+        (row.holdings_market_value for row in report.rows), Decimal("0")
+    )
+    assert report.cash == sum((row.cash for row in report.rows), Decimal("0"))
+    for row in report.rows:
+        assert row.total_portfolio_value == row.holdings_market_value + row.cash
+
+
+def test_selected_valuation_keeps_incomplete_holdings_unavailable_not_zero() -> None:
+    portfolio = _portfolio()
+    report = assemble_selected_portfolio_valuation(
+        [portfolio],
+        pd.DataFrame(
+            {"OTHER": [10.0]},
+            index=pd.to_datetime(["2026-01-02"]),
+        ),
+    )
+
+    assert not report.is_complete
+    assert report.holdings_market_value is None
+    assert report.total_portfolio_value is None
+    assert report.rows[0].holdings_market_value is None
 
 
 def test_selected_totals_and_cards_share_one_household_confirmed_date() -> None:
@@ -225,11 +264,22 @@ def test_intraday_overlay_updates_current_metrics_but_can_hold_custom_fixed() ->
     )
 
     fixed = overlay_intraday_performance(
-        report, {"Example": 5.0}, include_custom=False, indicative_total_value=17.0
+        report,
+        {"Example": 5.0},
+        include_custom=False,
+        portfolio_values={"Example": 17.0},
+        indicative_total_value=17.0,
     )
     live = overlay_intraday_performance(report, {"Example": 5.0}, include_custom=True)
 
     assert fixed.total_value == Decimal("17.00")
+    assert fixed.total_holdings == Decimal("17.00")
+    assert fixed.rows[0].total_portfolio_value == 17.0
+    assert fixed.rows[0].holdings_market_value == 17.0
+    assert (
+        fixed.rows[0].total_portfolio_value
+        == fixed.rows[0].holdings_market_value + fixed.rows[0].cash
+    )
     assert fixed.total_label == "Selected Totals"
     assert fixed.daily == 5.0
     assert fixed.all_time == report.all_time + 5.0
