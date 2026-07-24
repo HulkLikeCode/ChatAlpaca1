@@ -209,6 +209,11 @@ rather than zero. Overview and Compare omit redundant summary metric tiles while
 tables, warnings, coverage, and Overview portfolio value cards. Their tables expose per-portfolio
 TPV, Holdings, and Cash from the same common-date valuation contract used by the master strip;
 TPV equals Holdings plus ledger Cash before display-only nearest-$100 half-up rounding.
+Because the strip is global, every page resolves one selection-scoped historical request through
+the existing 15-minute data cache; it never issues a second strip-only request. Transaction-ledger
+reconstruction remains lazy and is added to the request context only for analytics views that need
+it. Applying a new portfolio selection creates a new cache key rather than showing the prior
+selection's session value.
 Exact holdings retain numeric share values and adapt display precision through eight decimal
 places. The confirmed valuation display uses the authoritative dataset retrieval timestamp in
 daylight-aware Eastern Time and derives `As of` from that same row-level timestamp without
