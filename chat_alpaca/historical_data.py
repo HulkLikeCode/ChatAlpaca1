@@ -452,6 +452,7 @@ class SqlHistoricalDataRepository:
         frame.attrs["last_price_dates"] = {
             symbol: max(values) for symbol, values in by_symbol.items() if values
         }
+        frame.attrs["freshness"] = freshness
         frame.attrs["adjustment"] = request.adjustment.value
         coverage_dates = list(index)
         sources = [dataset.source for dataset in chosen_datasets.values()]

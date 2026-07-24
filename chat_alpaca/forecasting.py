@@ -185,6 +185,8 @@ class ForecastRequest:
     source_valuation_date: date | None = None
     seed: int = LEGACY_FORECAST_DEFAULT_SEED
     simulation_count: int = LEGACY_FORECAST_DEFAULT_SIMULATIONS
+    portfolio_ids: tuple[int, ...] = ()
+    portfolio_names: tuple[str, ...] = ()
 
 
 def build_forecast_request(
@@ -237,12 +239,14 @@ def build_forecast_request(
     if current_value <= 0:
         raise ValueError("A projection requires a selected portfolio with a positive value.")
     return ForecastRequest(
-        current_value,
-        assumptions,
-        valuation_basis,
-        warnings,
-        coverage,
-        source_valuation_date,
+        current_value=current_value,
+        assumptions=assumptions,
+        valuation_basis=valuation_basis,
+        warnings=warnings,
+        coverage=coverage,
+        source_valuation_date=source_valuation_date,
+        portfolio_ids=tuple(portfolio.id for portfolio in portfolios),
+        portfolio_names=tuple(portfolio.name for portfolio in portfolios),
     )
 
 

@@ -9,13 +9,13 @@ import pandas as pd
 
 from chat_alpaca.analytics import (
     HouseholdValuationResult,
-    _typed_reconstruction,
     alpha_beta_from_levels,
     combined_performance_growth,
     household_valuation,
     performance_growth,
     portfolio_gain_loss,
     rebase_comparison_series,
+    scoped_reconstruction,
     summary_metrics,
 )
 from chat_alpaca.market_data import get_benchmark_daily_closes, get_daily_closes
@@ -102,7 +102,7 @@ def build_portfolio_calculation_context(
         portfolio_ids=tuple(portfolio.id for portfolio in portfolios),
         closes_identity=id(closes),
         reconstruction=(
-            _typed_reconstruction(portfolios, closes)
+            scoped_reconstruction(portfolios, closes)
             if not closes.empty and any(portfolio.transactions for portfolio in portfolios)
             else None
         ),

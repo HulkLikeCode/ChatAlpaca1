@@ -28,8 +28,24 @@ from chat_alpaca.scenarios import (
     record_validation_evidence,
     run_deterministic_scenario,
     save_scenario_run,
+    scenario_explanation,
     sensitivity_grid,
 )
+
+
+def test_scenario_explanation_is_derived_from_structured_defaults_and_adjustments() -> None:
+    assumptions = ScenarioAssumptions(
+        ScenarioType.HOLDING_DECLINE,
+        holding_symbol="AAPL",
+        holding_decline=-0.40,
+    )
+
+    note = scenario_explanation(assumptions)
+
+    assert "Holding Symbol None → AAPL" in note
+    assert "Holding Decline -30.0% → -40.0%" in note
+    assert "Only AAPL receives the holding shock" in note
+    assert "Unchanged defaults:" in note
 
 
 def _portfolio(session: Session, name: str = "Household") -> Portfolio:

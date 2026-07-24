@@ -312,7 +312,7 @@ def test_report_context_reconstructs_each_portfolio_once(portfolio_count: int, m
     portfolios, closes, benchmark = _reconstruction_fixture(portfolio_count)
     counts = {"typed": 0, "coverage": 0, "household": 0}
     per_portfolio: dict[int, int] = {}
-    original_typed = reports._typed_reconstruction
+    original_typed = reports.scoped_reconstruction
     original_coverage = analytics.reconstruct_from_coverage
     original_household = reports.household_valuation
     original_daily = reconstruction._daily_for_portfolio
@@ -333,7 +333,7 @@ def test_report_context_reconstructs_each_portfolio_once(portfolio_count: int, m
         per_portfolio[portfolio.id] = per_portfolio.get(portfolio.id, 0) + 1
         return original_daily(portfolio, *args, **kwargs)
 
-    monkeypatch.setattr(reports, "_typed_reconstruction", count_typed)
+    monkeypatch.setattr(reports, "scoped_reconstruction", count_typed)
     monkeypatch.setattr(analytics, "reconstruct_from_coverage", count_coverage)
     monkeypatch.setattr(reports, "household_valuation", count_household)
     monkeypatch.setattr(reconstruction, "_daily_for_portfolio", count_daily)
@@ -473,14 +473,14 @@ def test_context_rejects_different_portfolios_and_price_datasets() -> None:
 def test_new_context_reconstructs_after_transactions_or_closes_change(monkeypatch) -> None:
     portfolios, closes, _ = _reconstruction_fixture(2)
     calls = 0
-    original = reports._typed_reconstruction
+    original = reports.scoped_reconstruction
 
     def count_typed(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(reports, "_typed_reconstruction", count_typed)
+    monkeypatch.setattr(reports, "scoped_reconstruction", count_typed)
     first = build_portfolio_calculation_context(portfolios, closes)
     portfolios[0].transactions[0].cash_delta += Decimal("1")
     second = build_portfolio_calculation_context(portfolios, closes)

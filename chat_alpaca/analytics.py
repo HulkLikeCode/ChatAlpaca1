@@ -113,7 +113,7 @@ def _frame_coverage(closes: pd.DataFrame) -> HistoricalCoverageResult:
     )
 
 
-def _typed_reconstruction(portfolios: list[Portfolio], closes: pd.DataFrame):
+def scoped_reconstruction(portfolios: list[Portfolio], closes: pd.DataFrame):
     if closes.empty:
         return None
     start = pd.to_datetime(closes.index).min().date()
@@ -143,7 +143,7 @@ def portfolio_series(
             result.loc[active.index] += active * float(lot.shares)
         result.name = portfolio.name
         return result
-    reconstructed = reconstruction or _typed_reconstruction([portfolio], prices)
+    reconstructed = reconstruction or scoped_reconstruction([portfolio], prices)
     if reconstructed is None:
         return pd.Series(dtype=float, name=portfolio.name)
     result = reconstructed.portfolios[portfolio.id].daily.portfolio_value.reindex(prices.index)
@@ -200,7 +200,7 @@ def portfolio_gain_loss(
         raise ValueError("The custom gain/loss start date must be on or before the end date.")
     typed = reconstruction if _transactions(portfolio) else None
     if typed is None and _transactions(portfolio):
-        typed = _typed_reconstruction([portfolio], closes)
+        typed = scoped_reconstruction([portfolio], closes)
     series = portfolio_series(portfolio, closes, typed)
     if series.empty:
         return GainLossMetrics(None, None, None)
@@ -326,7 +326,7 @@ def performance_growth(
 ) -> pd.Series:
     """Return $100-rebased portfolio performance excluding external flows."""
     if _transactions(portfolio):
-        typed = reconstruction or _typed_reconstruction([portfolio], closes)
+        typed = reconstruction or scoped_reconstruction([portfolio], closes)
         if typed is not None:
             growth = (typed.portfolios[portfolio.id].daily.time_weighted_return + 1.0) * 100
             growth.name = portfolio.name
@@ -342,7 +342,7 @@ def combined_performance_growth(
     """Return $100-rebased combined performance excluding each portfolio's flows."""
     portfolio_list = list(portfolios)
     if portfolio_list and all(_transactions(portfolio) for portfolio in portfolio_list):
-        typed = reconstruction or _typed_reconstruction(portfolio_list, closes)
+        typed = reconstruction or scoped_reconstruction(portfolio_list, closes)
         if typed is not None:
             growth = (typed.combined.time_weighted_return + 1.0) * 100
             growth.name = "Selected portfolios"
@@ -720,6 +720,7 @@ def consolidated_holdings(
                 custom_end,
             )
     rows: list[dict[str, object]] = []
+    retrieval_times = closes.attrs.get("freshness", {})
     for portfolio in portfolio_list:
         for lot in sorted(portfolio.holdings, key=lambda item: (item.symbol, item.acquired_on)):
             shares = float(lot.shares)
@@ -759,6 +760,7 @@ def consolidated_holdings(
                     "Cost / share": cost_per_share,
                     "Cost basis": cost_basis,
                     "Confirmed valuation date": household.common_valuation_date,
+                    "Confirmed valuation timestamp": retrieval_times.get(lot.symbol),
                     "Confirmed price": confirmed,
                     "Confirmed value": shares * confirmed if confirmed is not None else None,
                     "Latest symbol price": latest,
@@ -808,6 +810,7 @@ def consolidated_holdings(
         **{
             "Total cost basis": ("Cost basis", "sum"),
             "Confirmed valuation date": ("Confirmed valuation date", "first"),
+            "Confirmed valuation timestamp": ("Confirmed valuation timestamp", "first"),
             "Confirmed price": ("Confirmed price", "first"),
             "Confirmed value": ("Confirmed value", lambda values: values.sum(min_count=1)),
             "Latest symbol price": ("Latest symbol price", "first"),
@@ -844,6 +847,7 @@ def consolidated_holdings(
             "Average cost / share",
             "Total cost basis",
             "Confirmed valuation date",
+            "Confirmed valuation timestamp",
             "Confirmed price",
             "Confirmed value",
             "Latest symbol price",
