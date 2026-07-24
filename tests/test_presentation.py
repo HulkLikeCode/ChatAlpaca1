@@ -11,6 +11,9 @@ from chat_alpaca.presentation import (
     format_relative_age,
     market_context_display_frame,
     matching_date_preset,
+    monte_carlo_hover_text,
+    nearest_hundred,
+    retirement_date_for_horizon,
     sorted_hover_text,
 )
 
@@ -66,6 +69,51 @@ def test_sorted_hover_text_orders_each_date_and_omits_missing_values() -> None:
     assert text[0].index("Second: 120.00") < text[0].index("First: 100.00")
     assert "Second" not in text[1]
     assert "First: 110.00" in text[1]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (599_849, 599_800),
+        (599_850, 599_900),
+        (49, 0),
+        (50, 100),
+        (149, 100),
+        (150, 200),
+        (-149, -100),
+        (-150, -200),
+    ],
+)
+def test_nearest_hundred_uses_half_up_display_rounding(value: float, expected: float) -> None:
+    assert nearest_hundred(value) == expected
+
+
+def test_retirement_date_horizon_is_bounded_and_leap_safe() -> None:
+    assert retirement_date_for_horizon(date(2024, 2, 29), 1) == date(2025, 2, 28)
+    assert retirement_date_for_horizon(date(2024, 2, 29), 40) == date(2064, 2, 29)
+    with pytest.raises(ValueError, match="between 1 and 40"):
+        retirement_date_for_horizon(date(2024, 2, 29), 0)
+    with pytest.raises(ValueError, match="between 1 and 40"):
+        retirement_date_for_horizon(date(2024, 2, 29), 41)
+
+
+def test_monte_carlo_tooltip_sorts_actual_values_with_rank_tie_break() -> None:
+    dates = pd.to_datetime(["2026-07-22", "2026-07-23"])
+    values = pd.DataFrame(
+        {
+            "P5": [500, 100],
+            "P25": [300, 400],
+            "P50": [400, 300],
+            "P75": [200, 400],
+            "P95": [100, 200],
+        }
+    )
+
+    text = monte_carlo_hover_text(dates, values)
+
+    assert text[0].index("5th percentile: $500") < text[0].index("Median scenario: $400")
+    assert text[0].index("25th percentile: $300") < text[0].index("75th percentile: $200")
+    assert text[1].index("75th percentile: $400") < text[1].index("25th percentile: $400")
 
 
 def test_market_context_display_order_and_scaling_preserve_raw_correlation() -> None:

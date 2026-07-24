@@ -5,6 +5,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from numbers import Real
 
 import pandas as pd
@@ -29,6 +30,27 @@ MARKET_CONTEXT_PERCENT_COLUMNS = (
     "Drawdown from available-window peak",
     "Realized volatility",
 )
+
+
+def nearest_hundred(value: object) -> float | None:
+    """Round a display value to $100 using explicit conventional half-up behavior."""
+    if value is None or pd.isna(value):
+        return None
+    numeric = Decimal(str(value))
+    if not numeric.is_finite():
+        return None
+    return float(numeric.quantize(Decimal("1E2"), rounding=ROUND_HALF_UP))
+
+
+def retirement_date_for_horizon(as_of: date, horizon_years: int) -> date:
+    """Return the same calendar date after the horizon, clamping leap day safely."""
+    if horizon_years < 1 or horizon_years > 40:
+        raise ValueError("Scenario horizon must be between 1 and 40 years.")
+    target_year = as_of.year + horizon_years
+    return as_of.replace(
+        year=target_year,
+        day=min(as_of.day, calendar.monthrange(target_year, as_of.month)[1]),
+    )
 
 
 def _shift_months(value: date, months: int) -> date:
@@ -144,6 +166,34 @@ def sorted_hover_text(
             values.append((str(item.name), float(value)))
         values.sort(key=lambda item: (-item[1], item[0]))
         rendered = "<br>".join(f"{name}: {format(value, value_format)}" for name, value in values)
+        rows.append(f"{pd.Timestamp(timestamp):%b %d, %Y}<br>{rendered}")
+    return rows
+
+
+def monte_carlo_hover_text(
+    dates: Sequence[object],
+    percentiles: pd.DataFrame,
+) -> list[str]:
+    """Build one descending, rank-stable currency tooltip for each Monte Carlo date."""
+    rank = {"P95": 95, "P75": 75, "P50": 50, "P25": 25, "P5": 5}
+    labels = {
+        "P95": "95th percentile",
+        "P75": "75th percentile",
+        "P50": "Median scenario",
+        "P25": "25th percentile",
+        "P5": "5th percentile",
+    }
+    rows = []
+    for position, timestamp in enumerate(dates):
+        values = [
+            (column, float(percentiles[column].iloc[position]))
+            for column in rank
+            if column in percentiles
+            and position < len(percentiles[column])
+            and pd.notna(percentiles[column].iloc[position])
+        ]
+        values.sort(key=lambda item: (-item[1], -rank[item[0]]))
+        rendered = "<br>".join(f"{labels[name]}: ${value:,.0f}" for name, value in values)
         rows.append(f"{pd.Timestamp(timestamp):%b %d, %Y}<br>{rendered}")
     return rows
 

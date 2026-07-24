@@ -22,11 +22,16 @@ THEME_CSS = """
   color: var(--ink);
 }
 header[data-testid="stHeader"] {
+  pointer-events: none;
+  background: transparent;
+}
+header[data-testid="stHeader"] [data-testid="stToolbar"] {
+  pointer-events: auto;
   opacity: 0;
   transition: opacity .18s ease-in-out;
 }
-header[data-testid="stHeader"]:hover,
-header[data-testid="stHeader"]:focus-within {
+header[data-testid="stHeader"] [data-testid="stToolbar"]:hover,
+header[data-testid="stHeader"] [data-testid="stToolbar"]:focus-within {
   opacity: 1;
 }
 .block-container {max-width: 1380px; padding-top: .7rem; padding-bottom: 3rem;}
@@ -76,6 +81,31 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
   backdrop-filter: blur(16px);
 }
 .st-key-master_controls [data-testid="stForm"] {border: 0; padding: 0;}
+.master-value-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: -.05rem .75rem .2rem;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  background: rgba(7, 10, 19, .94);
+}
+.master-value-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: .55rem;
+  padding: .2rem .55rem .28rem;
+  min-width: 0;
+}
+.master-value-cell + .master-value-cell {border-left: 1px solid var(--line);}
+.master-value-cell span {
+  color: var(--violet);
+  font-size: .68rem;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.master-value-cell strong {color: var(--ink); font-size: .86rem; white-space: nowrap;}
 [class*="st-key-master_date_preset_"] button {
   min-height: 1.85rem;
   padding: .15rem .45rem;
@@ -122,7 +152,14 @@ h1, h2, h3 {letter-spacing: -0.035em; color: var(--ink);}
 [data-baseweb="tab"] {height: 2.65rem; padding: 0 .8rem; color: var(--muted);}
 [aria-selected="true"] {color: white !important;}
 [data-testid="stDataFrame"], [data-testid="stDataEditor"] {border: 1px solid var(--line); border-radius: 12px; overflow: hidden;}
-[data-testid="stAlert"] {background: rgba(19,27,52,.88); border-color: rgba(105,126,255,.4); color: white;}
+[data-testid="stAlert"] {
+  background: linear-gradient(110deg, rgba(19,27,52,.94), rgba(45,31,76,.88));
+  border: 1px solid rgba(103,215,255,.38);
+  color: var(--ink);
+}
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] a {color: var(--ink) !important;}
+[data-testid="stAlert"] svg {fill: var(--cyan) !important; color: var(--cyan) !important;}
 .stale-symbol-alert {
   margin: .35rem 0 .75rem;
   padding: .75rem 1rem;
