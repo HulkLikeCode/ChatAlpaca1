@@ -100,10 +100,12 @@ from chat_alpaca.realtime import (
 )
 from chat_alpaca.reports import (
     HistoricalDataRequest,
+    PortfolioCalculationContext,
     acquire_historical_data,
     assemble_combined_performance_report,
     assemble_comparison_report,
     assemble_portfolio_card_reports,
+    build_portfolio_calculation_context,
     comparison_acquisition_plan,
     overlay_intraday_performance,
     portfolio_acquisition_request,
@@ -415,10 +417,16 @@ def render_access_status(role: str) -> None:
 
 
 def render_portfolio_cards(
-    portfolios: list[Portfolio], closes: pd.DataFrame, custom_start: date, custom_end: date
+    portfolios: list[Portfolio],
+    closes: pd.DataFrame,
+    custom_start: date,
+    custom_end: date,
+    calculation_context: PortfolioCalculationContext | None = None,
 ) -> None:
     cards = []
-    for report in assemble_portfolio_card_reports(portfolios, closes, custom_start, custom_end):
+    for report in assemble_portfolio_card_reports(
+        portfolios, closes, custom_start, custom_end, calculation_context
+    ):
         cards.append(
             "".join(
                 (
@@ -517,6 +525,7 @@ def render_performance_summary(
     expanded: bool = False,
     show_portfolio_cards: bool = False,
     data_note: str | None = None,
+    calculation_context: PortfolioCalculationContext | None = None,
 ) -> None:
     with st.expander("Portfolio value and gain/loss", expanded=expanded):
         regular_market_hours = market_hours_state().is_regular_hours
@@ -526,6 +535,7 @@ def render_performance_summary(
             custom_start,
             custom_end,
             benchmark_closes,
+            calculation_context=calculation_context,
         )
         pulse = _indicative_performance_pulse(portfolios, closes)
         fresh_portfolios = (
@@ -609,7 +619,9 @@ def render_performance_summary(
         )
         metrics[5].metric("Beta", f"{report.beta:.2f}" if report.beta is not None else "—")
         if show_portfolio_cards:
-            render_portfolio_cards(portfolios, closes, custom_start, custom_end)
+            render_portfolio_cards(
+                portfolios, closes, custom_start, custom_end, calculation_context
+            )
 
         status_parts = [report.coverage.removesuffix(".")]
         if closes.empty:
@@ -720,10 +732,18 @@ def render_consolidated_holdings(
     custom_start: date,
     custom_end: date,
     benchmark_closes: pd.DataFrame,
+    calculation_context: PortfolioCalculationContext | None = None,
 ) -> None:
     with st.expander("Exact holdings", expanded=False):
         summary, detail = consolidated_holdings(
-            portfolios, closes, custom_start, custom_end, benchmark_closes
+            portfolios,
+            closes,
+            custom_start,
+            custom_end,
+            benchmark_closes,
+            household=(
+                calculation_context.household_valuation if calculation_context is not None else None
+            ),
         )
         if summary.empty:
             st.caption("No holdings yet.")
@@ -967,6 +987,7 @@ def render_overview(
     if not portfolios:
         st.caption("No non-blank portfolios are available for the selected scope.")
         return
+    calculation_context = build_portfolio_calculation_context(portfolios, closes)
     render_performance_summary(
         portfolios,
         closes,
@@ -977,10 +998,18 @@ def render_overview(
         expanded=True,
         show_portfolio_cards=True,
         data_note=data_note,
+        calculation_context=calculation_context,
     )
     with st.expander("Portfolio income", expanded=False):
         render_portfolio_income(portfolios, custom_start, custom_end)
-    render_consolidated_holdings(portfolios, closes, custom_start, custom_end, benchmark_closes)
+    render_consolidated_holdings(
+        portfolios,
+        closes,
+        custom_start,
+        custom_end,
+        benchmark_closes,
+        calculation_context,
+    )
 
 
 def render_compare(
@@ -993,6 +1022,7 @@ def render_compare(
     if not portfolios:
         st.caption("No portfolios are available to compare.")
         return
+    calculation_context = build_portfolio_calculation_context(portfolios, portfolio_closes)
     render_performance_summary(
         portfolios,
         portfolio_closes,
@@ -1001,6 +1031,7 @@ def render_compare(
         "compare",
         benchmark_closes,
         expanded=True,
+        calculation_context=calculation_context,
     )
     with st.expander("Performance comparison", expanded=False):
         controls = st.columns([1.4, 2.2])
@@ -1064,6 +1095,7 @@ def render_compare(
             custom_start,
             custom_end,
             benchmark_symbols,
+            calculation_context,
         )
         for warning in report.warnings:
             _render_warning(warning)

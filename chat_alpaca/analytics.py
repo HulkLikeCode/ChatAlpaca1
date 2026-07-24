@@ -10,7 +10,11 @@ import pandas as pd
 
 from chat_alpaca.historical_data import HistoricalCoverageResult
 from chat_alpaca.models import Portfolio, PortfolioTransaction
-from chat_alpaca.reconstruction import ReconstructionRequest, reconstruct_from_coverage
+from chat_alpaca.reconstruction import (
+    ReconstructionRequest,
+    ReconstructionResult,
+    reconstruct_from_coverage,
+)
 
 EXTERNAL_CASH_FLOW_KINDS = {"transfer", "cash_adjustment", "award"}
 MIXED_BASIS_DISCLOSURE = (
@@ -118,7 +122,11 @@ def _typed_reconstruction(portfolios: list[Portfolio], closes: pd.DataFrame):
     return reconstruct_from_coverage(portfolios, request, _frame_coverage(closes))
 
 
-def portfolio_series(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
+def portfolio_series(
+    portfolio: Portfolio,
+    closes: pd.DataFrame,
+    reconstruction: ReconstructionResult | None = None,
+) -> pd.Series:
     if closes.empty:
         return pd.Series(dtype=float, name=portfolio.name)
 
@@ -135,7 +143,7 @@ def portfolio_series(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
             result.loc[active.index] += active * float(lot.shares)
         result.name = portfolio.name
         return result
-    reconstructed = _typed_reconstruction([portfolio], prices)
+    reconstructed = reconstruction or _typed_reconstruction([portfolio], prices)
     if reconstructed is None:
         return pd.Series(dtype=float, name=portfolio.name)
     result = reconstructed.portfolios[portfolio.id].daily.portfolio_value.reindex(prices.index)
@@ -184,16 +192,20 @@ def portfolio_gain_loss(
     closes: pd.DataFrame,
     custom_start: date,
     custom_end: date,
+    reconstruction: ReconstructionResult | None = None,
+    valuation: ValuationResult | None = None,
 ) -> GainLossMetrics:
     """Calculate dollar P/L while excluding transfers, cash adjustments, and opening assets."""
     if custom_start > custom_end:
         raise ValueError("The custom gain/loss start date must be on or before the end date.")
-    series = portfolio_series(portfolio, closes)
+    typed = reconstruction if _transactions(portfolio) else None
+    if typed is None and _transactions(portfolio):
+        typed = _typed_reconstruction([portfolio], closes)
+    series = portfolio_series(portfolio, closes, typed)
     if series.empty:
         return GainLossMetrics(None, None, None)
 
-    valuation = portfolio_valuation(portfolio, closes)
-    typed = _typed_reconstruction([portfolio], closes) if _transactions(portfolio) else None
+    valuation = valuation or portfolio_valuation(portfolio, closes)
     all_time = (
         typed.portfolios[portfolio.id].gain_loss
         if typed is not None
@@ -307,10 +319,14 @@ def _flow_adjusted_growth(
     return growth
 
 
-def performance_growth(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
+def performance_growth(
+    portfolio: Portfolio,
+    closes: pd.DataFrame,
+    reconstruction: ReconstructionResult | None = None,
+) -> pd.Series:
     """Return $100-rebased portfolio performance excluding external flows."""
     if _transactions(portfolio):
-        typed = _typed_reconstruction([portfolio], closes)
+        typed = reconstruction or _typed_reconstruction([portfolio], closes)
         if typed is not None:
             growth = (typed.portfolios[portfolio.id].daily.time_weighted_return + 1.0) * 100
             growth.name = portfolio.name
@@ -318,16 +334,22 @@ def performance_growth(portfolio: Portfolio, closes: pd.DataFrame) -> pd.Series:
     return _flow_adjusted_growth(portfolio_series(portfolio, closes), _transactions(portfolio))
 
 
-def combined_performance_growth(portfolios: Iterable[Portfolio], closes: pd.DataFrame) -> pd.Series:
+def combined_performance_growth(
+    portfolios: Iterable[Portfolio],
+    closes: pd.DataFrame,
+    reconstruction: ReconstructionResult | None = None,
+) -> pd.Series:
     """Return $100-rebased combined performance excluding each portfolio's flows."""
     portfolio_list = list(portfolios)
     if portfolio_list and all(_transactions(portfolio) for portfolio in portfolio_list):
-        typed = _typed_reconstruction(portfolio_list, closes)
+        typed = reconstruction or _typed_reconstruction(portfolio_list, closes)
         if typed is not None:
             growth = (typed.combined.time_weighted_return + 1.0) * 100
             growth.name = "Selected portfolios"
             return growth
-    values = combined_series(portfolio_series(portfolio, closes) for portfolio in portfolio_list)
+    values = combined_series(
+        portfolio_series(portfolio, closes, reconstruction) for portfolio in portfolio_list
+    )
     values.name = "Selected portfolios"
     return _flow_adjusted_growth(
         values,
@@ -674,12 +696,13 @@ def consolidated_holdings(
     custom_end: date,
     benchmark_closes: pd.DataFrame | None = None,
     benchmark_symbol: str = "SPY",
+    household: HouseholdValuationResult | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return symbol totals and the underlying portfolio/lot detail for current holdings."""
     if custom_start > custom_end:
         raise ValueError("The custom holdings start date must be on or before the end date.")
     portfolio_list = list(portfolios)
-    household = household_valuation(portfolio_list, closes)
+    household = household or household_valuation(portfolio_list, closes)
     risk_metrics: dict[str, AlphaBetaMetrics] = {}
     benchmark_levels = (
         benchmark_closes[benchmark_symbol].dropna()
